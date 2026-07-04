@@ -1,0 +1,79 @@
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Voice Control
+vosk>=0.3.45
+openai-whisper>=20240930
+edge-tts>=6.1.15
+pyaudio>=0.2.14
+webrtcvad>=2.0.10
+
+# Local LLM
+ollama>=0.4.0
+
+# Web Scraping & Browsing
+playwright>=1.48.0
+beautifulsoup4>=4.12.3
+lxml>=5.3.0
+httpx>=0.27.0
+
+# Data Processing
+pydantic>=2.9.0
+pydantic-settings>=2.4.0
+python-multipart>=0.0.9
+
+# SQLite (async)
+aiosqlite>=0.20.0
+
+# Video Rendering
+moviepy>=1.0.3
+pillow>=11.0.0
+numpy>=1.26.0
+
+# Social API Clients
+google-api-python-client>=2.149.0
+google-auth-oauthlib>=1.2.1
+tweepy>=4.14.0
+
+# Scheduling
+apscheduler>=3.10.4
+
+# Notifications
+python-telegram-bot>=20.8.0
+aiosmtplib>=3.0.2
+
+# ═══ v2.0 NEW DEPENDENCIES ═══
+
+# System Control
+pygetwindow>=0.0.9
+pyautogui>=0.9.54
+pynput>=1.7.7
+
+# Desktop Automation
+mss>=9.0.1
+pytesseract>=0.3.13
+easyocr>=1.7.2
+
+# Screen & Window
+pygetwindow>=0.0.9  # Duplicate for clarity, installs once
+
+# Memory & Knowledge (Vector Search)
+lancedb>=0.11.0
+sentence-transformers>=3.1.1
+
+# Web & Media
+spotipy>=2.24.0
+yfinance>=0.2.41
+openai>=1.51.0
+
+# Document Generation
+python-pptx>=1.0.0
+openpyxl>=3.1.5
+weasyprint>=62.3
+reportlab>=4.2.0
+markdown>=3.7.0
+
+# Utilities
+python-dotenv>=1.0.1
+rich>=13.8.0

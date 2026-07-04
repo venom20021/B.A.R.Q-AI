@@ -1,0 +1,433 @@
+"""
+BARQ Database Schema - SQL table definitions for all modules.
+
+Table design follows the PRD's data model covering:
+- User settings & preferences
+- Job search (listings, evaluations, applications)
+- Social media (trends, scripts, videos, posts)
+- Analytics (career funnel, social performance, revenue)
+- Voice commands and activity logging
+"""
+
+# ─── User Settings ───────────────────────────────────────────────────────────
+
+CREATE_USER_SETTINGS = """
+CREATE TABLE IF NOT EXISTS user_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general',
+    is_encrypted INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_USER_PROFILES = """
+CREATE TABLE IF NOT EXISTS user_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    linkedin_url TEXT NOT NULL DEFAULT '',
+    portfolio_url TEXT NOT NULL DEFAULT '',
+    github_url TEXT NOT NULL DEFAULT '',
+    headline TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    skills TEXT NOT NULL DEFAULT '[]',          -- JSON array of strings
+    experience TEXT NOT NULL DEFAULT '[]',       -- JSON array of experience objects
+    education TEXT NOT NULL DEFAULT '[]',        -- JSON array of education objects
+    experience_level TEXT NOT NULL DEFAULT 'mid'
+        CHECK (experience_level IN ('entry', 'mid', 'senior', 'lead', 'executive')),
+    target_salary_min INTEGER DEFAULT 0,
+    target_salary_max INTEGER DEFAULT 0,
+    preferred_locations TEXT NOT NULL DEFAULT '[]', -- JSON array
+    remote_preference TEXT NOT NULL DEFAULT 'any'
+        CHECK (remote_preference IN ('any', 'remote', 'hybrid', 'onsite')),
+    preferred_industries TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# ─── Job Search ──────────────────────────────────────────────────────────────
+
+CREATE_JOB_LISTINGS = """
+CREATE TABLE IF NOT EXISTS job_listings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id TEXT NOT NULL DEFAULT '',         -- ID from the source board
+    title TEXT NOT NULL,
+    company TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    salary_min INTEGER DEFAULT 0,
+    salary_max INTEGER DEFAULT 0,
+    salary_currency TEXT NOT NULL DEFAULT 'USD',
+    salary_period TEXT NOT NULL DEFAULT 'yearly'
+        CHECK (salary_period IN ('yearly', 'monthly', 'hourly', 'contract')),
+    employment_type TEXT NOT NULL DEFAULT 'full_time'
+        CHECK (employment_type IN ('full_time', 'part_time', 'contract', 'internship', 'temporary')),
+    remote_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (remote_status IN ('remote', 'hybrid', 'onsite', 'unknown')),
+    source_board TEXT NOT NULL,                   -- 'linkedin', 'indeed', etc.
+    source_url TEXT NOT NULL DEFAULT '',
+    posted_date TEXT,
+    expires_date TEXT,
+    company_logo_url TEXT NOT NULL DEFAULT '',
+    company_rating REAL DEFAULT 0.0,
+    skills_required TEXT NOT NULL DEFAULT '[]',   -- JSON array
+    is_active INTEGER NOT NULL DEFAULT 1,
+    scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_JOB_EVALUATIONS = """
+CREATE TABLE IF NOT EXISTS job_evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_listing_id INTEGER NOT NULL,
+    overall_score REAL NOT NULL DEFAULT 0.0
+        CHECK (overall_score >= 0 AND overall_score <= 5),
+    role_fit_score REAL NOT NULL DEFAULT 0.0
+        CHECK (role_fit_score >= 0 AND role_fit_score <= 5),
+    culture_score REAL NOT NULL DEFAULT 0.0
+        CHECK (culture_score >= 0 AND culture_score <= 5),
+    compensation_score REAL NOT NULL DEFAULT 0.0
+        CHECK (compensation_score >= 0 AND compensation_score <= 5),
+    growth_score REAL NOT NULL DEFAULT 0.0
+        CHECK (growth_score >= 0 AND growth_score <= 5),
+    red_flag_score REAL NOT NULL DEFAULT 0.0
+        CHECK (red_flag_score >= 0 AND red_flag_score <= 5),
+    match_percentage REAL NOT NULL DEFAULT 0.0
+        CHECK (match_percentage >= 0 AND match_percentage <= 100),
+    reasoning TEXT NOT NULL DEFAULT '',
+    pros TEXT NOT NULL DEFAULT '[]',              -- JSON array
+    cons TEXT NOT NULL DEFAULT '[]',              -- JSON array
+    evaluated_by TEXT NOT NULL DEFAULT 'llm'
+        CHECK (evaluated_by IN ('llm', 'keyword', 'manual')),
+    evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (job_listing_id) REFERENCES job_listings(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_APPLICATIONS = """
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_listing_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN (
+            'draft', 'queued', 'generating', 'ready_for_review',
+            'approved', 'submitted', 'rejected', 'withdrawn', 'failed'
+        )),
+    application_type TEXT NOT NULL DEFAULT 'auto'
+        CHECK (application_type IN ('auto', 'manual', 'quick_apply')),
+    submission_method TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (submission_method IN ('unknown', 'direct', 'linkedin_easy', 'indeed_apply', 'company_portal', 'email')),
+    resume_path TEXT NOT NULL DEFAULT '',
+    cover_letter_path TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT,
+    response_received_at TEXT,
+    response_type TEXT
+        CHECK (response_type IN ('interview', 'rejection', 'assessment', 'offer', 'none')),
+    interview_date TEXT,
+    offer_details TEXT NOT NULL DEFAULT '{}',     -- JSON
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    score REAL DEFAULT 0.0
+        CHECK (score >= 0 AND score <= 5),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (job_listing_id) REFERENCES job_listings(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_APPLICATION_DOCUMENTS = """
+CREATE TABLE IF NOT EXISTS application_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL,
+    document_type TEXT NOT NULL
+        CHECK (document_type IN ('resume', 'cover_letter', 'portfolio', 'other')),
+    content TEXT NOT NULL,                        -- Full markdown/text content
+    file_path TEXT NOT NULL DEFAULT '',           -- Path to generated PDF/DOCX if exported
+    format TEXT NOT NULL DEFAULT 'markdown'
+        CHECK (format IN ('markdown', 'pdf', 'docx', 'txt', 'html')),
+    version INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    generated_by TEXT NOT NULL DEFAULT 'llm'
+        CHECK (generated_by IN ('llm', 'template', 'manual')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+);
+"""
+
+# ─── Social Media Content ────────────────────────────────────────────────────
+
+CREATE_TRENDS = """
+CREATE TABLE IF NOT EXISTS trends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL
+        CHECK (source IN ('reddit', 'twitter', 'news', 'google_trends', 'manual')),
+    subreddit TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    score REAL NOT NULL DEFAULT 0.0,
+    engagement INTEGER NOT NULL DEFAULT 0,
+    niche TEXT NOT NULL DEFAULT 'technology',
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_CONTENT_SCRIPTS = """
+CREATE TABLE IF NOT EXISTS content_scripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trend_id INTEGER,
+    title TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    format TEXT NOT NULL
+        CHECK (format IN (
+            'tiktok_short', 'youtube_shorts', 'youtube_essay',
+            'instagram_reel', 'twitter_thread', 'linkedin_post', 'blog_post'
+        )),
+    tone TEXT NOT NULL DEFAULT 'professional'
+        CHECK (tone IN ('professional', 'casual', 'humorous', 'educational', 'inspirational')),
+    estimated_duration_seconds INTEGER DEFAULT 60,
+    script_content TEXT NOT NULL,                 -- Full script with visual cues
+    sections TEXT NOT NULL DEFAULT '[]',          -- JSON array of section names
+    visual_cues TEXT NOT NULL DEFAULT '[]',       -- JSON array of visual cues
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'finalized', 'rendering', 'rendered', 'published')),
+    score INTEGER DEFAULT 0
+        CHECK (score >= 0 AND score <= 100),
+    generated_by TEXT NOT NULL DEFAULT 'llm'
+        CHECK (generated_by IN ('llm', 'template', 'manual')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (trend_id) REFERENCES trends(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_VIDEOS = """
+CREATE TABLE IF NOT EXISTS videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL,
+    file_size_bytes INTEGER DEFAULT 0,
+    duration_seconds REAL DEFAULT 0.0,
+    resolution TEXT NOT NULL DEFAULT '1080x1920',
+    format TEXT NOT NULL DEFAULT 'mp4'
+        CHECK (format IN ('mp4', 'mov', 'webm')),
+    status TEXT NOT NULL DEFAULT 'rendering'
+        CHECK (status IN ('rendering', 'completed', 'failed', 'posted', 'archived')),
+    error_message TEXT NOT NULL DEFAULT '',
+    voiceover_path TEXT NOT NULL DEFAULT '',
+    stock_footage_used TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    render_time_seconds REAL DEFAULT 0.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (script_id) REFERENCES content_scripts(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_POSTS = """
+CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER NOT NULL,
+    platform TEXT NOT NULL
+        CHECK (platform IN ('youtube', 'tiktok', 'instagram', 'twitter', 'linkedin')),
+    platform_post_id TEXT NOT NULL DEFAULT '',    -- ID from the platform
+    platform_url TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'posting', 'posted', 'failed', 'scheduled')),
+    scheduled_at TEXT,
+    posted_at TEXT,
+    error_message TEXT NOT NULL DEFAULT '',
+    engagement_metrics TEXT NOT NULL DEFAULT '{}',  -- JSON: views, likes, comments, shares
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+);
+"""
+
+# ─── Analytics ───────────────────────────────────────────────────────────────
+
+CREATE_CAREER_ANALYTICS_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS career_analytics_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL,
+    jobs_scanned INTEGER NOT NULL DEFAULT 0,
+    matches_found INTEGER NOT NULL DEFAULT 0,
+    applications_sent INTEGER NOT NULL DEFAULT 0,
+    interviews_scheduled INTEGER NOT NULL DEFAULT 0,
+    offers_received INTEGER NOT NULL DEFAULT 0,
+    active_applications INTEGER NOT NULL DEFAULT 0,
+    avg_response_time_days REAL DEFAULT 0.0,
+    top_sources TEXT NOT NULL DEFAULT '[]',       -- JSON
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_SOCIAL_ANALYTICS_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS social_analytics_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    followers INTEGER NOT NULL DEFAULT 0,
+    total_views INTEGER NOT NULL DEFAULT 0,
+    total_engagement INTEGER NOT NULL DEFAULT 0,
+    engagement_rate REAL DEFAULT 0.0,
+    videos_posted INTEGER NOT NULL DEFAULT 0,
+    revenue REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_REVENUE_RECORDS = """
+CREATE TABLE IF NOT EXISTS revenue_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL
+        CHECK (source IN (
+            'youtube_adsense', 'tiktok_creator_fund', 'instagram_bonuses',
+            'affiliate_links', 'sponsorships', 'other'
+        )),
+    platform TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0.0
+        CHECK (amount >= 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'received', 'verified', 'disputed')),
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# ─── Voice & Activity ────────────────────────────────────────────────────────
+
+CREATE_VOICE_COMMANDS = """
+CREATE TABLE IF NOT EXISTS voice_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transcript TEXT NOT NULL,
+    confidence REAL DEFAULT 0.0
+        CHECK (confidence >= 0 AND confidence <= 1),
+    action TEXT NOT NULL DEFAULT 'unknown',
+    action_target TEXT NOT NULL DEFAULT '',
+    was_wake_word INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_ACTIVITY_LOG = """
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL
+        CHECK (type IN ('job', 'content', 'analytics', 'voice', 'system', 'notification', 'error', 'memory', 'desktop', 'web', 'documents')),
+    action TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',           -- JSON for extra context
+    severity TEXT NOT NULL DEFAULT 'info'
+        CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_NOTIFICATIONS = """
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL
+        CHECK (channel IN ('telegram', 'email', 'desktop', 'all')),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    category TEXT NOT NULL DEFAULT 'general'
+        CHECK (category IN ('general', 'job_match', 'application', 'content', 'analytics', 'error', 'system')),
+    related_entity_type TEXT,
+    related_entity_id INTEGER,
+    sent INTEGER NOT NULL DEFAULT 0,
+    sent_at TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    read_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+# ─── Aggregate schema creation ───────────────────────────────────────────────
+
+ALL_TABLES = [
+    ("user_settings", CREATE_USER_SETTINGS),
+    ("user_profiles", CREATE_USER_PROFILES),
+    ("job_listings", CREATE_JOB_LISTINGS),
+    ("job_evaluations", CREATE_JOB_EVALUATIONS),
+    ("applications", CREATE_APPLICATIONS),
+    ("application_documents", CREATE_APPLICATION_DOCUMENTS),
+    ("trends", CREATE_TRENDS),
+    ("content_scripts", CREATE_CONTENT_SCRIPTS),
+    ("videos", CREATE_VIDEOS),
+    ("posts", CREATE_POSTS),
+    ("career_analytics_snapshots", CREATE_CAREER_ANALYTICS_SNAPSHOTS),
+    ("social_analytics_snapshots", CREATE_SOCIAL_ANALYTICS_SNAPSHOTS),
+    ("revenue_records", CREATE_REVENUE_RECORDS),
+    ("voice_commands", CREATE_VOICE_COMMANDS),
+    ("activity_log", CREATE_ACTIVITY_LOG),
+    ("notifications", CREATE_NOTIFICATIONS),
+]
+
+
+async def initialize_schema(db):
+    """Create all tables if they don't exist."""
+    for table_name, ddl in ALL_TABLES:
+        try:
+            await db.execute(ddl)
+            print(f"[Schema] Table '{table_name}' ready")
+        except Exception as e:
+            print(f"[Schema] Error creating table '{table_name}': {e}")
+
+    await db.commit()
+    print(f"[Schema] All {len(ALL_TABLES)} tables initialized")
+
+
+async def seed_defaults(db):
+    """Insert default data if tables are empty."""
+    # Default user profile if none exists
+    cursor = await db.execute("SELECT COUNT(*) as count FROM user_profiles")
+    row = await cursor.fetchone()
+    if row and row[0] == 0:
+        await db.execute("""
+            INSERT INTO user_profiles (full_name, email, headline, skills)
+            VALUES ('User', '', 'Professional', '["Communication"]')
+        """)
+
+    # Default settings
+    default_settings = [
+        ("wake_word", "hey barq", "voice"),
+        ("whisper_model", "base", "voice"),
+        ("job_scan_interval", "6", "jobs"),
+        ("match_threshold", "0.7", "jobs"),
+        ("trend_check_interval", "6", "social"),
+        ("daily_digest_enabled", "true", "notifications"),
+        ("telegram_enabled", "false", "notifications"),
+        ("desktop_notifications", "true", "notifications"),
+        ("local_processing_only", "true", "privacy"),
+    ]
+
+    for key, value, category in default_settings:
+        cursor = await db.execute(
+            "SELECT COUNT(*) as count FROM user_settings WHERE key = ?", (key,)
+        )
+        result = await cursor.fetchone()
+        if result and result[0] == 0:
+            await db.execute(
+                "INSERT INTO user_settings (key, value, category) VALUES (?, ?, ?)",
+                (key, value, category),
+            )
+
+    await db.commit()
+    print("[Schema] Default data seeded")

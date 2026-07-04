@@ -1,0 +1,365 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base Layer ─────────────────────────────────────────────────────────── */
+
+@layer base {
+  * {
+    @apply border-void-600/30;
+  }
+
+  body {
+    @apply bg-[#0A0A0F] text-[#E8E8F0] font-exo antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  /* Electron frameless window drag region */
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .drag-region button,
+  .drag-region input,
+  .drag-region select {
+    -webkit-app-region: no-drag;
+  }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-cyan-500/20 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-cyan-500/40; }
+}
+
+/* ─── Glass Morphism ─────────────────────────────────────────────────────── */
+
+@layer components {
+  .glass {
+    @apply bg-void-700/60 backdrop-blur-xl border border-cyan-500/10 shadow-glass;
+  }
+
+  .glass-strong {
+    @apply bg-void-700/80 backdrop-blur-2xl border border-cyan-500/20 shadow-glass;
+  }
+
+  .glass-panel {
+    @apply bg-void-700/50 backdrop-blur-lg border border-cyan-500/10 shadow-glass rounded-xl;
+  }
+
+  .glass-card {
+    @apply glass-panel p-5 transition-all duration-300 hover:border-cyan-500/20 hover:shadow-glow-cyan-sm hover:-translate-y-0.5;
+  }
+
+  /* ─── Glow Effects (Electric Cyan) ───────────────────────────────────── */
+
+  .glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+  }
+
+  .glow-cyan-sm {
+    box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+  }
+
+  .glow-white {
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.15);
+  }
+
+  .glow-navy {
+    box-shadow: 0 0 20px rgba(26, 35, 78, 0.3);
+  }
+
+  .text-glow-cyan {
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+  }
+
+  .text-glow-white {
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+  }
+
+  /* ─── Dark Luxury Glass (Electric Cyan) ──────────────────────────────── */
+
+  .luxury-glass {
+    @apply bg-[#0D0D15]/90 backdrop-blur-3xl border border-[#00E5FF]/10 shadow-glass;
+  }
+
+  .luxury-glass-strong {
+    @apply bg-[#030305]/95 backdrop-blur-3xl border shadow-glass;
+    border-color: rgba(0, 229, 255, 0.08);
+  }
+
+  /* ─── Reflection Floor ─────────────────────────────────────────────────── */
+
+  .reflection-floor {
+    position: relative;
+  }
+
+  .reflection-floor::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.15), transparent);
+    filter: blur(2px);
+  }
+
+  .reflection-glow {
+    position: relative;
+  }
+
+  .reflection-glow::before {
+    content: '';
+    position: absolute;
+    bottom: -20px;
+    left: 50%;
+    transform: translateX(-50%) scaleX(1.2);
+    width: 40%;
+    height: 40px;
+    background: radial-gradient(ellipse at center, rgba(0, 229, 255, 0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* ─── Energy Connection Line ────────────────────────────────────────────── */
+
+  .connect-line {
+    position: relative;
+  }
+
+  .connect-line::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.08), transparent);
+    animation: connectPulse 3s ease-in-out infinite;
+  }
+
+  @keyframes connectPulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* ─── Hexagonal Grid Background ─────────────────────────────────────────── */
+
+  .hex-grid-bg {
+    background-image:
+      radial-gradient(circle at 25% 25%, rgba(0, 229, 255, 0.015) 0.5px, transparent 0.5px),
+      radial-gradient(circle at 75% 75%, rgba(255, 255, 255, 0.01) 0.5px, transparent 0.5px);
+    background-size: 60px 60px;
+  }
+
+  .hex-grid-bg-line {
+    background-image:
+      linear-gradient(rgba(0, 229, 255, 0.015) 0.5px, transparent 0.5px),
+      linear-gradient(90deg, rgba(0, 229, 255, 0.015) 0.5px, transparent 0.5px);
+    background-size: 50px 50px;
+  }
+
+  /* ─── Scrollbar Container ──────────────────────────────────────────────── */
+
+  .scroll-cyan {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 229, 255, 0.2) transparent;
+  }
+
+  .scroll-cyan::-webkit-scrollbar { width: 4px; }
+  .scroll-cyan::-webkit-scrollbar-track { background: transparent; }
+  .scroll-cyan::-webkit-scrollbar-thumb {
+    @apply bg-cyan-500/20 rounded-full;
+  }
+  .scroll-cyan::-webkit-scrollbar-thumb:hover {
+    @apply bg-cyan-500/40;
+  }
+
+  /* ─── Depth Blur ────────────────────────────────────────────────────────── */
+
+  .depth-blur {
+    filter: blur(0.3px);
+  }
+
+  .depth-blur-strong {
+    filter: blur(0.8px);
+  }
+
+  /* ─── Holographic Border ───────────────────────────────────────────────── */
+
+  .holo-border {
+    position: relative;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .holo-border::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    background: linear-gradient(135deg, #00E5FF, #FFFFFF, #00E5FF);
+    background-size: 200% 200%;
+    animation: holographic 4s linear infinite;
+    z-index: -1;
+    border-radius: inherit;
+    opacity: 0.4;
+  }
+
+  .holo-border-strong::before {
+    opacity: 0.7;
+  }
+
+  /* ─── Luxury Text Glow ──────────────────────────────────────────────────── */
+
+  .text-luxury-cyan {
+    color: #00E5FF;
+    text-shadow: 0 0 15px rgba(0, 229, 255, 0.3), 0 0 30px rgba(0, 229, 255, 0.1);
+  }
+
+  .text-luxury-white {
+    color: #E2E8F0;
+    text-shadow: 0 0 10px rgba(226, 232, 240, 0.1);
+  }
+
+  /* ─── Scanlines ────────────────────────────────────────────────────────── */
+
+  .scanlines {
+    position: relative;
+  }
+
+  .scanlines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      transparent 0px,
+      transparent 2px,
+      rgba(0, 229, 255, 0.015) 2px,
+      rgba(0, 229, 255, 0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  /* ─── Grid Background ──────────────────────────────────────────────────── */
+
+  .grid-bg {
+    background-image:
+      radial-gradient(circle, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .grid-bg-line {
+    background-image:
+      linear-gradient(rgba(0, 229, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 229, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* ─── Animated Gradient Text ───────────────────────────────────────────── */
+
+  .text-holographic {
+    background: linear-gradient(135deg, #00E5FF, #FFFFFF, #00E5FF);
+    background-size: 200% 200%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: holographic 4s linear infinite;
+  }
+
+  .text-cyan-glow {
+    color: #00E5FF;
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.5), 0 0 20px rgba(0, 229, 255, 0.2);
+  }
+
+  /* ─── Button Variants ──────────────────────────────────────────────────── */
+
+  .btn-cyan {
+    @apply relative overflow-hidden px-5 py-2.5 rounded-lg font-rajdhani font-semibold text-sm
+           bg-cyan-500/10 text-cyan-300 border border-cyan-500/30
+           hover:bg-cyan-500/20 hover:border-cyan-500/50 hover:shadow-glow-cyan-sm
+           transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-cyan::after {
+    content: '';
+    @apply absolute inset-0 opacity-0 transition-opacity duration-300;
+    background: linear-gradient(135deg, rgba(0,229,255,0.1), transparent);
+  }
+
+  .btn-cyan:hover::after { @apply opacity-100; }
+
+  .btn-glass {
+    @apply glass px-5 py-2.5 rounded-lg font-rajdhani font-semibold text-sm text-ghost
+           hover:border-cyan-500/30 hover:text-cyan-300
+           transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost-cyan {
+    @apply px-4 py-2 rounded-lg font-rajdhani font-semibold text-sm text-dim-400
+           hover:text-cyan-300 hover:bg-cyan-500/5
+           transition-all duration-200;
+  }
+
+  /* ─── Input Variants ───────────────────────────────────────────────────── */
+
+  .input-cyan {
+    @apply bg-void-700/80 border border-dim-500/30 rounded-lg px-4 py-2.5
+           text-ghost placeholder-dim-400
+           focus:outline-none focus:border-cyan-500/50 focus:shadow-glow-cyan-sm
+           transition-all duration-200 font-exo text-sm;
+  }
+
+  /* ─── Badge Variants ───────────────────────────────────────────────────── */
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-hud font-share-tech uppercase tracking-wider;
+  }
+
+  .badge-cyan  { @apply badge bg-cyan-500/10 text-cyan-300 border border-cyan-500/20; }
+  .badge-green { @apply badge bg-neural-500/10 text-neural border border-neural-500/20; }
+  .badge-plasma { @apply badge bg-plasma-500/10 text-plasma border border-plasma-500/20; }
+  .badge-purple { @apply badge bg-holographic-500/10 text-holographic border border-holographic-500/20; }
+  .badge-dim   { @apply badge bg-dim-500/10 text-dim border border-dim-500/20; }
+
+  /* ─── Skeleton Shimmer ─────────────────────────────────────────────────── */
+
+  .skeleton {
+    @apply relative overflow-hidden bg-void-700/50 rounded-lg;
+  }
+
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(0, 229, 255, 0.05) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+
+  /* ─── Other Utilities ──────────────────────────────────────────────────── */
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .status-dot-online  { @apply status-dot bg-neural shadow-glow-green; }
+  .status-dot-busy    { @apply status-dot bg-cyan-300 shadow-glow-cyan-sm; }
+  .status-dot-error   { @apply status-dot bg-plasma shadow-glow-plasma; }
+  .status-dot-offline { @apply status-dot bg-dim; }
+
+  .divider-cyan {
+    @apply h-px bg-gradient-to-r from-transparent via-cyan-500/30 to-transparent;
+  }
+
+  .pulse-ring-cyan {
+    animation: pulseRing 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  }
+}
