@@ -16,7 +16,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint . --ext .ts,.tsx",
+    "lint": "eslint .",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
