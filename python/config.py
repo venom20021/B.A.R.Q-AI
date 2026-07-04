@@ -51,7 +51,31 @@ class Settings(BaseSettings):
     smtp_pass: str = os.getenv("SMTP_PASS", "")
     notification_email: str = os.getenv("NOTIFICATION_EMAIL", "")
 
-    # API Keys (loaded from .env)
+    # Career / Jobs
+    career_ops_path: str = os.getenv("CAREER_OPS_PATH", "C:\\Users\\pc\\career-ops")
+    resume_path: str = os.getenv("RESUME_PATH", "")
+    barq_port: int = int(os.getenv("BARQ_PORT", "8111"))
+
+    # Scheduler
+    job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))
+    auto_match_interval_hours: int = int(os.getenv("AUTO_MATCH_INTERVAL_HOURS", "1"))
+
+    # Matching thresholds
+    match_threshold_high: float = float(os.getenv("MATCH_THRESHOLD_HIGH", "80"))
+    match_threshold_medium: float = float(os.getenv("MATCH_THRESHOLD_MEDIUM", "60"))
+
+    # Email / SMTP
+    smtp_host: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str = os.getenv("SMTP_USER", "")
+    smtp_pass: str = os.getenv("SMTP_PASS", "")
+    notification_email: str = os.getenv("NOTIFICATION_EMAIL", "")
+    sender_name: str = os.getenv("SENDER_NAME", "")
+
+    # API Authentication
+    barq_api_key: str = os.getenv("BARQ_API_KEY", "")
+
+    # External API Keys (loaded from .env)
     linkedin_email: str = os.getenv("LINKEDIN_EMAIL", "")
     linkedin_password: str = os.getenv("LINKEDIN_PASSWORD", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")

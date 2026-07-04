@@ -72,6 +72,7 @@ export default {
         'glow-purple': '0 0 20px rgba(168, 85, 247, 0.3)',
         'glow-green': '0 0 20px rgba(0, 255, 136, 0.3)',
         'glow-plasma': '0 0 20px rgba(255, 107, 53, 0.3)',
+        'glow-red': '0 0 20px rgba(255, 60, 60, 0.3)',
         'glass': '0 8px 32px rgba(0, 0, 0, 0.3)',
       },
       animation: {

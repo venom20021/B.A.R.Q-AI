@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NotificationCenter } from './NotificationCenter'
+import { PythonHealthBadge } from './PythonHealthBadge'
 
 interface SidebarProps {
   currentRoute: string
@@ -202,8 +203,7 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
                 exit={{ opacity: 0 }}
                 className="flex items-center gap-2"
               >
-                <div className="w-1.5 h-1.5 rounded-full bg-neural shadow-glow-green" />
-                <span className="text-hud font-share-tech text-dim-400">READY</span>
+                <PythonHealthBadge />
               </motion.div>
             )}
           </AnimatePresence>

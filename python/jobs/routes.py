@@ -3,10 +3,11 @@ FastAPI routes for job search automation.
 Uses database DAOs for all CRUD operations.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from . import JobScanner, JobEvaluator, JobApplier
-from database import jobs_dao, analytics_dao, db_connection, db_connection
+from .scanner import get_scan_progress, set_scan_error
+from database import jobs_dao, analytics_dao, db_connection
 
 router = APIRouter()
 
@@ -19,9 +20,8 @@ class ApproveRequest(BaseModel):
     job_id: str
 
 
-@router.post("/scan")
-async def scan_jobs():
-    """Trigger a scan of all job boards and store results in DB."""
+async def _run_scan():
+    """Background scan that runs in a separate asyncio task."""
     try:
         jobs = await scanner.scan_all(
             keywords=["software engineer", "developer", "full stack"],
@@ -33,12 +33,36 @@ async def scan_jobs():
             count += 1
 
         await analytics_dao.log_activity(
-            "job", "scan", f"Scanned {count} new job listings from {len(set(j.get('source_board', '') for j in jobs))} boards"
+            "job", "scan",
+            f"Scanned {count} new job listings from {len(set(j.get('source_board', '') or j.get('source', '') for j in jobs))} boards"
         )
-        return {"jobs_found": count, "message": f"Stored {count} jobs in database"}
     except Exception as e:
+        set_scan_error(f"Scan failed: {e}")
         await analytics_dao.log_activity("job", "scan_error", str(e), severity="error")
-        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scan")
+async def scan_jobs(background_tasks: BackgroundTasks):
+    """Trigger a scan of all job boards in the background with real-time progress tracking."""
+    # Don't start a new scan if one is already running
+    progress = get_scan_progress()
+    if progress["status"] in ("scanning", "evaluating"):
+        return {"status": "already_running", "message": "A scan is already in progress", "progress": progress}
+
+    # Reset and start scan as a background task
+    background_tasks.add_task(_run_scan)
+
+    return {
+        "status": "started",
+        "message": "Scan started in background",
+    }
+
+
+@router.get("/scan/progress")
+async def scan_progress():
+    """Get real-time progress of the current scan operation."""
+    progress = get_scan_progress()
+    return progress
 
 
 @router.get("/matches")

@@ -144,9 +144,21 @@ function MonitorRow({
 
 /* ─── Panel Component ───────────────────────────────────────────────── */
 
+interface QuickAction {
+  label: string
+  value: string
+  subtitle: string
+  /** Optional scan-progress data — renders a mini progress bar instead of the plain value */
+  progress?: { pct: number; phase: string }
+  /** Optional status indicator — renders a colored dot with status label */
+  status?: { active: boolean; label: string }
+  /** Optional action callback — renders a trigger button when idle */
+  onAction?: () => void
+}
+
 interface ArcMonitorPanelProps {
   side: 'left' | 'right'
-  quickActions?: { label: string; value: string; subtitle: string }[]
+  quickActions?: QuickAction[]
   weather?: {
     temp: number
     feels: number
@@ -254,15 +266,94 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
                 <div className="text-[6px] font-share-tech tracking-[0.15em] text-[#00E5FF]/35 uppercase mb-0.5">
                   {action.label}
                 </div>
-                <div
-                  className="text-sm font-orbitron font-bold tracking-wider"
-                  style={{ color: '#00E5FF', textShadow: '0 0 8px rgba(0,229,255,0.3)' }}
-                >
-                  {action.value}
-                </div>
-                <div className="text-[6px] font-share-tech text-[#00E5FF]/20 mt-0.5">
-                  {action.subtitle}
-                </div>
+
+                {/* Status indicator variant */}
+                {action.status ? (
+                  <div className="space-y-1">
+                    {/* Top row: value + status dot */}
+                    <div className="flex items-center justify-between">
+                      <div
+                        className="text-sm font-orbitron font-bold tracking-wider"
+                        style={{ color: '#00E5FF', textShadow: '0 0 8px rgba(0,229,255,0.3)' }}
+                      >
+                        {action.value}
+                      </div>
+                      {/* Status dot */}
+                      <div className="flex items-center gap-1">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${action.status.active ? 'animate-pulse' : ''}`}
+                          style={{
+                            backgroundColor: action.status.active ? '#00FF88' : '#4A5568',
+                            boxShadow: action.status.active ? '0 0 6px rgba(0,255,136,0.5)' : 'none',
+                          }}
+                        />
+                        <span
+                          className="text-[7px] font-share-tech tracking-wider uppercase"
+                          style={{ color: action.status.active ? '#00FF88' : '#4A5568' }}
+                        >
+                          {action.status.label}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-[6px] font-share-tech text-[#00E5FF]/20">
+                      {action.subtitle}
+                    </div>
+                  </div>
+                ) : /* Progress bar variant */
+                action.progress ? (
+                  <div className="space-y-1">
+                    <div
+                      className="text-sm font-orbitron font-bold tracking-wider"
+                      style={{ color: '#00E5FF', textShadow: '0 0 8px rgba(0,229,255,0.3)' }}
+                    >
+                      {action.value}
+                    </div>
+                    {/* Mini progress bar */}
+                    <div className="w-full h-1 bg-[#0A1A2A] rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        style={{
+                          width: `${Math.min(100, action.progress.pct)}%`,
+                          background: 'linear-gradient(90deg, #00E5FF, #6366F1, #A855F7)',
+                          boxShadow: '0 0 6px rgba(0,229,255,0.4)',
+                        }}
+                      />
+                    </div>
+                    <div className="text-[6px] font-share-tech text-[#00E5FF]/25 truncate">
+                      {action.progress.phase}
+                    </div>
+                  </div>
+                ) : (
+                  /* Default static value */
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div
+                        className="text-sm font-orbitron font-bold tracking-wider"
+                        style={{ color: '#00E5FF', textShadow: '0 0 8px rgba(0,229,255,0.3)' }}
+                      >
+                        {action.value}
+                      </div>
+                      {/* Action button */}
+                      {action.onAction && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            action.onAction!()
+                          }}
+                          className="text-[6px] font-share-tech tracking-wider uppercase px-1.5 py-0.5 rounded
+                            border border-[#00E5FF]/25 text-[#00E5FF]/60
+                            hover:bg-[#00E5FF]/10 hover:text-[#00E5FF] hover:border-[#00E5FF]/40
+                            transition-all duration-200"
+                        >
+                          SCAN NOW
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-[6px] font-share-tech text-[#00E5FF]/20 mt-0.5">
+                      {action.subtitle}
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>

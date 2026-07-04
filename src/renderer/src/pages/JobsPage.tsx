@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Search, Filter, Star, ExternalLink, CheckCircle, Clock, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Search, Filter, Star, ExternalLink, CheckCircle, Clock, Loader2, Activity } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 interface Job {
@@ -13,6 +13,22 @@ interface Job {
   postedDate: string
   status: 'new' | 'reviewing' | 'approved' | 'applied' | 'rejected'
   reasons: string[]
+}
+
+interface ScanProgress {
+  status: string
+  phase: string
+  phase_index: number
+  total_phases: number
+  progress_pct: number
+  boards_total: number
+  boards_scanned: number
+  boards_errors: number
+  jobs_found: number
+  jobs_evaluated: number
+  message: string
+  started_at: number | null
+  elapsed_seconds: number
 }
 
 const statusColors: Record<Job['status'], string> = {
@@ -29,12 +45,16 @@ const scoreColor = (score: number): string => {
   return 'text-dim-400 border-dim'
 }
 
+const phaseIcons = ['🌐', '🔍', '🧠', '✅']
+
 export function JobsPage(): JSX.Element {
   const [jobs, setJobs] = useState<Job[]>([])
   const [filter, setFilter] = useState<Job['status'] | 'all'>('all')
   const [sortBy, setSortBy] = useState<'match' | 'date'>('match')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
+  const [progress, setProgress] = useState<ScanProgress | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchJobs = useCallback(async () => {
     setLoading(true)
@@ -69,15 +89,80 @@ export function JobsPage(): JSX.Element {
     fetchJobs()
   }, [fetchJobs])
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
+
+  const startPolling = useCallback(() => {
+    // Clear any existing poll
+    if (pollRef.current) clearInterval(pollRef.current)
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const resp = await window.barq?.python.request('/jobs/scan/progress')
+        if (resp && typeof resp === 'object') {
+          const p = resp as unknown as ScanProgress
+          setProgress(p)
+
+          // Stop polling when complete or errored
+          if (p.status === 'complete') {
+            if (pollRef.current) clearInterval(pollRef.current)
+            pollRef.current = null
+            setScanning(false)
+            await fetchJobs()
+          } else if (p.status === 'error') {
+            if (pollRef.current) clearInterval(pollRef.current)
+            pollRef.current = null
+            setScanning(false)
+          }
+        }
+      } catch {
+        // poll failed — ignore, next tick will retry
+      }
+    }, 800)
+  }, [fetchJobs])
+
   const handleScan = async (): Promise<void> => {
     setScanning(true)
+    setProgress({
+      status: 'starting',
+      phase: 'Initializing scan...',
+      phase_index: 0,
+      total_phases: 4,
+      progress_pct: 0,
+      boards_total: 5,
+      boards_scanned: 0,
+      boards_errors: 0,
+      jobs_found: 0,
+      jobs_evaluated: 0,
+      message: 'Starting scan...',
+      started_at: Date.now() / 1000,
+      elapsed_seconds: 0,
+    })
+
     try {
       await window.barq?.python.request('/jobs/scan')
-      await fetchJobs()
+      // Start polling for progress
+      startPolling()
+
+      // Safety timeout: stop polling after 5 minutes
+      setTimeout(() => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+          setScanning(false)
+          fetchJobs()
+        }
+      }, 300_000)
     } catch {
-      // scan failed
+      setScanning(false)
+      setProgress(null)
+      // Fallback: try direct scan + refresh
+      await fetchJobs()
     }
-    setScanning(false)
   }
 
   const handleApprove = async (jobId: string): Promise<void> => {
@@ -92,6 +177,8 @@ export function JobsPage(): JSX.Element {
     .sort((a, b) =>
       sortBy === 'match' ? b.matchScore - a.matchScore : a.postedDate.localeCompare(b.postedDate)
     )
+
+  const isActiveScan = scanning && progress && (progress.status === 'scanning' || progress.status === 'evaluating' || progress.status === 'starting')
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -119,6 +206,99 @@ export function JobsPage(): JSX.Element {
           {scanning ? 'Scanning...' : 'Scan Now'}
         </button>
       </motion.div>
+
+      {/* Real-time Scan Progress Bar */}
+      {isActiveScan && progress && (
+        <motion.div
+          initial={{ opacity: 0, y: -10, height: 0 }}
+          animate={{ opacity: 1, y: 0, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
+          className="glass-card overflow-hidden"
+        >
+          <div className="p-4 space-y-3">
+            {/* Phase indicator */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{phaseIcons[progress.phase_index] || '🔍'}</span>
+                <span className="text-sm font-rajdhani font-semibold text-ghost">
+                  {progress.phase || 'Scanning...'}
+                </span>
+              </div>
+              <span className="text-xs font-share-tech text-cyan-300 ml-auto">
+                {progress.progress_pct}%
+              </span>
+            </div>
+
+            {/* Progress bar */}
+            <div className="w-full h-2 bg-void-800/60 rounded-full overflow-hidden">
+              <motion.div
+                className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-blue-500 to-purple-500"
+                initial={{ width: 0 }}
+                animate={{ width: `${progress.progress_pct}%` }}
+                transition={{ duration: 0.3, ease: 'easeOut' }}
+              />
+            </div>
+
+            {/* Status message */}
+            <div className="flex items-center gap-3 text-xs font-exo text-dim-400">
+              <Activity className="w-3 h-3 text-cyan-400 animate-pulse" />
+              <span className="flex-1">{progress.message}</span>
+              <span className="text-dim-500 font-share-tech whitespace-nowrap">
+                {progress.elapsed_seconds}s
+              </span>
+            </div>
+
+            {/* Board stats */}
+            <div className="flex items-center gap-4 text-xs font-share-tech text-dim-500">
+              <span>
+                Boards: <span className="text-ghost">{progress.boards_scanned}/{progress.boards_total}</span>
+              </span>
+              {progress.boards_errors > 0 && (
+                <span className="text-red-400">
+                  {progress.boards_errors} error{progress.boards_errors > 1 ? 's' : ''}
+                </span>
+              )}
+              <span>
+                Jobs found: <span className="text-neural">{progress.jobs_found}</span>
+              </span>
+              {progress.jobs_evaluated > 0 && (
+                <span>
+                  Evaluated: <span className="text-plasma">{progress.jobs_evaluated}</span>
+                </span>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Scan Complete Banner */}
+      {progress?.status === 'complete' && !scanning && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="glass-card border border-neural/20"
+        >
+          <div className="p-4 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-neural/20 flex items-center justify-center">
+              <CheckCircle className="w-4 h-4 text-neural" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-rajdhani font-semibold text-neural">
+                Scan Complete
+              </p>
+              <p className="text-xs font-exo text-dim-400">
+                {progress.message} — took {progress.elapsed_seconds}s
+              </p>
+            </div>
+            <button
+              onClick={() => setProgress(null)}
+              className="btn-ghost-cyan text-xs"
+            >
+              Dismiss
+            </button>
+          </div>
+        </motion.div>
+      )}
 
       {/* Filters */}
       <motion.div
