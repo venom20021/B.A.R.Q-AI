@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 
 /* ─── Theme Colors ───────────────────────────────────────────────────── */
 
@@ -121,7 +121,7 @@ interface ArcReactorProps {
   theme?: 'cyan' | 'gold'
 }
 
-export function ArcReactor({
+export const ArcReactor = memo(function ArcReactor({
   fullscreen = false,
   className = '',
   theme = 'cyan',
@@ -215,7 +215,7 @@ export function ArcReactor({
     }))
 
     // Reactor geometry (responsive to canvas size)
-    const getReactorSize = (): number => Math.min(w, h) * 0.28
+    const getReactorSize = (): number => Math.min(w, h) * 0.266
     const getCenterX = (): number => w / 2
     const getCenterY = (): number => h * 0.42
 
@@ -529,10 +529,20 @@ export function ArcReactor({
       ctx.fillStyle = outerGlow2
       ctx.fill()
 
-      // ── BARQ Text below reactor ──
-      const textY = cy + ringRadius + ringWidth * 0.5 + 50
+      // ── Subtitle between reactor and BARQ text ──
+      const textY = cy + ringRadius + ringWidth * 0.5 + 30
       const textGlowPulse = Math.sin(timestamp * 0.001) * 0.3 + 0.7
 
+      ctx.save()
+      ctx.font = `${Math.round(ringRadius * 0.08)}px "Share Tech Mono", monospace`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'top'
+      ctx.fillStyle = `rgba(${colors.plasmaRgb}, ${0.4 * textGlowPulse})`
+      ctx.fillText('ARC REACTOR · ONLINE', cx, textY)
+      ctx.restore()
+
+      // ── BARQ Text below reactor ──
+      const barqY = textY + Math.round(ringRadius * 0.2)
       ctx.save()
       ctx.shadowColor = `rgba(${colors.plasmaRgb}, ${0.6 * textGlowPulse})`
       ctx.shadowBlur = 30 + Math.sin(timestamp * 0.0015) * 10
@@ -540,21 +550,12 @@ export function ArcReactor({
       ctx.textAlign = 'center'
       ctx.textBaseline = 'top'
       ctx.fillStyle = colors.core
-      ctx.fillText('BARQ', cx, textY)
+      ctx.fillText('BARQ', cx, barqY)
       ctx.shadowBlur = 0
 
       ctx.font = `bold ${Math.round(ringRadius * 0.45)}px "Orbitron", sans-serif`
       ctx.fillStyle = `rgba(${colors.plasmaRgb}, ${0.4 * textGlowPulse})`
-      ctx.fillText('BARQ', cx, textY)
-      ctx.restore()
-
-      // ── Subtitle ──
-      ctx.save()
-      ctx.font = `${Math.round(ringRadius * 0.1)}px "Share Tech Mono", monospace`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'top'
-      ctx.fillStyle = `rgba(${colors.plasmaRgb}, ${0.3 * textGlowPulse})`
-      ctx.fillText('ARC REACTOR · ONLINE', cx, textY + Math.round(ringRadius * 0.55))
+      ctx.fillText('BARQ', cx, barqY)
       ctx.restore()
 
       animRef.current = requestAnimationFrame(animate)
@@ -598,4 +599,4 @@ export function ArcReactor({
       )}
     </div>
   )
-}
+})

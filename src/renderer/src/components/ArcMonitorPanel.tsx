@@ -180,7 +180,7 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.6, delay: staggerDelay, ease: 'easeOut' }}
       className={`
-        w-[220px] flex-shrink-0 flex flex-col gap-2
+        w-[260px] flex-shrink-0 flex flex-col gap-2
         ${side === 'left' ? 'ml-4' : 'mr-4'}
       `}
     >

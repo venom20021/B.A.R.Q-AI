@@ -55,6 +55,7 @@ export default {
         },
       },
       fontFamily: {
+        inter: ['Inter', 'sans-serif'],
         orbitron: ['Orbitron', 'sans-serif'],
         rajdhani: ['Rajdhani', 'sans-serif'],
         exo: ['Exo 2', 'sans-serif'],

@@ -4,9 +4,7 @@ import {
 } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Sidebar } from './components/Sidebar'
-import { TitleBar } from './components/TitleBar'
-
-import { QuickOverlay } from './components/QuickOverlay'
+import { QuickOverlay} from './components/QuickOverlay'
 import { ParticleField } from './components/ParticleField'
 import { StartupSequence } from './components/StartupSequence'
 import { DashboardPage } from './pages/DashboardPage'
@@ -159,14 +157,12 @@ function AppContent(): JSX.Element {
 
       {/* Main layout */}
       <div className="relative z-10 h-screen flex flex-col">
-        {/* Title Bar */}
-        <TitleBar />
-
         {/* Content area: Sidebar + Main */}
         <div className="flex-1 flex overflow-hidden">
+          {/* Sidebar is fixed-position, add left padding to main content */}
           <Sidebar currentRoute={location.pathname} onNavigate={navigate} />
 
-          <main className="flex-1 flex flex-col overflow-hidden">
+          <main className="flex-1 flex flex-col overflow-hidden ml-16">
             <div className="flex-1 overflow-y-auto relative">
               {/* Scanline overlay */}
               <div

@@ -70,11 +70,19 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
     })
   }
 
+  // Use transform for expand/collapse to avoid layout reflow
+  const sidebarWidth = 64 // w-16 in px
+  const expandedWidth = 224 // w-56 in px
+
   return (
     <aside
-      className={`relative h-full flex flex-col bg-void-800/90 backdrop-blur-xl border-r border-cyan-500/10 transition-all duration-200 z-40 ${
-        expanded ? 'w-56' : 'w-16'
+      className={`fixed left-0 top-0 h-full flex flex-col bg-void-800/90 backdrop-blur-xl border-r border-cyan-500/10 transition-transform duration-200 ease-out z-40 ${
+        expanded ? 'shadow-2xl' : ''
       }`}
+      style={{
+        width: `${expandedWidth}px`,
+        transform: expanded ? 'translateX(0)' : `translateX(-${expandedWidth - sidebarWidth}px)`,
+      }}
       onMouseEnter={() => setExpanded(true)}
       onMouseLeave={() => setExpanded(false)}
     >
@@ -82,7 +90,7 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
       <div className="absolute left-0 top-0 bottom-0 w-px bg-gradient-to-b from-transparent via-cyan-400/30 to-transparent" />
 
       {/* Logo */}
-      <div className={`h-10 flex items-center border-b border-cyan-500/10 ${expanded ? 'px-4 justify-start' : 'justify-center'}`}>
+      <div className={`h-10 flex items-center border-b border-cyan-500/10 ${expanded ? 'px-4 justify-start' : 'px-2 justify-end'}`}>
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center shadow-glow-cyan-sm">
             <Mic className="w-3.5 h-3.5 text-[#0A0A0F]" />
@@ -143,7 +151,7 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
                       <button
                         onClick={() => onNavigate(item.path)}
                         className={`w-full flex items-center gap-3 rounded-lg transition-all duration-150 group ${
-                          expanded ? 'px-3 py-2' : 'px-2 py-2 justify-center'
+                          expanded ? 'px-3 py-2' : 'px-2 py-2 justify-end'
                         } ${
                           isActive
                             ? 'bg-cyan-500/10 text-cyan-300'
@@ -185,7 +193,7 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
 
       {/* Bottom status */}
       <div className="p-3 border-t border-cyan-500/8">
-        <div className={`flex items-center ${expanded ? 'justify-between' : 'justify-center'}`}>
+        <div className={`flex items-center ${expanded ? 'justify-between' : 'justify-end gap-2'}`}>
           <AnimatePresence>
             {expanded && (
               <motion.div

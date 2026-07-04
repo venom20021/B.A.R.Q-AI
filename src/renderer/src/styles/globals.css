@@ -10,7 +10,7 @@
   }
 
   body {
-    @apply bg-[#0A0A0F] text-[#E8E8F0] font-exo antialiased;
+    @apply bg-[#000000] text-[#E8E8F0] font-inter antialiased;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     user-select: none;
@@ -82,11 +82,11 @@
   /* ─── Dark Luxury Glass (Electric Cyan) ──────────────────────────────── */
 
   .luxury-glass {
-    @apply bg-[#0D0D15]/90 backdrop-blur-3xl border border-[#00E5FF]/10 shadow-glass;
+    @apply bg-[#000000]/90 backdrop-blur-3xl border border-[#00E5FF]/10 shadow-glass;
   }
 
   .luxury-glass-strong {
-    @apply bg-[#030305]/95 backdrop-blur-3xl border shadow-glass;
+    @apply bg-[#000000]/95 backdrop-blur-3xl border shadow-glass;
     border-color: rgba(0, 229, 255, 0.08);
   }
 

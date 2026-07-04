@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 
 /* ─── Wolf Head Geometry ─────────────────────────────────────────────── */
 
@@ -102,7 +102,7 @@ interface GuardianWolfProps {
   size?: number
 }
 
-export function GuardianWolf({
+export const GuardianWolf = memo(function GuardianWolf({
   fullscreen = false,
   className = '',
   theme = 'cyan',
@@ -170,13 +170,17 @@ export function GuardianWolf({
     const colors = THEMES[theme] ?? THEMES.cyan
     const cx = w / 2
     const cy = h / 2
-    const scale = Math.min(w, h) * 0.35
+    // Increase wolf size by 10% (0.35 → 0.385)
+    const scale = Math.min(w, h) * 0.385
 
     // Transform wolf point from normalized to canvas coordinates
     const transform = (p: Point): { x: number; y: number } => ({
       x: cx + p.x * scale,
       y: cy + p.y * scale,
     })
+
+    // Define the outline connection order for the wolf head
+    const outlineOrder = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 17, 18]
 
     // Scatter particles (float around the wolf)
     const wolfParticles: {
@@ -201,6 +205,10 @@ export function GuardianWolf({
       pulse: Math.random() * Math.PI * 2,
     }))
 
+    // Animated connecting nodes — each node connects to the next in sequence
+    // with a moving 'draw head' effect
+    let connectProgress = 0
+
     const animate = (timestamp: number): void => {
       const dt = timestamp - timeRef.current
       timeRef.current = timestamp
@@ -216,17 +224,78 @@ export function GuardianWolf({
       const breath = Math.sin(timestamp * 0.001) * 0.015 + 1
       const pulsePhase = Math.sin(timestamp * 0.002) * 0.5 + 0.5
 
+      // Animated connection progress — cycles continuously
+      connectProgress += delta * 0.003
+      const progress = Math.sin(connectProgress) * 0.5 + 0.5
+
       ctx.save()
       ctx.translate(cx, cy)
       ctx.scale(breath, breath)
       ctx.translate(-cx, -cy)
 
-      // ── Draw seam lines (cybernetic glow paths) ──
+      // Pre-compute transformed head points
+      const headPts = WOLF_HEAD.map((p) => transform(p))
+      const outlinePts = outlineOrder.map((idx) => headPts[idx])
+      const totalSegments = outlinePts.length
+
+      // ── Draw animated connecting lines: segments light up progressively ──
+      // The line 'draws' itself around the wolf head, then fades, cycling forever
+      const visibleCount = Math.floor(progress * totalSegments * 1.3) % (totalSegments + 3)
+
+      for (let i = 0; i < totalSegments - 1; i++) {
+        const from = outlinePts[i]
+        const to = outlinePts[(i + 1) % totalSegments]
+
+        // Calculate how 'lit' this segment is based on distance from the draw head
+        const distFromHead = Math.abs(i - visibleCount)
+        const segAlpha = distFromHead <= 2
+          ? Math.max(0, 0.8 - distFromHead * 0.35)
+          : 0.08 + Math.sin(timestamp * 0.002 + i * 0.5) * 0.04 + 0.04
+
+        // Glow layer
+        ctx.beginPath()
+        ctx.moveTo(from.x, from.y)
+        ctx.lineTo(to.x, to.y)
+        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${segAlpha * 0.5})`
+        ctx.lineWidth = 3 + (distFromHead <= 2 ? (2 - distFromHead) * 2 : 0)
+        ctx.stroke()
+
+        // Core line
+        ctx.beginPath()
+        ctx.moveTo(from.x, from.y)
+        ctx.lineTo(to.x, to.y)
+        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${segAlpha})`
+        ctx.lineWidth = distFromHead <= 2 ? 2 : 0.8
+        ctx.stroke()
+
+        // Bright nodes at connection points
+        if (segAlpha > 0.3) {
+          ctx.beginPath()
+          ctx.arc(from.x, from.y, 2 + segAlpha * 1.5, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${colors.seamGlow}, ${segAlpha * 0.6})`
+          ctx.fill()
+        }
+      }
+
+      // Close the final connection
+      {
+        const last = outlinePts[totalSegments - 1]
+        const first = outlinePts[0]
+        ctx.beginPath()
+        ctx.moveTo(last.x, last.y)
+        ctx.lineTo(first.x, first.y)
+        const closeAlpha = 0.08 + Math.sin(timestamp * 0.002 + totalSegments * 0.5) * 0.04 + 0.04
+        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${closeAlpha})`
+        ctx.lineWidth = 0.6
+        ctx.stroke()
+      }
+
+      // ── Draw seam lines (cybernetic glow paths — subtle background) ──
       SEAM_LINES.forEach((seam, idx) => {
         const seamPulse = Math.sin(timestamp * 0.0015 + idx * 0.8) * 0.3 + 0.7
 
         ctx.beginPath()
-        const pts = seam.points.map((i) => transform(WOLF_HEAD[i]))
+        const pts = seam.points.map((i) => headPts[i])
         const extra = seam.extraPoints?.map((p) => transform(p)) ?? []
 
         ctx.moveTo(pts[0].x, pts[0].y)
@@ -237,58 +306,10 @@ export function GuardianWolf({
           ctx.lineTo(ep.x, ep.y)
         }
 
-        // Outer glow
-        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${0.08 * seamPulse})`
-        ctx.lineWidth = 4
-        ctx.stroke()
-
-        // Main seam line
-        ctx.beginPath()
-        ctx.moveTo(pts[0].x, pts[0].y)
-        for (let i = 1; i < pts.length; i++) {
-          ctx.lineTo(pts[i].x, pts[i].y)
-        }
-        for (const ep of extra) {
-          ctx.lineTo(ep.x, ep.y)
-        }
-        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${0.3 * seamPulse})`
-        ctx.lineWidth = 1.5
-        ctx.stroke()
-
-        // Bright core
-        ctx.beginPath()
-        ctx.moveTo(pts[0].x, pts[0].y)
-        for (let i = 1; i < pts.length; i++) {
-          ctx.lineTo(pts[i].x, pts[i].y)
-        }
-        for (const ep of extra) {
-          ctx.lineTo(ep.x, ep.y)
-        }
-        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${0.6 * seamPulse})`
-        ctx.lineWidth = 0.5
+        ctx.strokeStyle = `rgba(${colors.seamGlow}, ${0.15 * seamPulse})`
+        ctx.lineWidth = 1
         ctx.stroke()
       })
-
-      // ── Draw head outline (angular geometric silhouette) ──
-      ctx.beginPath()
-      const headPts = WOLF_HEAD.map((p) => transform(p))
-      ctx.moveTo(headPts[0].x, headPts[0].y)
-      // Connect in order: left ear outer → left ear inner → left brow → snout → right brow → right ear inner → right ear outer
-      const outlineOrder = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 17, 18]
-      for (const idx of outlineOrder) {
-        ctx.lineTo(headPts[idx].x, headPts[idx].y)
-      }
-      ctx.closePath()
-
-      // Glow behind outline
-      ctx.strokeStyle = `rgba(${colors.seamGlow}, 0.1)`
-      ctx.lineWidth = 6
-      ctx.stroke()
-
-      // Main outline
-      ctx.strokeStyle = `rgba(${colors.seamGlow}, 0.25)`
-      ctx.lineWidth = 1.5
-      ctx.stroke()
 
       // ── Eyes ──
       const eyeLeft = { x: cx - 0.22 * scale, y: cy - 0.35 * scale }
@@ -318,7 +339,6 @@ export function GuardianWolf({
       // Left eye pupil (sharp, angular)
       ctx.beginPath()
       const eyeSize = 2.5 + pulsePhase * 1.5
-      // Diamond-shaped pupil
       ctx.moveTo(eyeLeft.x, eyeLeft.y - eyeSize)
       ctx.lineTo(eyeLeft.x + eyeSize * 0.7, eyeLeft.y)
       ctx.lineTo(eyeLeft.x, eyeLeft.y + eyeSize)
@@ -375,7 +395,6 @@ export function GuardianWolf({
           p.alpha = 0.15 + Math.random() * 0.35
         }
 
-        // ── Hover effect ──
         const dx = p.x - mx
         const dy = p.y - my
         const dist = Math.sqrt(dx * dx + dy * dy)
@@ -392,7 +411,6 @@ export function GuardianWolf({
         const alpha = Math.min(p.alpha * p.life * flicker * hoverBoost, 1)
         const sizeBoost = p.size * (1 + (hoverBoost - 1) * 0.5)
 
-        // Glow
         const glowRad = sizeBoost * 3 * hoverBoost
         const sGlow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowRad)
         sGlow.addColorStop(0, `rgba(${colors.seamGlow}, ${alpha * Math.min(0.4 * hoverBoost, 1)})`)
@@ -403,13 +421,11 @@ export function GuardianWolf({
         ctx.fillStyle = sGlow
         ctx.fill()
 
-        // Core dot
         ctx.beginPath()
         ctx.arc(p.x, p.y, sizeBoost, 0, Math.PI * 2)
         ctx.fillStyle = `rgba(${colors.seamGlow}, ${alpha * 0.8})`
         ctx.fill()
 
-        // Extra bright ring when hovered
         if (dist < HOVER_DIST) {
           ctx.beginPath()
           ctx.arc(p.x, p.y, sizeBoost * 2, 0, Math.PI * 2)
@@ -468,4 +484,4 @@ export function GuardianWolf({
       )}
     </div>
   )
-}
+})
