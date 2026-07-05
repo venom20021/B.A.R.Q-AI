@@ -9,11 +9,19 @@ interface BarqAPI {
     start: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     stop: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     command: (text: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    setSensitivity: (level: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    setTtsVoice: (voice: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    history: (limit?: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
   jobs: {
     scan: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     matches: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     approve: (jobId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    responseAnalytics: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    recordResponse: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    followupCandidates: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    scheduleFollowups: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    sendFollowup: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
   social: {
     trends: () => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -35,6 +43,51 @@ interface BarqAPI {
     test: (channel: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     startPolling: () => void
     stopPolling: () => void
+  }
+  memory: {
+    get: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    store: (key: string, value: string, category?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    forget: (key: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    search: (query: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  notes: {
+    get: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    create: (title: string, content: string, tags?: string[]) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    delete: (id: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  documents: {
+    powerpoint: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    excel: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    pdf: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  system: {
+    status: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    launchApp: (appName: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    closeApp: (appName: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    dropZone: {
+      listRules: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+      createRule: (rule: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      deleteRule: (ruleIndex: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      evaluate: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    }
+    sort: {
+      preview: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      execute: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      undo: (undoId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    }
+    git: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    packageManager: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    monitors: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  desktop: {
+    ocr: (region?: number[]) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    wallpaper: (description: string, source?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  web: {
+    browse: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    stocks: (ticker: string, period?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    weather: (city: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    generateImage: (prompt: string, style?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
   onNavigate: (callback: (route: string) => void) => void
   onVoiceToggle: (callback: () => void) => void

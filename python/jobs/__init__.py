@@ -13,9 +13,11 @@ from .matcher import JobMatcher
 from .optimizer import ResumeOptimizer
 from .cover_letter import CoverLetterGenerator
 from .cold_mail import ColdEmailWriter
+from .response_tracker import ResponseTracker, FollowUpAutomation
 
 __all__ = [
     "JobScanner", "JobEvaluator", "JobApplier",
     "JobMatcher", "ResumeOptimizer", "CoverLetterGenerator", "ColdEmailWriter",
+    "ResponseTracker", "FollowUpAutomation",
     "parse_resume", "clear_parse_cache",
 ]

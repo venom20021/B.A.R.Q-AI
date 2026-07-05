@@ -1,12 +1,84 @@
 import { app, BrowserWindow, shell, globalShortcut } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { createTray } from './tray'
+import { createTray, setAppIsQuitting } from './tray'
 import { registerIpcHandlers } from './ipc'
 import { PythonSidecar } from './python-bridge'
 
 let mainWindow: BrowserWindow | null = null
 let pythonSidecar: PythonSidecar | null = null
+let isQuitting = false
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Wake Receiver — Lightweight HTTP server for Python wake word detection
+// Listens on port 8112 for POST /wake to restore and focus the window
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import * as http from 'http'
+
+const WAKE_PORT = 8112
+let wakeServer: http.Server | null = null
+
+function startWakeReceiver(): void {
+  wakeServer = http.createServer((req, res) => {
+    // CORS headers for local Python requests
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    if (req.method === 'POST' && req.url === '/wake') {
+      let body = ''
+      req.on('data', (chunk: string) => { body += chunk })
+      req.on('end', () => {
+        try {
+          const win = BrowserWindow.getAllWindows()[0]
+          if (win) {
+            if (win.isMinimized()) win.restore()
+            if (!win.isVisible()) win.show()
+            win.focus()
+            console.log('[WakeReceiver] Window restored and focused via /wake')
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ status: 'ok', message: 'BARQ window focused' }))
+        } catch (err) {
+          console.error('[WakeReceiver] Error handling /wake:', err)
+          res.writeHead(500)
+          res.end(JSON.stringify({ status: 'error', message: String(err) }))
+        }
+      })
+    } else {
+      res.writeHead(404)
+      res.end('Not found')
+    }
+  })
+
+  wakeServer.listen(WAKE_PORT, '127.0.0.1', () => {
+    console.log(`[WakeReceiver] Listening for wake word on http://127.0.0.1:${WAKE_PORT}/wake`)
+  })
+
+  wakeServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[WakeReceiver] Port ${WAKE_PORT} in use — wake listener unavailable`)
+    } else {
+      console.error('[WakeReceiver] Server error:', err)
+    }
+  })
+}
+
+function stopWakeReceiver(): void {
+  if (wakeServer) {
+    wakeServer.close()
+    wakeServer = null
+    console.log('[WakeReceiver] Stopped')
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -34,7 +106,7 @@ function createWindow(): void {
 
   mainWindow.on('close', (event) => {
     // Hide to tray instead of closing
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault()
       mainWindow?.hide()
     }
@@ -62,6 +134,15 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // ─── Auto-start on OS login ────────────────────────────────────────
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    path: app.getPath('exe'),
+  })
+
+  // ─── Start wake receiver HTTP server ───────────────────────────────
+  startWakeReceiver()
+
   // Register global shortcut: Ctrl+Shift+I — Quick Overlay
   globalShortcut.register('CommandOrControl+Shift+I', () => {
     const win = BrowserWindow.getAllWindows()[0]
@@ -81,7 +162,15 @@ app.whenReady().then(async () => {
   pythonSidecar = new PythonSidecar()
   await pythonSidecar.start()
 
-  // Create the main window
+  // Auto-start wake word detection in Python sidecar
+  try {
+    await pythonSidecar.request('/voice/start', {}, 5000)
+    console.log('[Main] Wake word detection auto-started on Python sidecar')
+  } catch (err) {
+    console.warn('[Main] Could not auto-start wake detection:', err)
+  }
+
+  // Create the main window (starts hidden if closed previously)
   createWindow()
 
   // Create system tray
@@ -104,17 +193,12 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
-  app.isQuitting = true
+  isQuitting = true
+  setAppIsQuitting(true)
+  // Stop wake receiver
+  stopWakeReceiver()
   // Cleanup Python sidecar
   if (pythonSidecar) {
     await pythonSidecar.stop()
   }
 })
-
-// Global flag to track quit intent
-declare module 'electron' {
-  interface App {
-    isQuitting?: boolean
-  }
-}
-app.isQuitting = false

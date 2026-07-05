@@ -21,11 +21,13 @@ class Settings(BaseSettings):
     # Voice
     wake_word: str = "hey barq"
     vosk_model_path: str = os.getenv("VOSK_MODEL_PATH", "models/vosk")
+    vosk_hindi_model_path: str = os.getenv("VOSK_HINDI_MODEL_PATH", "models/vosk-hi")
     whisper_model: str = os.getenv("WHISPER_MODEL", "base")
+    voice_language: str = os.getenv("VOICE_LANGUAGE", "en")  # "en" or "hi"
 
     # LLM
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
     # Job Search
     job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))
@@ -52,7 +54,7 @@ class Settings(BaseSettings):
     notification_email: str = os.getenv("NOTIFICATION_EMAIL", "")
 
     # Career / Jobs
-    career_ops_path: str = os.getenv("CAREER_OPS_PATH", "C:\\Users\\pc\\career-ops")
+    career_ops_path: str = os.getenv("CAREER_OPS_PATH", os.path.join(os.path.expanduser("~"), "career-ops"))
     resume_path: str = os.getenv("RESUME_PATH", "")
     barq_port: int = int(os.getenv("BARQ_PORT", "8111"))
 

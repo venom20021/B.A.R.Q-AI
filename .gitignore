@@ -1,17 +1,60 @@
+# Dependencies
 node_modules/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# Environment
 .env
+.env.local
+
+# Build output
 out/
 dist/
-.DS_Store
-*.log
 *.tsbuildinfo
-nul
+
+# OS files
+.DS_Store
+Desktop.ini
+Thumbs.db
+
+# Logs
+*.log
 
 # Python generated files
 python/barq.db
+python/barq.db-shm
+python/barq.db-wal
 python/lancedb/
 python/__pycache__/
 python/**/__pycache__/
 python/*.db
+python/generated/
+python/wallpapers/
+python/data/audio/
+python/temp_screenshot.png
+python/notes.json
+
+# Vosk speech models (~50MB each, downloaded per-user)
+python/models/
+
+# Python compiled artifacts
+python/*.egg-info/
+python/dist/
+python/build/
+
+# VS Code
+.vscode/
+.idea/
+
+# Windows specific
+nul
+
+# Electron builder
+*.dmg
+*.exe
+*.AppImage

@@ -359,11 +359,108 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 """
 
+# ─── New v2.0 Tables ─────────────────────────────────────────────────────────
+
+CREATE_SCHEDULED_TASKS = """
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type TEXT NOT NULL
+        CHECK (task_type IN (
+            'job_scan', 'trend_check', 'content_post', 'analytics_snapshot',
+            'digest_email', 'custom'
+        )),
+    name TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT '{}',
+    cron_expression TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run TEXT,
+    next_run TEXT,
+    total_runs INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (last_status IN ('pending', 'running', 'completed', 'failed')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_WIDGETS = """
+CREATE TABLE IF NOT EXISTS widgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    widget_type TEXT NOT NULL
+        CHECK (widget_type IN ('timer', 'stock_ticker', 'calculator', 'weather',
+                               'notes', 'clock', 'custom')),
+    config TEXT NOT NULL DEFAULT '{}',
+    position_x INTEGER NOT NULL DEFAULT 100,
+    position_y INTEGER NOT NULL DEFAULT 100,
+    width INTEGER NOT NULL DEFAULT 300,
+    height INTEGER NOT NULL DEFAULT 200,
+    visible INTEGER NOT NULL DEFAULT 1,
+    z_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_FILE_INDEX = """
+CREATE TABLE IF NOT EXISTS file_index (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_type TEXT NOT NULL DEFAULT '',
+    file_size_bytes INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    embedding BLOB,
+    tags TEXT NOT NULL DEFAULT '[]',
+    last_indexed TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_COMPANY_RESEARCH = """
+CREATE TABLE IF NOT EXISTS company_research (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company TEXT NOT NULL UNIQUE,
+    summary TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    industry TEXT NOT NULL DEFAULT '',
+    headquarters TEXT NOT NULL DEFAULT '',
+    founded_year INTEGER,
+    employee_count INTEGER DEFAULT 0,
+    funding_total REAL DEFAULT 0.0,
+    funding_rounds TEXT NOT NULL DEFAULT '[]',
+    glassdoor_rating REAL DEFAULT 0.0
+        CHECK (glassdoor_rating >= 0 AND glassdoor_rating <= 5),
+    linkedin_url TEXT NOT NULL DEFAULT '',
+    crunchbase_url TEXT NOT NULL DEFAULT '',
+    tech_stack TEXT NOT NULL DEFAULT '[]',
+    recent_news TEXT NOT NULL DEFAULT '[]',
+    competitors TEXT NOT NULL DEFAULT '[]',
+    researched_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_NOTES = """
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    pinned INTEGER NOT NULL DEFAULT 0,
+    color TEXT NOT NULL DEFAULT 'default',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 # ─── Aggregate schema creation ───────────────────────────────────────────────
 
 ALL_TABLES = [
     ("user_settings", CREATE_USER_SETTINGS),
     ("user_profiles", CREATE_USER_PROFILES),
+    ("notes", CREATE_NOTES),
     ("job_listings", CREATE_JOB_LISTINGS),
     ("job_evaluations", CREATE_JOB_EVALUATIONS),
     ("applications", CREATE_APPLICATIONS),
@@ -378,6 +475,10 @@ ALL_TABLES = [
     ("voice_commands", CREATE_VOICE_COMMANDS),
     ("activity_log", CREATE_ACTIVITY_LOG),
     ("notifications", CREATE_NOTIFICATIONS),
+    ("scheduled_tasks", CREATE_SCHEDULED_TASKS),
+    ("widgets", CREATE_WIDGETS),
+    ("file_index", CREATE_FILE_INDEX),
+    ("company_research", CREATE_COMPANY_RESEARCH),
 ]
 
 
@@ -409,13 +510,31 @@ async def seed_defaults(db):
     default_settings = [
         ("wake_word", "hey barq", "voice"),
         ("whisper_model", "base", "voice"),
+        ("tts_voice", "en-US-JennyNeural", "voice"),
+        ("wake_word_sensitivity", "medium", "voice"),
+        ("wake_sound_enabled", "true", "voice"),
+        ("command_sound_enabled", "true", "voice"),
         ("job_scan_interval", "6", "jobs"),
         ("match_threshold", "0.7", "jobs"),
+        ("match_threshold_high", "80", "jobs"),
+        ("match_threshold_medium", "60", "jobs"),
+        ("preferred_location", "remote", "jobs"),
+        ("auto_apply_enabled", "false", "jobs"),
         ("trend_check_interval", "6", "social"),
+        ("default_platforms", "youtube,tiktok", "social"),
+        ("auto_post_enabled", "false", "social"),
         ("daily_digest_enabled", "true", "notifications"),
         ("telegram_enabled", "false", "notifications"),
+        ("email_enabled", "false", "notifications"),
         ("desktop_notifications", "true", "notifications"),
+        ("job_match_alerts", "true", "notifications"),
+        ("content_alerts", "true", "notifications"),
         ("local_processing_only", "true", "privacy"),
+        ("analytics_opt_in", "false", "privacy"),
+        ("crash_reporting", "false", "privacy"),
+        ("accent_color", "cyan", "appearance"),
+        ("theme", "dark", "appearance"),
+        ("animations_enabled", "true", "appearance"),
     ]
 
     for key, value, category in default_settings:
@@ -427,6 +546,22 @@ async def seed_defaults(db):
             await db.execute(
                 "INSERT INTO user_settings (key, value, category) VALUES (?, ?, ?)",
                 (key, value, category),
+            )
+
+    # Seed default scheduled tasks
+    cursor = await db.execute("SELECT COUNT(*) as count FROM scheduled_tasks")
+    row = await cursor.fetchone()
+    if row and row[0] == 0:
+        default_tasks = [
+            ("job_scan", "Auto Job Scan", '{"keywords": ["software engineer", "developer", "full stack"], "location": "remote"}', "0 */6 * * *"),
+            ("trend_check", "Trend Check", '{"niche": "technology"}', "0 */6 * * *"),
+            ("analytics_snapshot", "Daily Analytics", '{}', "0 0 * * *"),
+            ("digest_email", "Daily Digest", '{}', "0 8 * * *"),
+        ]
+        for task_type, name, config, cron in default_tasks:
+            await db.execute(
+                "INSERT INTO scheduled_tasks (task_type, name, config, cron_expression) VALUES (?, ?, ?, ?)",
+                (task_type, name, config, cron),
             )
 
     await db.commit()

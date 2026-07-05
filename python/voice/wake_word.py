@@ -1,46 +1,421 @@
 """
 Wake word detection using Vosk offline speech recognition.
+Sends HTTP POST to Electron's /wake endpoint when triggered,
+so the app window restores and focuses even when running in background.
+Supports bilingual English + Hindi wake words.
 """
 
+import array
 import json
-import queue
+import math
+import re
+import struct
 import threading
 from typing import Callable, Optional
+import urllib.request
+import urllib.error
 
 from config import get_settings
 
 
-class WakeWordDetector:
-    """Detects the wake word "Hey BARQ" using Vosk."""
+# Electron wake receiver endpoint — spawned as a lightweight HTTP server
+ELECTRON_WAKE_URL = "http://127.0.0.1:8112/wake"
 
-    def __init__(self, on_wake_word: Optional[Callable] = None):
+# Reply sound configuration
+_REPLY_SOUND_SAMPLE_RATE = 22050
+_REPLY_SOUND_DURATION_MS = 300  # ~300ms chime
+
+# User-persisted sound preferences (loaded/saved via /voice/sound-settings)
+# These are set by routes.py on startup and when toggled from the UI
+_wake_sound_enabled: bool = True
+_command_sound_enabled: bool = True
+
+# ─── Hindi wake word phrases ────────────────────────────────────────────────
+
+HINDI_WAKE_PHRASES = [
+    # Devanagari script variations
+    r"\bनमस्ते बार्क\b",
+    r"\bहे बार्क\b",
+    r"\bजागो बार्क\b",
+    # Transliterated (English script but Hindi words)
+    r"\bnamaste ba[r]+k\b",
+    r"\bhey ba[r]+k\b",
+    r"\bjaago ba[r]+k\b",
+]
+
+# ─── Sound profile presets ────────────────────────────────────────────────
+# Each preset: (hz1, hz2, split_ratio, duration_ms, volume)
+# split_ratio = where the tone transition happens (0.0-1.0)
+
+_SOUND_PROFILES = {
+    "wake": {
+        "hz1": 880,       # A5
+        "hz2": 1320,      # E6 (ascending)
+        "split": 0.5,     # transition at midpoint
+        "duration_ms": 300,
+        "volume": 0.6,
+        "desc": "two-tone ascending (wake)",
+    },
+    "command_accepted": {
+        "hz1": 1000,      # ~B5
+        "hz2": 750,       # ~F#5 (descending)
+        "split": 0.3,     # quick transition
+        "duration_ms": 200,
+        "volume": 0.5,
+        "desc": "short descending ping (command accepted)",
+    },
+}
+
+
+def _generate_chime_wav(profile: str = "wake") -> bytes:
+    """Generate a chime WAV using the given sound profile.
+
+    Profiles:
+        "wake" — ascending two-tone (880->1320Hz, 300ms)
+        "command_accepted" — descending ping (1000->750Hz, 200ms)
+
+    Returns raw WAV bytes that can be played directly.
+    """
+    preset = _SOUND_PROFILES.get(profile, _SOUND_PROFILES["wake"])
+    sample_rate = _REPLY_SOUND_SAMPLE_RATE
+    duration = preset["duration_ms"] / 1000.0
+    num_samples = int(sample_rate * duration)
+    split_t = duration * preset["split"]
+    vol = preset["volume"]
+    hz1 = preset["hz1"]
+    hz2 = preset["hz2"]
+
+    samples = []
+    for i in range(num_samples):
+        t = i / sample_rate
+        fade_in = min(1.0, t * 40)
+        fade_out = max(0, 1.0 - (t / duration) * 0.3)
+
+        if t < split_t:
+            env = fade_in * (1.0 - t * (1.0 / split_t) * 0.5)
+            val = math.sin(2 * math.pi * hz1 * t) * env
+        else:
+            t_rel = t - split_t
+            build = min(1.0, t_rel * 20)
+            env = build * fade_out
+            val = math.sin(2 * math.pi * hz2 * t) * env
+
+        samples.append(max(-1.0, min(1.0, val)))
+
+    num_channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
+    data_size = num_samples * num_channels * bits_per_sample // 8
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,  # PCM
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+
+    audio_data = array.array("h", (int(s * 32767 * vol) for s in samples))
+    return header + audio_data.tobytes()
+
+
+def _play_wav(wav_bytes: bytes, label: str = "sound"):
+    """Play WAV bytes through speakers in a daemon thread."""
+    def _play():
+        try:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=_REPLY_SOUND_SAMPLE_RATE,
+                output=True,
+            )
+            stream.write(wav_bytes[44:])
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            print(f"[Audio] {label} played")
+        except Exception as e:
+            if "No default output device" not in str(e):
+                print(f"[Audio] {label} error: {e}")
+
+    threading.Thread(target=_play, daemon=True).start()
+
+
+def set_sound_enabled(sound_type: str, enabled: bool):
+    """Enable or disable a sound type.
+
+    Args:
+        sound_type: 'wake' or 'command'
+        enabled: True to play, False to mute
+    """
+    global _wake_sound_enabled, _command_sound_enabled
+    if sound_type == "wake":
+        _wake_sound_enabled = enabled
+    elif sound_type == "command":
+        _command_sound_enabled = enabled
+    else:
+        print(f"[Audio] Unknown sound type: {sound_type}")
+        return
+    print(f"[Audio] {sound_type} sound {'enabled' if enabled else 'muted'}")
+
+
+def get_sound_settings() -> dict[str, bool]:
+    """Get current sound preference state."""
+    return {
+        "wake_sound_enabled": _wake_sound_enabled,
+        "command_sound_enabled": _command_sound_enabled,
+    }
+
+
+def play_wake_sound():
+    """Play the wake word detection chime (ascending two-tone), if enabled."""
+    if not _wake_sound_enabled:
+        return
+    _play_wav(_generate_chime_wav("wake"), "Wake sound")
+
+
+def play_command_accepted_sound():
+    """Play the command accepted confirmation ping (descending), if enabled."""
+    if not _command_sound_enabled:
+        return
+    _play_wav(_generate_chime_wav("command_accepted"), "Command accepted sound")
+
+
+def _send_wake_signal():
+    """Send POST request to Electron's wake receiver to restore and focus the window."""
+    try:
+        data = json.dumps({"source": "wake_word"}).encode("utf-8")
+        req = urllib.request.Request(
+            ELECTRON_WAKE_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2)
+        print("[WakeWord] Wake signal sent to Electron — window should restore")
+    except urllib.error.URLError as e:
+        if hasattr(e, "code") and e.code:
+            print(f"[WakeWord] Wake signal failed (HTTP {e.code})")
+    except Exception as e:
+        print(f"[WakeWord] Wake signal error: {e}")
+
+
+class WakeWordDetector:
+    """Detects wake words using Vosk with bilingual English + Hindi support.
+
+    Loads both English and Hindi Vosk models. Runs the active model in a
+    continuous background thread. Supports live switching between languages.
+    On detection, sends an HTTP POST to Electron's /wake endpoint.
+    """
+
+    def __init__(self, on_wake_word: Optional[Callable] = None, on_conversation_trigger: Optional[Callable] = None):
         self.settings = get_settings()
         self.on_wake_word = on_wake_word
+        self.on_conversation_trigger = on_conversation_trigger
         self._running = False
-        self._audio_queue: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
+        self._language: str = "en"  # "en" or "hi"
 
-        # Initialize Vosk model (lazy import - optional dependency)
+        # Mic level and confidence tracking
+        self._sensitivity = "medium"
+        self._last_mic_level = 0.0
+        self._last_vosk_confidence = 0.0
+        self._rec_needs_rebuild = False  # Signal to recreate recognizer in listen loop
+
+        # Build sensitivity phrases from the configured wake word
+        self._sensitivity_phrases = self._build_sensitivity_phrases(self.settings.wake_word)
+        self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
+
+        # ─── Load English Vosk model ──────────────────────────────────
         model_path = self.settings.vosk_model_path
+        self.model_en = None
         try:
             import vosk
-            self.model = vosk.Model(model_path)
+            self.model_en = vosk.Model(model_path)
+            print(f"[WakeWord] English model loaded from {model_path}")
         except ImportError:
-            print(f"[WakeWord] Vosk not installed. Install with: pip install vosk")
-            self.model = None
+            print("[WakeWord] Vosk not installed. Install with: pip install vosk")
         except Exception as e:
-            print(f"[WakeWord] Failed to load Vosk model from {model_path}: {e}")
-            self.model = None
+            print(f"[WakeWord] Failed to load English model: {e}")
+
+        # ─── Load Hindi Vosk model ────────────────────────────────────
+        hindi_path = self.settings.vosk_hindi_model_path
+        self.model_hi = None
+        try:
+            import vosk
+            if hindi_path and hindi_path != model_path:
+                self.model_hi = vosk.Model(hindi_path)
+                print(f"[WakeWord] Hindi model loaded from {hindi_path}")
+        except Exception as e:
+            print(f"[WakeWord] Failed to load Hindi model (non-fatal): {e}")
+
+        # Active model (default to English if available)
+        self.model = self.model_en if self.model_en else (self.model_hi if self.model_hi else None)
+
+    @property
+    def language(self) -> str:
+        """Get the current active language ('en' or 'hi')."""
+        return self._language
+
+    def set_language(self, lang: str) -> bool:
+        """Switch the active recognition language.
+
+        If the detector is currently running, the recognizer is recreated
+        with the new model so the switch takes effect immediately.
+
+        Args:
+            lang: 'en' for English or 'hi' for Hindi.
+
+        Returns:
+            True if switch was successful, False if model not available.
+        """
+        if lang == self._language:
+            return True
+        if lang == "en" and self.model_en:
+            self._language = "en"
+            self.model = self.model_en
+            self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
+            self._rec_needs_rebuild = True
+            print(f"[WakeWord] Switched to English")
+            return True
+        elif lang == "hi" and self.model_hi:
+            self._language = "hi"
+            self.model = self.model_hi
+            self._wake_phrases = HINDI_WAKE_PHRASES
+            self._rec_needs_rebuild = True
+            print(f"[WakeWord] Switched to Hindi ({len(HINDI_WAKE_PHRASES)} wake phrases)")
+            return True
+        else:
+            print(f"[WakeWord] Cannot switch to '{lang}' — model not available")
+            return False
+    # ─── Configurable wake word ──────────────────────────────────────
+
+    def set_wake_word(self, wake_word: str):
+        """Dynamically change the wake word phrase.
+        Rebuilds sensitivity patterns and applies immediately.
+
+        Args:
+            wake_word: New wake word phrase (e.g. "hey barq", "computer", "ok google")
+        """
+        self._sensitivity_phrases = self._build_sensitivity_phrases(wake_word)
+        if self._language == "en":
+            self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
+        print(f"[WakeWord] Wake phrase updated to: '{wake_word}'")
+
+    @staticmethod
+    def _build_sensitivity_phrases(wake_word: str) -> dict[str, list[str]]:
+        """Build regex wake phrase patterns from a configured wake word.
+
+        Given a base wake word like "hey barq" or "ok computer", generates:
+        - Low: exact match only
+        - Medium: exact + phonetic variations (for Vosk misrecognition)
+        - High: exact + phonetic + partial matches
+
+        Args:
+            wake_word: The configured wake word/phrase.
+
+        Returns:
+            Dict of sensitivity level -> list of regex patterns.
+        """
+        word = wake_word.lower().strip()
+        parts = word.split()
+        primary = parts[-1] if parts else word
+        prefix = " ".join(parts[:-1]) if len(parts) > 1 else None
+
+        # Escape regex special characters for safe pattern building
+        escaped_word = re.escape(word)
+        escaped_primary = re.escape(primary)
+
+        patterns = {
+            "low": [
+                rf"\b{escaped_word}\b",
+            ],
+            "medium": [
+                rf"\b{escaped_word}\b",
+            ],
+            "high": [
+                rf"\b{escaped_word}\b",
+            ],
+        }
+
+        # Add "wake up <primary>" variant if wake word starts differently
+        if prefix and prefix not in ("wake up", "wake"):
+            wake_up_phrase = f"wake up {primary}"
+            escaped_wake_up = re.escape(wake_up_phrase)
+            patterns["low"].append(rf"\b{escaped_wake_up}\b")
+            patterns["medium"].append(rf"\b{escaped_wake_up}\b")
+            patterns["high"].append(rf"\b{escaped_wake_up}\b")
+
+        # Add phonetic variations for medium/high
+        # Vosk often confuses similar-sounding words, so we add variants
+        if len(primary) > 2:
+            # Replace trailing 'q' with 'k' (barq -> bark)
+            if primary.endswith("q"):
+                phonetic = primary[:-1] + "k"
+                escaped_phonetic = re.escape(phonetic)
+                if prefix:
+                    phrase = f"{prefix} {phonetic}"
+                else:
+                    phrase = phonetic
+                patterns["medium"].append(rf"\b{re.escape(phrase)}\b")
+                patterns["high"].append(rf"\b{re.escape(phrase)}\b")
+
+            # Truncate last 1-2 chars for partial match (high only)
+            if len(primary) > 3:
+                truncated = primary[:-1]
+                if prefix:
+                    phrase = f"{prefix} {truncated}"
+                else:
+                    phrase = truncated
+                patterns["high"].append(rf"\b{re.escape(phrase)}\w*\b")
+
+        return patterns
+
+    def set_sensitivity(self, level: str):
+        """Set detection sensitivity level (English only).
+
+        Args:
+            level: One of 'low', 'medium', 'high'
+        """
+        if level not in self._sensitivity_phrases:
+            print(f"[WakeWord] Invalid sensitivity level: {level}, keeping '{self._sensitivity}'")
+            return
+        old_level = self._sensitivity
+        self._sensitivity = level
+        # Only update English wake phrases; Hindi uses its own fixed set
+        if self._language == "en":
+            self._wake_phrases = self._sensitivity_phrases[level]
+        print(f"[WakeWord] Sensitivity changed: {old_level} -> {level}")
+
+    def get_mic_level(self) -> float:
+        """Get the current microphone audio level (0.0-1.0)."""
+        return self._last_mic_level if self._running else 0.0
+
+    def get_last_confidence(self) -> float:
+        """Get the confidence score from the most recent Vosk recognition result."""
+        return self._last_vosk_confidence if self._running else 0.0
 
     def start(self):
         """Start listening for wake word in a background thread."""
         if self._running or not self.model:
             return
-
         self._running = True
         self._thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._thread.start()
-        print("[WakeWord] Listening for 'Hey BARQ'...")
+        lang_label = "Hindi" if self._language == "hi" else "English"
+        print(f"[WakeWord] Always-on listening started ({lang_label})")
 
     def stop(self):
         """Stop wake word detection."""
@@ -51,37 +426,85 @@ class WakeWordDetector:
         print("[WakeWord] Stopped")
 
     def _listen_loop(self):
-        """Continuously listen to microphone and detect wake word."""
+        """Continuously listen to microphone and detect wake words in the active language."""
         import pyaudio
         import vosk
-        p = pyaudio.PyAudio()
 
+        p = pyaudio.PyAudio()
         try:
             stream = p.open(
                 format=pyaudio.paInt16,
                 channels=1,
                 rate=16000,
                 input=True,
-                frames_per_buffer=8000,
+                frames_per_buffer=4000,
             )
+            print("[WakeWord] Audio stream opened")
         except Exception as e:
             print(f"[WakeWord] Failed to open audio stream: {e}")
             self._running = False
+            p.terminate()
             return
 
         rec = vosk.KaldiRecognizer(self.model, 16000)
+        rec.SetWords(True)
 
         while self._running:
             try:
                 data = stream.read(4000, exception_on_overflow=False)
+
+                # Check if recognizer needs to be rebuilt (language switch)
+                if self._rec_needs_rebuild:
+                    rec = vosk.KaldiRecognizer(self.model, 16000)
+                    rec.SetWords(True)
+                    self._rec_needs_rebuild = False
+                    print(f"[WakeWord] Recognizer rebuilt for {self._language}")
+
+                # Compute RMS mic level
+                try:
+                    raw = array.array('h', data)
+                    if len(raw) > 0:
+                        sum_sq = sum(s * s for s in raw)
+                        rms = math.sqrt(sum_sq / len(raw))
+                        self._last_mic_level = min(1.0, rms / 10000.0)
+                except Exception:
+                    self._last_mic_level = 0.0
+
                 if rec.AcceptWaveform(data):
                     result = json.loads(rec.Result())
-                    text = result.get("text", "").lower()
+                    text = result.get("text", "").lower().strip()
 
-                    if self.settings.wake_word in text:
-                        print(f"[WakeWord] Detected: '{text}'")
-                        if self.on_wake_word:
-                            self.on_wake_word()
+                    words = result.get("result", [])
+                    if words:
+                        self._last_vosk_confidence = sum(w.get("conf", 0.0) for w in words) / len(words)
+                    else:
+                        self._last_vosk_confidence = 0.0
+
+                    if text:
+                        print(f"[WakeWord] Heard: '{text}'")
+
+                        # Check active language wake phrases
+                        for phrase in self._wake_phrases:
+                            if re.search(phrase, text):
+                                lang_tag = "HI" if self._language == "hi" else "EN"
+                                print(f"[WakeWord] [{lang_tag}] Wake word detected: '{text}' matched '{phrase}'")
+
+                                play_wake_sound()
+                                _send_wake_signal()
+
+                                if self.on_wake_word:
+                                    self.on_wake_word()
+
+                                # Trigger conversation mode (Alexa/Gemini-style)
+                                if self.on_conversation_trigger:
+                                    self.on_conversation_trigger()
+
+                                break
+            except OSError as e:
+                if "Input overflowed" in str(e):
+                    continue
+                print(f"[WakeWord] Stream error: {e}")
+                continue
             except Exception as e:
                 print(f"[WakeWord] Error: {e}")
 

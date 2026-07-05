@@ -202,7 +202,7 @@ async def test_search_files(client):
 
 @pytest.mark.asyncio
 async def test_sort_files_by_type(client):
-    """POST /file/sort should organize files into type folders."""
+    """POST /file/sort/execute should sort files by type."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create test files
         Path(os.path.join(tmpdir, "doc.pdf")).write_text("pdf")
@@ -210,15 +210,14 @@ async def test_sort_files_by_type(client):
         Path(os.path.join(tmpdir, "script.py")).write_text("py")
 
         response = await client.post(
-            f"/file/sort?directory={tmpdir}&by=type",
+            "/file/sort/execute",
+            json={"directory": tmpdir, "strategy": "type"},
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "sorted"
-        # Check files were organized
-        assert os.path.isdir(os.path.join(tmpdir, "PDF Files")) or \
-               os.path.isdir(os.path.join(tmpdir, "PNG Files")) or \
-               data["files_organized"] >= 0
+        assert data["status"] == "completed"
+        assert data["files_sorted"] >= 0
+        assert "undo_id" in data
 
 
 # ─── Terminal Execution ─────────────────────────────────────────────────────

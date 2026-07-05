@@ -314,4 +314,365 @@ export function registerIpcHandlers(): void {
       })
     }
   })
+
+  // ─── Memory & Knowledge IPC handlers ──────────────────────────────
+
+  ipcMain.handle('memory:get', async () => {
+    try {
+      const result = await pythonBridge.request('/memory/memory')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('memory:store', async (_event, key: string, value: string, category: string) => {
+    try {
+      const result = await pythonBridge.request('/memory/memory', { key, value, category })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('memory:forget', async (_event, key: string) => {
+    try {
+      const result = await pythonBridge.request(`/memory/memory/${encodeURIComponent(key)}`, {}, 5000)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('memory:search', async (_event, query: string) => {
+    try {
+      const result = await pythonBridge.request(`/memory/memory/search?query=${encodeURIComponent(query)}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Notes IPC handlers ───────────────────────────────────────────
+
+  ipcMain.handle('notes:get', async () => {
+    try {
+      const result = await pythonBridge.request('/memory/notes')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('notes:create', async (_event, title: string, content: string, tags: string[]) => {
+    try {
+      const result = await pythonBridge.request('/memory/notes', { title, content, tags })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('notes:delete', async (_event, noteId: number) => {
+    try {
+      const result = await pythonBridge.request(`/memory/notes/${noteId}`, {}, 5000)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Documents IPC handlers ───────────────────────────────────────
+
+  ipcMain.handle('documents:powerpoint', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/documents/powerpoint', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('documents:excel', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/documents/excel', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('documents:pdf', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/documents/pdf', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── System Control IPC handlers ──────────────────────────────────
+
+  ipcMain.handle('system:status', async () => {
+    try {
+      const result = await pythonBridge.request('/system/status')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:launch-app', async (_event, appName: string) => {
+    try {
+      const result = await pythonBridge.request('/system/launch-app', { app_name: appName })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Desktop Automation IPC handlers ──────────────────────────────
+
+  ipcMain.handle('desktop:ocr', async (_event, region?: number[]) => {
+    try {
+      const result = await pythonBridge.request('/desktop/ocr/capture', { region })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('desktop:wallpaper', async (_event, description: string, source: string) => {
+    try {
+      const result = await pythonBridge.request('/desktop/wallpaper/set', { description, source })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Web & Media IPC handlers ─────────────────────────────────────
+
+  ipcMain.handle('web:browse', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/web/browse', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('web:stocks', async (_event, ticker: string, period: string) => {
+    try {
+      const result = await pythonBridge.request(`/web/stocks/${encodeURIComponent(ticker)}?period=${period}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('web:weather', async (_event, city: string) => {
+    try {
+      const result = await pythonBridge.request(`/web/weather?city=${encodeURIComponent(city)}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('web:generate-image', async (_event, prompt: string, style: string) => {
+    try {
+      const result = await pythonBridge.request('/web/images/generate', { prompt, style })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Voice Settings IPC handlers ──────────────────────────────────
+
+  ipcMain.handle('voice:sensitivity', async (_event, level: string) => {
+    try {
+      const result = await pythonBridge.request('/voice/sensitivity', { level })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('voice:set-tts-voice', async (_event, voice: string) => {
+    try {
+      const result = await pythonBridge.request('/voice/set-tts-voice', { voice })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('voice:history', async (_event, limit: number) => {
+    try {
+      const result = await pythonBridge.request(`/voice/history?limit=${limit}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 3: Job Analytics & Follow-ups ──────────────────────────
+
+  ipcMain.handle('jobs:response-analytics', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/analytics/responses')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:record-response', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/jobs/responses/record', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:followup-candidates', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/followups/candidates')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:schedule-followups', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/followups/schedule')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:send-followup', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/jobs/followups/send', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 2: Smart Drop Zones ────────────────────────────────────
+
+  // Close app
+  ipcMain.handle('system:close-app', async (_event, appName: string) => {
+    try {
+      const result = await pythonBridge.request('/system/close-app', { app_name: appName })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Smart Drop Zones
+  ipcMain.handle('system:drop-zone:rules:list', async () => {
+    try {
+      const result = await pythonBridge.request('/system/drop-zone/rules')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:drop-zone:rules:create', async (_event, rule: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/drop-zone/rules', rule)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:drop-zone:rules:delete', async (_event, ruleIndex: number) => {
+    try {
+      const result = await pythonBridge.request(`/system/drop-zone/rules/${ruleIndex}`, {}, 5000)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:drop-zone:evaluate', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/drop-zone/evaluate', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 2: File Sort Wizard ────────────────────────────────────
+
+  ipcMain.handle('system:sort:preview', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/file/sort/preview', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:sort:execute', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/file/sort/execute', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:sort:undo', async (_event, undoId: string) => {
+    try {
+      const result = await pythonBridge.request(`/system/file/sort/undo/${encodeURIComponent(undoId)}`, {}, 10000)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 2: Git Operations ──────────────────────────────────────
+
+  ipcMain.handle('system:git', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/git', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 2: Package Manager ─────────────────────────────────────
+
+  ipcMain.handle('system:package-manager', async (_event, data: unknown) => {
+    try {
+      const result = await pythonBridge.request('/system/package-manager', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Phase 2: Multi-Monitor ───────────────────────────────────────
+
+  ipcMain.handle('system:monitors', async () => {
+    try {
+      const result = await pythonBridge.request('/system/monitors')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
 }

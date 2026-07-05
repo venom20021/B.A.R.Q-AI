@@ -1,173 +1,386 @@
-# ⚡ BARQ — Voice-Controlled Desktop Assistant
+# BARQ - Voice-Controlled AI Desktop Assistant
 
-**BARQ** (Barq Automated Research & Query) is a cyberpunk-themed Electron desktop application with a Python sidecar that automates job search, social media content creation, voice control, and more. It features a live dashboard with animated canvas visualizations (Arc Reactor, Guardian Wolf), real-time system monitoring, weather data, and an AI chat interface.
+**BARQ** is a voice-first AI desktop assistant that combines wake word detection, natural language understanding, and automation into a single, cross-platform application. Think Alexa for your computer — control apps, search jobs, create content, and more, all by voice.
 
-<div align="center">
-  <img src="https://img.shields.io/badge/Electron-32-blue?logo=electron" alt="Electron" />
-  <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react" alt="React" />
-  <img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Tailwind-3.4-06B6D4?logo=tailwindcss" alt="Tailwind CSS" />
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-</div>
+Built with **Python (FastAPI)** for the backend and **Electron + React** for the desktop UI, BARQ runs on **macOS** and **Windows**.
 
 ---
 
-## ✨ Features
+## Features
 
-### 🎙️ Voice Control
-- **Wake word detection** ("Hey BARQ") using Vosk
-- **Speech-to-text** via OpenAI Whisper
-- **Text-to-speech** via edge-tts
-- Voice commands for navigation, job scanning, content creation, and more
+### 🎤 Voice Control
+- **Wake word detection** — Always-listening (Vosk), hands-free wake word activation
+- **Conversation mode** — Natural back-and-forth like Alexa/Gemini; no need to say the wake word for every turn
+- **VAD endpointing** — Automatically detects when you stop speaking
+- **Barge-in** — Interrupt BARQ mid-response by speaking over it
+- **Multilingual** — English + Hindi wake word support
+- **Configurable wake word** — Change it anytime via API
+
+### 🧠 AI-Powered Conversation
+- **Local LLM** — Runs on Ollama (llama3.1, llama3.2, phi4, or any model)
+- **Conversation memory** — Maintains context across multi-turn conversations
+- **Natural speech** — Edge TTS for high-quality text-to-speech
 
 ### 💼 Job Search Automation
-- Scans 35+ job boards (LinkedIn, Indeed, Glassdoor, etc.)
-- AI evaluates and scores matches using LLM (Ollama/OpenAI)
-- Auto-generates tailored resumes and cover letters
-- Automated application pipeline with approval workflow
+- **Multi-board scanning** — Searches LinkedIn, Indeed, Glassdoor, Greenhouse, Lever, Ashby, Workday, and more
+- **ATS-optimized matching** — AI evaluates and scores jobs against your resume
+- **Auto-apply** — Playwright-based form filling for major ATS platforms
+- **Resume parsing** — Extracts structured data from Markdown resumes
+- **Cover letter & cold email generation** — AI-crafted, tailored to each job
 
-### 📱 Social Media Content Pipeline
-- **Trend research** across YouTube, TikTok, Instagram, Twitter/X
-- **Script generation** with AI (topic → structured script)
-- **Video rendering** with automated assembly
-- **Multi-platform posting** (YouTube, TikTok, Instagram, Twitter)
-- Analytics dashboard for follower growth, engagement, and revenue
+### 📱 Social Media Pipeline
+- **Trend research** — Discovers trending topics across platforms
+- **Script generation** — AI writes content scripts for videos
+- **Video rendering** — Automated short-form video creation
+- **Cross-platform posting** — Schedule and publish to multiple platforms
 
-### 📊 Dashboard & Visualizations
-- **Arc Reactor** — animated plasma ring visualization with floating energy motes
-- **Guardian Wolf** — cybernetic wolf head with glowing seam lines and pulsing eyes
-- **Live system monitoring** — CPU, memory, network, and subsystem status panels
-- **Real-time weather** — live weather data from OpenWeatherMap
-- **Live stats** — voice commands, jobs scanned, scripts generated, session uptime
+### 🖥️ Desktop Automation
+- **Screen OCR** — Capture and extract text from any screen region
+- **Smart Drop Zones** — Auto-organize files with rule-based sorting
+- **AI Wallpaper** — Generate or search for wallpapers by description
+- **Workflow protocols** — Create and run custom automation workflows
 
-### 🧠 AI Chat Interface
-- Always-on voice/listening mode with audio waveform visualization
-- Conversational AI assistant for system commands
-- Quick overlay for instant command input (Ctrl+Shift+I)
-
-### 🔧 Additional Tools
-- **File manager** with code preview
-- **Web browser** with Playwright automation
-- **System monitor** with process management
-- **Memory & knowledge base**
-- **Document generation**
-- **Desktop automation**
-- **Spotify control**
-- **Stock market tracker**
-- **Image generation** (Pollinations.ai)
-- **Maps & directions**
+### 🔧 Developer Tools
+- **Git operations** — Full git integration via voice
+- **Package manager** — npm, pip, brew commands by voice
+- **Localhost tunneling** — Expose local ports via cloudflared
+- **Terminal streaming** — Real-time command output via SSE
 
 ---
 
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Electron Main Process                        │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
-│  │  Window Mgr  │  │  IPC Handler  │  │   Python Bridge       │ │
-│  └─────────────┘  └──────────────┘  │  (Sidecar Manager)     │ │
-│                                      └───────────┬────────────┘ │
-└──────────────────────────────────────────────────┼──────────────┘
-                                                   │ HTTP (port 8956)
-┌──────────────────────────────────────────────────┼──────────────┐
-│              Python Sidecar (FastAPI)            │              │
-│  ┌──────────┐ ┌──────┐ ┌──────┐ ┌─────────────┐ ▼              │
-│  │   Voice  │ │ Jobs │ │Social│ │ Web & Media │                │
-│  │  Routes  │ │Routes│ │Routes│ │   Routes    │                │
-│  └────┬─────┘ └──┬───┘ └──┬───┘ └──────┬──────┘                │
-│       │          │        │            │                       │
-│  ┌────┴──────────┴────────┴────────────┴──────┐                │
-│  │          Database (SQLite/PostgreSQL)        │               │
-│  └──────────────────────────────────────────────┘               │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│              Electron Renderer (React + Vite)                   │
-│  ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌──────────────────┐ │
-│  │ Sidebar  │ │Title Bar │ │ Dashboard  │ │  AI Chat Panel   │ │
-│  └─────────┘ └──────────┘ │ (ArcReactor│ └──────────────────┘ │
-│                           │  + Wolf +  │                       │
-│  ┌──────────────────────┐ │ Monitors)  │                       │
-│  │  Jobs, Analytics,    │ └────────────┘                       │
-│  │  Content, Files, ... │                                      │
-│  └──────────────────────┘                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Desktop Shell** | Electron 32 |
-| **Frontend** | React 18, TypeScript 5.5, Vite |
-| **Styling** | Tailwind CSS 3.4, Framer Motion |
-| **Visualizations** | HTML5 Canvas (custom), recharts |
-| **Python Backend** | FastAPI 0.115, Uvicorn |
-| **Database** | SQLite (asyncpg-style), async SQL |
-| **Voice** | Vosk (wake word), Whisper (STT), edge-tts (TTS) |
-| **Automation** | Playwright, yfinance, spotipy |
-
----
-
-## 🚀 Getting Started
+## Quick Start
 
 ### Prerequisites
 
-- **Node.js** >= 18
-- **Python** >= 3.11
-- **pnpm** (recommended) or npm
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.10+ | [python.org](https://python.org) |
+| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
+| Ollama | Latest | [ollama.ai](https://ollama.ai) — for local LLM |
+| ffmpeg | Latest | Required for audio playback ([download](https://ffmpeg.org/download.html)) |
+| Vosk model | ~50 MB | Auto-detected from `models/vosk/` |
 
-### Installation
+### 1. Clone & Install
 
+**macOS / Linux:**
 ```bash
-# Clone the repository
 git clone https://github.com/venom20021/B.A.R.Q-AI.git
-cd B.A.R.Q-AI
+cd barq
+
+# Install Python dependencies
+pip install -r python/requirements.txt
+pip install -r python/requirements-dev.txt
 
 # Install Node.js dependencies
 npm install
 
-# Install Python dependencies
+# Download Vosk model (English)
+cd python/models
+wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip
+mv vosk-model-small-en-us-0.15 vosk
+cd ../..
+```
+
+**Windows:**
+```batch
+:: Run in Command Prompt or PowerShell
+git clone https://github.com/venom20021/B.A.R.Q-AI.git
+cd barq
+
+:: Install Python dependencies
+pip install -r python\requirements.txt
+pip install -r python\requirements-dev.txt
+
+:: Install Node.js dependencies
+npm install
+
+:: Download Vosk model using PowerShell
+cd python\models
+powershell -Command "Invoke-WebRequest -Uri https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip -OutFile vosk-model-small-en-us-0.15.zip"
+tar -xf vosk-model-small-en-us-0.15.zip
+move vosk-model-small-en-us-0.15 vosk
+cd ..\..
+```
+
+### 2. Pull an Ollama model
+
+```bash
+# Recommended for speed vs quality balance
+ollama pull llama3.2:3b
+
+# Or for higher quality (slower)
+ollama pull llama3.1
+```
+
+### 3. Start the services
+
+**macOS / Linux — using the dev script:**
+```bash
+python scripts/dev.py
+```
+
+Or manually in two terminals:
+```bash
+# Terminal 1: Start the FastAPI server
 cd python
-pip install -r requirements.txt
-cd ..
+python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8956
 
-# Copy environment file and configure
-cp .env.example .env
-# Edit .env with your API keys (see Configuration section)
-```
-
-### Development
-
-```bash
-# Start the Electron app (Vite HMR + Python sidecar)
+# Terminal 2: Start the desktop UI
+# In the project root
 npm run dev
-
-# Or start the Python backend separately
-npm run dev:python
 ```
 
-### Production Build
-
-```bash
-# Build the Electron app
-npm run build
-
-# Package for distribution
-npm run package
+**Windows — using the batch file:**
+```batch
+:: Double-click or run in Command Prompt
+scripts\start.bat
 ```
 
-### Testing & Linting
+Or manually in two Command Prompt windows:
+```batch
+:: Window 1: Start the FastAPI server
+cd python
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8956
+
+:: Window 2: Start the desktop UI
+npm run dev
+```
+
+### 4. Test voice control
 
 ```bash
-# TypeScript type checking
+# Check server health
+curl http://127.0.0.1:8956/health
+
+# Start voice detection
+curl -X POST http://127.0.0.1:8956/voice/start
+
+# Test text chat
+curl -X POST http://127.0.0.1:8956/voice/chat/text \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Hello! What can you do?"}'
+
+# Test chat with TTS audio
+curl -X POST http://127.0.0.1:8956/voice/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Tell me about yourself"}'
+
+# Check voice status
+curl http://127.0.0.1:8956/voice/status
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│              Electron Desktop UI             │
+│  ┌─────────┐ ┌──────────┐ ┌──────────────┐  │
+│  │  React   │ │  Tray    │ │ Wake Receiver │  │
+│  │  (Vite)  │ │  Icon    │ │  (port 8112)  │  │
+│  └────┬─────┘ └──────────┘ └──────┬───────┘  │
+│       │ IPC                       │ HTTP      │
+├───────┴───────────────────────────┴──────────┤
+│          Python Sidecar (FastAPI)             │
+│  ┌──────────┐ ┌────────┐ ┌───────────────┐   │
+│  │  Voice   │ │  Jobs  │ │  Social Media │   │
+│  │  Control │ │  Pipeline│ │  Pipeline    │   │
+│  ├──────────┤ ├────────┤ ├───────────────┤   │
+│  │  Desktop │ │  Web   │ │  Documents    │   │
+│  │  Automation│ │  Media │ │  Generation   │   │
+│  ├──────────┤ ├────────┤ ├───────────────┤   │
+│  │  System  │ │ Memory │ │  Analytics    │   │
+│  │  Control │ │ & Know.│ │               │   │
+│  └──────────┘ └────────┘ └───────────────┘   │
+│              │         │                     │
+│         ┌────┘         └────┐                │
+│     ┌───▼───┐          ┌───▼────┐           │
+│     │ Ollama │          │ SQLite │           │
+│     │ (LLM)  │          │  (DB)  │           │
+│     └───────┘          └────────┘           │
+└─────────────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | Technology | Role |
+|---|---|---|
+| **Frontend** | Electron + React + Vite | Desktop UI, tray icon, wake receiver |
+| **Backend** | Python FastAPI (uvicorn) | REST API, business logic, AI integration |
+| **Voice** | Vosk (wake word) + Whisper (STT) + Edge TTS | Speech recognition & synthesis |
+| **LLM** | Ollama (llama3.2:3b) | Natural language understanding & generation |
+| **Database** | SQLite + aiosqlite | Persistent storage for jobs, settings, analytics |
+| **Browser** | Playwright | ATS form filling, web scraping |
+| **Desktop** | PyAutoGUI, MSS, PyTesseract | Screen OCR, keyboard/mouse automation |
+
+---
+
+## API Reference
+
+The Python backend exposes a REST API on `http://127.0.0.1:8956`. Full OpenAPI docs at `/docs` when `BARQ_DEBUG=true`.
+
+### Voice Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/voice/start` | Start wake word detection |
+| POST | `/voice/stop` | Stop wake word detection |
+| POST | `/voice/chat` | Send message, get text + audio response |
+| POST | `/voice/chat/text` | Send message, get text-only response |
+| POST | `/voice/command` | Process a voice command |
+| POST | `/voice/transcribe` | Record + transcribe microphone input |
+| POST | `/voice/wake-word` | Change the wake word dynamically |
+| POST | `/voice/conversation-mode` | Enable/disable hands-free conversation mode |
+| POST | `/voice/conversation/start` | Start a conversation session |
+| POST | `/voice/conversation/end` | End conversation |
+| GET | `/voice/status` | Get voice system status |
+| GET | `/voice/mic-level` | Get current microphone level |
+| POST | `/voice/sensitivity` | Set detection sensitivity (low/medium/high) |
+| POST | `/voice/language` | Switch language (en/hi) |
+| POST | `/voice/set-tts-voice` | Change TTS voice |
+
+### System Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/system/launch-app` | Launch an application by name |
+| POST | `/system/close-app` | Close an application |
+| POST | `/system/terminal/run` | Execute a terminal command |
+| POST | `/system/git` | Execute git operations |
+| POST | `/system/package-manager` | npm/pip/brew commands |
+| GET | `/system/monitors` | List connected monitors |
+| POST | `/system/tunnel/expose` | Expose a local port |
+
+### Job Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/jobs/scan` | Scan job boards for listings |
+| GET | `/jobs/matches` | Get matched jobs |
+| POST | `/jobs/{id}/optimize` | Optimize resume for a job |
+| POST | `/jobs/{id}/cover-letter` | Generate cover letter |
+| POST | `/jobs/{id}/cold-mail` | Generate cold email |
+
+### Desktop Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/desktop/ocr/capture` | Capture screen region + OCR |
+| POST | `/desktop/wallpaper/set` | Set wallpaper by description |
+| POST | `/desktop/keyboard` | Inject keyboard input |
+| POST | `/desktop/protocols/create` | Create an automation workflow |
+
+---
+
+## Configuration
+
+Configuration is managed through environment variables or a `.env` file in the project root.
+
+### Key Settings
+
+| Variable | Default | Description |
+|---|---|---|
+| `SIDECAR_HOST` | `127.0.0.1` | Python backend host |
+| `SIDECAR_PORT` | `8956` | Python backend port |
+| `BARQ_DEBUG` | `false` | Enable debug mode + API docs |
+| `VOSK_MODEL_PATH` | `models/vosk` | Path to Vosk English model |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server URL |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model to use |
+| `WHISPER_MODEL` | `base` | Whisper model size |
+| `DATABASE_URL` | `sqlite+aiosqlite:///barq.db` | Database connection |
+| `CAREER_OPS_PATH` | `~/career-ops` | Path for resume/job files |
+
+### Model Selection
+
+For best performance, use these Ollama models:
+
+| Model | Size | Speed | Quality | Command |
+|---|---|---|---|---|
+| `tinyllama:1.1b` | 1.1B | ⚡ Very Fast | ⭐ Basic | `ollama pull tinyllama` |
+| `llama3.2:3b` | 3B | 🚀 Fast | ⭐⭐ Good | `ollama pull llama3.2:3b` |
+| `phi4:2.7b` | 2.7B | 🚀 Fast | ⭐⭐⭐ Better | `ollama pull phi` |
+| `llama3.1` | 8B | 🐢 Slow | ⭐⭐⭐⭐ Best | `ollama pull llama3.1` |
+
+---
+
+## Cross-Platform Support
+
+BARQ is designed to run on both **macOS** and **Windows**.
+
+### macOS (Tested)
+- Vosk wake word detection ✓
+- Edge TTS audio playback ✓
+- Ollama LLM ✓
+- Desktop automation ✓
+- System tray ✓
+
+### Windows (Supported)
+- Python path detection handled automatically
+- Port freeing with `taskkill` built in
+- Window management via `pygetwindow`
+- Wallpaper setting via `ctypes`
+- App launching via `os.startfile`
+
+### CI/CD
+GitHub Actions runs linting, type-checking, building, and Python tests on every push.
+
+---
+
+## Development
+
+### Project Structure
+
+```
+barq/
+├── src/                    # Electron + React frontend
+│   ├── main/               # Electron main process
+│   │   ├── index.ts        # App entry point, wake receiver
+│   │   ├── ipc.ts          # IPC handlers
+│   │   ├── python-bridge.ts # Python sidecar manager
+│   │   └── tray.ts         # System tray
+│   ├── preload/            # Electron preload scripts
+│   └── renderer/           # React UI
+│       └── src/
+│           ├── components/ # UI components
+│           ├── pages/      # Page views
+│           ├── hooks/      # Custom React hooks
+│           └── styles/     # CSS/Tailwind
+├── python/                 # Python backend
+│   ├── main.py             # FastAPI app entry
+│   ├── config.py           # Settings management
+│   ├── voice/              # Voice control module
+│   ├── jobs/               # Job search pipeline
+│   ├── social/             # Social media pipeline
+│   ├── analytics/          # Analytics aggregation
+│   ├── ai/                 # LLM conversation
+│   ├── system_control/     # OS-level operations
+│   ├── desktop_automation/ # Screen OCR, wallpaper
+│   ├── web_media/          # Web browsing, media
+│   ├── documents/          # PPT, Excel, PDF generation
+│   ├── notifications/      # Multi-channel notifications
+│   ├── memory_knowledge/   # Vector memory store
+│   ├── database/           # SQLite DAOs
+│   └── tests/              # Python test suite
+├── scripts/                # Development scripts
+├── .github/workflows/      # CI/CD pipeline
+├── package.json            # Node dependencies
+├── electron-builder.yml     # Electron packaging config
+└── README.md               # This file
+```
+
+### Running Tests
+
+```bash
+# Python tests
+cd python && pytest tests/ -v
+
+# TypeScript type checks
 npm run typecheck
 
-# Run tests
-npm test
+# Frontend tests
+npm run test
 
 # Lint
 npm run lint
@@ -175,183 +388,49 @@ npm run lint
 
 ---
 
-## ⚙️ Configuration
-
-Copy `.env.example` to `.env` and configure the following:
-
-### Required for Voice Control
-| Variable | Description |
-|----------|-------------|
-| `OLLAMA_HOST` | Local LLM endpoint (default: `http://127.0.0.1:11434`) |
-| `OLLAMA_MODEL` | LLM model (default: `llama3.1`) |
-
-### Required for Job Search
-| Variable | Description |
-|----------|-------------|
-| `LINKEDIN_EMAIL` | LinkedIn account email |
-| `LINKEDIN_PASSWORD` | LinkedIn account password |
-| `OPENAI_API_KEY` | OpenAI key (for resume/cover letter generation) |
-
-### Required for Social Media
-| Variable | Description |
-|----------|-------------|
-| `YOUTUBE_API_KEY` | YouTube Data API key |
-| `TWITTER_API_KEY` | Twitter/X API key |
-| `INSTAGRAM_ACCESS_TOKEN` | Instagram Graph API token |
-| `TIKTOK_ACCESS_TOKEN` | TikTok API token |
-
-### Required for Weather
-| Variable | Description |
-|----------|-------------|
-| `OPENWEATHER_API_KEY` | OpenWeatherMap API key |
-
-### Notifications
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
-| `TELEGRAM_CHAT_ID` | Telegram chat ID |
-| `SMTP_HOST` / `SMTP_PORT` | SMTP server config |
-| `SMTP_USER` / `SMTP_PASS` | SMTP credentials |
-
----
-
-## 🎮 Usage
-
-### Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `1` | Reactor mode (default) |
-| `2` | Split mode (Reactor + Wolf) |
-| `3` | Wolf mode (fullscreen) |
-| `Ctrl+Shift+I` | Quick overlay command input |
-
-### Voice Commands
-
-Say "Hey BARQ" (wake word), then:
-- *"scan jobs"* — trigger job board scanning
-- *"check trends"* — fetch trending topics
-- *"dashboard"* / *"home"* — navigate to dashboard
-- *"analytics"* / *"stats"* — view analytics
-- *"weather in London"* — check weather
-- *"open settings"* — go to settings
-- *"stock AAPL"* — check stock prices
-
----
-
-## 📁 Project Structure
-
-```
-B.A.R.Q/
-├── src/
-│   ├── main/               # Electron main process
-│   │   ├── index.ts         # App entry, window creation
-│   │   ├── python-bridge.ts # Python sidecar manager
-│   │   └── ipc.ts           # IPC handler registrations
-│   ├── preload/
-│   │   └── index.ts         # Context bridge (safe API)
-│   └── renderer/
-│       └── src/
-│           ├── App.tsx       # Root component with routing
-│           ├── components/   # UI components
-│           │   ├── ArcReactor.tsx     # Plasma ring visualization
-│           │   ├── GuardianWolf.tsx   # Wolf head visualization
-│           │   ├── ArcMonitorPanel.tsx # System monitor panels
-│           │   ├── AiChatPanel.tsx    # AI chat interface
-│           │   ├── Sidebar.tsx        # Navigation sidebar
-│           │   ├── TitleBar.tsx       # Custom title bar
-│           │   └── ...               # Other components
-│           └── pages/        # Route pages
-│               ├── DashboardPage.tsx  # Main dashboard
-│               ├── AnalyticsPage.tsx  # Career & social analytics
-│               ├── JobsPage.tsx       # Job search
-│               ├── ContentPage.tsx    # Content studio
-│               └── ...               # Other pages
-├── python/                   # Python sidecar
-│   ├── main.py               # FastAPI application
-│   ├── config.py             # Configuration & settings
-│   ├── database.py           # Database layer
-│   ├── voice/                # Voice control routes
-│   ├── jobs/                 # Job search routes
-│   ├── social/               # Social media routes
-│   ├── analytics/            # Analytics routes
-│   ├── web_media/            # Web & media routes
-│   ├── notifications/        # Notification routes
-│   ├── documents/            # Document generation
-│   ├── memory_knowledge/     # Memory & knowledge base
-│   ├── system_control/       # System control
-│   └── desktop_automation/   # Desktop automation
-├── resources/                # Static resources
-├── scripts/                  # Build & utility scripts
-├── package.json              # Node dependencies
-├── electron.vite.config.ts   # Vite configuration
-├── tailwind.config.ts        # Tailwind configuration
-└── vitest.config.mts         # Vitest configuration
-```
-
----
-
-## 🔌 API Overview
-
-The Python sidecar runs on `http://127.0.0.1:8956` and provides:
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check |
-| `POST /voice/start` | Start wake word detection |
-| `POST /voice/stop` | Stop wake word detection |
-| `POST /voice/command` | Process a voice command |
-| `GET /voice/status` | Voice system status |
-| `POST /jobs/scan` | Trigger job board scan |
-| `GET /jobs/matches` | Get evaluated job matches |
-| `GET /jobs/status` | Job search status |
-| `POST /social/generate-script` | Generate content script |
-| `POST /social/render-video` | Render video from script |
-| `POST /social/post` | Post to platforms |
-| `GET /social/status` | Social module status |
-| `GET /web/weather?city=` | Current weather |
-| `GET /web/stocks/{ticker}` | Stock price data |
-| `POST /web/browse` | Web browsing automation |
-| `GET /analytics/career` | Career analytics |
-| `GET /analytics/social` | Social analytics |
-
----
-
-## 🧪 Testing
+## API Example: Full Voice Conversation
 
 ```bash
-# Run all tests
-npm test
+# 1. Start the voice system
+curl -X POST http://127.0.0.1:8956/voice/start
 
-# Run with watch mode
-npm run test:watch
+# 2. Enable hands-free conversation mode
+curl -X POST http://127.0.0.1:8956/voice/conversation-mode \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true}'
 
-# TypeScript type checking
-npm run typecheck
+# 3. Check system status
+curl http://127.0.0.1:8956/voice/status
+
+# 4. Change the wake word
+curl -X POST http://127.0.0.1:8956/voice/wake-word \
+  -H 'Content-Type: application/json' \
+  -d '{"wake_word":"hey barq"}'
+
+# 5. Chat with BARQ (text-only)
+curl -X POST http://127.0.0.1:8956/voice/chat/text \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Hello! What can you help me with?"}'
+
+# 6. Chat with BARQ (with TTS audio response)
+curl -X POST http://127.0.0.1:8956/voice/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Tell me something interesting"}'
 ```
 
 ---
 
-## 🛠️ Development
-
-### Creating New Pages
-1. Create a page component in `src/renderer/src/pages/`
-2. Add it to the routing in `src/renderer/src/App.tsx`
-3. Add a navigation item in `src/renderer/src/components/Sidebar.tsx`
-
-### Adding Python API Endpoints
-1. Create or edit a route file in `python/<module>/routes.py`
-2. Register the router in `python/main.py`
-3. Access from frontend via `window.barq.python.request('/your/endpoint')`
-
----
-
-## 📄 License
+## License
 
 MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-<div align="center">
-  Built with ⚡ by <a href="https://github.com/venom20021">venom20021</a>
-</div>
+## Acknowledgments
+
+- [Vosk](https://alphacephei.com/vosk/) — Offline speech recognition
+- [OpenAI Whisper](https://github.com/openai/whisper) — Speech-to-text
+- [Edge TTS](https://github.com/rany2/edge-tts) — Text-to-speech
+- [Ollama](https://ollama.ai) — Local LLM inference
+- [FastAPI](https://fastapi.tiangolo.com) — Python web framework
+- [Electron](https://www.electronjs.org) — Desktop app framework

@@ -29,17 +29,25 @@ export function ContentPage(): JSX.Element {
     setLoading(true)
     try {
       const [pipelineResp, scriptsResp] = await Promise.allSettled([
+        window.barq?.social.trends() ?? Promise.resolve(undefined),
         window.barq?.python.request('/social/pipeline') ?? Promise.resolve(undefined),
         window.barq?.python.request('/social/scripts?limit=50') ?? Promise.resolve(undefined),
       ])
 
-      const pipeline = (pipelineResp.status === 'fulfilled' ? pipelineResp.value : undefined) as
-        { success?: boolean; data?: { pipeline?: Record<string, number> } } | undefined
-      setPipelineCounts(pipeline?.data?.pipeline ?? {})
+      // Pipeline response: /social/pipeline returns flat { pipeline: { ... } }
+      const pipelineValue = pipelineResp.status === 'fulfilled' ? pipelineResp.value : undefined
+      const pipelineData = (pipelineValue as { pipeline?: Record<string, number> } | undefined)?.pipeline
+        ?? (pipelineValue as { success?: boolean; data?: { pipeline?: Record<string, number> } } | undefined)?.data?.pipeline
+        ?? {}
+      setPipelineCounts(pipelineData)
 
-      const scriptsData = (scriptsResp.status === 'fulfilled' ? scriptsResp.value : undefined) as
-        { success?: boolean; data?: { scripts?: Record<string, unknown>[] } } | undefined
-      const rawScripts = scriptsData?.data?.scripts ?? []
+      // Scripts response: /social/scripts returns flat { scripts: [...] }
+      const scriptsValue = (scriptsResp.status === 'fulfilled' ? scriptsResp.value : undefined) as
+        { scripts?: Record<string, unknown>[] } | { success?: boolean; data?: { scripts?: Record<string, unknown>[] } } | undefined
+      const rawScripts = 'scripts' in (scriptsValue ?? {})
+        ? (scriptsValue as { scripts?: Record<string, unknown>[] }).scripts ?? []
+        : (scriptsValue as { success?: boolean; data?: { scripts?: Record<string, unknown>[] } } | undefined)?.data?.scripts ?? []
+
       setScripts(rawScripts.slice(0, 20).map((s, i) => ({
         id: String(s['id'] ?? i),
         topic: String(s['title'] ?? s['topic'] ?? 'Untitled'),

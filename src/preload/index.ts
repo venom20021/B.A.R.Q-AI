@@ -13,14 +13,22 @@ contextBridge.exposeInMainWorld('barq', {
   voice: {
     start: () => ipcRenderer.invoke('voice:start'),
     stop: () => ipcRenderer.invoke('voice:stop'),
-    command: (text: string) => ipcRenderer.invoke('voice:command', text)
+    command: (text: string) => ipcRenderer.invoke('voice:command', text),
+    setSensitivity: (level: string) => ipcRenderer.invoke('voice:sensitivity', level),
+    setTtsVoice: (voice: string) => ipcRenderer.invoke('voice:set-tts-voice', voice),
+    history: (limit?: number) => ipcRenderer.invoke('voice:history', limit || 50)
   },
 
   // Job search
   jobs: {
     scan: () => ipcRenderer.invoke('jobs:scan'),
     matches: () => ipcRenderer.invoke('jobs:matches'),
-    approve: (jobId: string) => ipcRenderer.invoke('jobs:approve', jobId)
+    approve: (jobId: string) => ipcRenderer.invoke('jobs:approve', jobId),
+    responseAnalytics: () => ipcRenderer.invoke('jobs:response-analytics'),
+    recordResponse: (data: unknown) => ipcRenderer.invoke('jobs:record-response', data),
+    followupCandidates: () => ipcRenderer.invoke('jobs:followup-candidates'),
+    scheduleFollowups: () => ipcRenderer.invoke('jobs:schedule-followups'),
+    sendFollowup: (data: unknown) => ipcRenderer.invoke('jobs:send-followup', data),
   },
 
   // Social media
@@ -52,6 +60,68 @@ contextBridge.exposeInMainWorld('barq', {
     test: (channel: string) => ipcRenderer.invoke('notifications:test', channel),
     startPolling: () => ipcRenderer.send('notifications:start-polling'),
     stopPolling: () => ipcRenderer.send('notifications:stop-polling')
+  },
+
+  // Memory & Knowledge
+  memory: {
+    get: () => ipcRenderer.invoke('memory:get'),
+    store: (key: string, value: string, category?: string) =>
+      ipcRenderer.invoke('memory:store', key, value, category || 'general'),
+    forget: (key: string) => ipcRenderer.invoke('memory:forget', key),
+    search: (query: string) => ipcRenderer.invoke('memory:search', query)
+  },
+
+  // Notes
+  notes: {
+    get: () => ipcRenderer.invoke('notes:get'),
+    create: (title: string, content: string, tags?: string[]) =>
+      ipcRenderer.invoke('notes:create', title, content, tags || []),
+    delete: (id: number) => ipcRenderer.invoke('notes:delete', id)
+  },
+
+  // Documents
+  documents: {
+    powerpoint: (data: unknown) => ipcRenderer.invoke('documents:powerpoint', data),
+    excel: (data: unknown) => ipcRenderer.invoke('documents:excel', data),
+    pdf: (data: unknown) => ipcRenderer.invoke('documents:pdf', data)
+  },
+
+  // System
+  system: {
+    status: () => ipcRenderer.invoke('system:status'),
+    launchApp: (appName: string) => ipcRenderer.invoke('system:launch-app', appName),
+    closeApp: (appName: string) => ipcRenderer.invoke('system:close-app', appName),
+    dropZone: {
+      listRules: () => ipcRenderer.invoke('system:drop-zone:rules:list'),
+      createRule: (rule: unknown) => ipcRenderer.invoke('system:drop-zone:rules:create', rule),
+      deleteRule: (ruleIndex: number) => ipcRenderer.invoke('system:drop-zone:rules:delete', ruleIndex),
+      evaluate: (data: unknown) => ipcRenderer.invoke('system:drop-zone:evaluate', data),
+    },
+    sort: {
+      preview: (data: unknown) => ipcRenderer.invoke('system:sort:preview', data),
+      execute: (data: unknown) => ipcRenderer.invoke('system:sort:execute', data),
+      undo: (undoId: string) => ipcRenderer.invoke('system:sort:undo', undoId),
+    },
+    git: (data: unknown) => ipcRenderer.invoke('system:git', data),
+    packageManager: (data: unknown) => ipcRenderer.invoke('system:package-manager', data),
+    monitors: () => ipcRenderer.invoke('system:monitors'),
+  },
+
+  // Desktop
+  desktop: {
+    ocr: (region?: number[]) => ipcRenderer.invoke('desktop:ocr', region),
+    wallpaper: (description: string, source?: string) =>
+      ipcRenderer.invoke('desktop:wallpaper', description, source || 'auto')
+  },
+
+  // Web & Media
+  web: {
+    browse: (data: unknown) => ipcRenderer.invoke('web:browse', data),
+    stocks: (ticker: string, period?: string) =>
+      ipcRenderer.invoke('web:stocks', ticker, period || '1d'),
+    weather: (city: string) => ipcRenderer.invoke('web:weather', city),
+    generateImage: (prompt: string, style?: string) =>
+      ipcRenderer.invoke('web:generate-image', prompt, style || 'auto')
   },
 
   // Navigation listener

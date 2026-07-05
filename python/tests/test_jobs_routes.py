@@ -20,44 +20,30 @@ def router():
 
 @pytest.mark.asyncio
 async def test_scan_jobs_success(client):
-    """POST /scan should call scanner and store results."""
-    mock_jobs = [
-        {"title": "Software Engineer", "company": "Acme Corp",
-         "source_board": "linkedin", "location": "remote"},
-        {"title": "Full Stack Dev", "company": "Beta Inc",
-         "source_board": "indeed", "location": "remote"},
-    ]
-
-    with patch("jobs.routes.scanner.scan_all", new_callable=AsyncMock) as mock_scan:
-        mock_scan.return_value = mock_jobs
-        response = await client.post("/scan")
-
+    """POST /scan should start background scan and return status."""
+    response = await client.post("/scan")
     assert response.status_code == 200
     data = response.json()
-    assert data["jobs_found"] == 2
-    assert "Stored 2 jobs" in data["message"]
+    assert data["status"] == "started"
+    assert "message" in data
 
 
 @pytest.mark.asyncio
 async def test_scan_jobs_empty(client):
-    """POST /scan should handle no jobs found."""
-    with patch("jobs.routes.scanner.scan_all", new_callable=AsyncMock) as mock_scan:
-        mock_scan.return_value = []
-        response = await client.post("/scan")
-
+    """POST /scan should start scan even with no pre-existing jobs."""
+    response = await client.post("/scan")
     assert response.status_code == 200
-    assert response.json()["jobs_found"] == 0
+    data = response.json()
+    assert data["status"] == "started"
 
 
 @pytest.mark.asyncio
 async def test_scan_jobs_error(client):
-    """POST /scan should return 500 on scanner failure."""
-    with patch("jobs.routes.scanner.scan_all", new_callable=AsyncMock) as mock_scan:
-        mock_scan.side_effect = Exception("Scanner unavailable")
-        response = await client.post("/scan")
-
-    assert response.status_code == 500
-    assert "Scanner unavailable" in response.json()["detail"]
+    """POST /scan should return 200 even if scanner fails (background task)."""
+    response = await client.post("/scan")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "started"
 
 
 # ─── Matches ──────────────────────────────────────────────────────────────────

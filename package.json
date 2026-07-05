@@ -20,15 +20,14 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@tsparticles/react": "^3.0.0",
     "@tsparticles/slim": "^4.3.1",
     "framer-motion": "^12.42.2",
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.0",
-    "react-tsparticles": "^2.12.2",
-    "recharts": "^2.12.0",
-    "tsparticles-engine": "^2.12.0"
+    "recharts": "^2.12.0"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",
@@ -41,7 +40,7 @@
     "@typescript-eslint/parser": "^8.62.1",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
-    "electron": "^32.0.1",
+    "electron": "^32.3.3",
     "electron-builder": "^25.0.5",
     "electron-vite": "^2.3.0",
     "eslint": "^9.39.4",
@@ -52,5 +51,8 @@
     "typescript": "^5.5.4",
     "vite": "^5.4.2",
     "vitest": "^4.1.9"
+  },
+  "allowScripts": {
+    "electron@32.3.3": true
   }
 }

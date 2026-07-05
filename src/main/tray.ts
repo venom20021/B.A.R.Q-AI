@@ -3,6 +3,12 @@ import { join } from 'path'
 
 let tray: Tray | null = null
 
+// Import isQuitting from a shared location, or define it here
+// We use a module-level variable that must be set before quit
+let _isQuitting = false
+export function setAppIsQuitting(val: boolean): void { _isQuitting = val }
+export function getAppIsQuitting(): boolean { return _isQuitting }
+
 export function createTray(mainWindow: BrowserWindow): void {
   // Create a simple 16x16 tray icon
   const icon = nativeImage.createFromDataURL(
@@ -22,9 +28,20 @@ export function createTray(mainWindow: BrowserWindow): void {
     },
     {
       label: 'Voice Control',
-      click: () => {
-        mainWindow.webContents.send('toggle-voice')
-      }
+      submenu: [
+        {
+          label: 'Toggle Listening',
+          click: () => {
+            mainWindow.webContents.send('toggle-voice')
+          }
+        },
+        {
+          label: 'Always-On (Background)',
+          type: 'checkbox',
+          checked: true,
+          enabled: false,
+        }
+      ]
     },
     { type: 'separator' },
     {
@@ -53,9 +70,9 @@ export function createTray(mainWindow: BrowserWindow): void {
     },
     { type: 'separator' },
     {
-      label: 'Quit',
+      label: 'Quit BARQ',
       click: () => {
-        app.isQuitting = true
+        _isQuitting = true
         app.quit()
       }
     }

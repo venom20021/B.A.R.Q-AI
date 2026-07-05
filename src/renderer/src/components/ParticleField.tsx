@@ -1,9 +1,14 @@
 import { useCallback, useMemo } from 'react'
-import Particles from 'react-tsparticles'
+import Particles from '@tsparticles/react'
 import { loadSlim } from '@tsparticles/slim'
-import type { ISourceOptions } from 'tsparticles-engine'
+import type { ISourceOptions } from '@tsparticles/engine'
 
-export function ParticleField(): JSX.Element {
+interface ParticleFieldProps {
+  id?: string
+  className?: string
+}
+
+export function ParticleField({ id, className }: ParticleFieldProps): JSX.Element {
   const particlesInit = useCallback(async (engine: any): Promise<void> => {
     await loadSlim(engine)
   }, [])
@@ -47,10 +52,10 @@ export function ParticleField(): JSX.Element {
 
   return (
     <Particles
-      id="particle-field"
+      id={id || 'particle-field'}
       init={particlesInit}
-      options={options}
-      className="fixed inset-0 pointer-events-none z-0"
+      options={options as any}
+      className={className || 'fixed inset-0 pointer-events-none z-0'}
     />
   )
 }

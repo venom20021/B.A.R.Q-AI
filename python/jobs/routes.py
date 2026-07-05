@@ -5,7 +5,7 @@ Uses database DAOs for all CRUD operations.
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from . import JobScanner, JobEvaluator, JobApplier
+from . import JobScanner, JobEvaluator, JobApplier, ResponseTracker, FollowUpAutomation
 from .scanner import get_scan_progress, set_scan_error
 from database import jobs_dao, analytics_dao, db_connection
 
@@ -14,6 +14,8 @@ router = APIRouter()
 scanner = JobScanner()
 evaluator = JobEvaluator()
 applier = JobApplier()
+response_tracker = ResponseTracker()
+followup_automation = FollowUpAutomation()
 
 
 class ApproveRequest(BaseModel):
@@ -128,6 +130,84 @@ async def get_applications(status: str = "", limit: int = 50):
         else:
             apps = await jobs_dao.get_applications_by_status("queued", limit)
         return {"applications": apps, "count": len(apps)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Response Rate Analytics ────────────────────────────────────────
+
+
+@router.get("/analytics/responses")
+async def get_response_analytics():
+    """Get comprehensive response rate analytics."""
+    try:
+        analytics = await response_tracker.get_response_analytics()
+        return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/responses/record")
+async def record_response(data: dict):
+    """Record a response for an application (interview, rejection, offer)."""
+    try:
+        result = await response_tracker.record_response(
+            application_id=data["application_id"],
+            response_type=data["response_type"],
+            response_text=data.get("response_text"),
+            interview_date=data.get("interview_date"),
+        )
+        return result
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing required field: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Follow-Up Automation ────────────────────────────────────────────
+
+
+@router.get("/followups/candidates")
+async def get_followup_candidates():
+    """Get applications that need follow-up (submitted > 14 days, no response)."""
+    try:
+        candidates = await response_tracker.get_followup_candidates()
+        return {"candidates": candidates, "count": len(candidates)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/followups/schedule")
+async def schedule_followups():
+    """Check all applications and generate follow-up drafts."""
+    try:
+        scheduled = await followup_automation.schedule_followups()
+        return {"scheduled": scheduled, "count": len(scheduled)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/followups/send")
+async def send_followup(data: dict):
+    """Mark a follow-up as sent for an application."""
+    try:
+        result = await followup_automation.send_followup(
+            application_id=data["application_id"],
+            followup_number=data.get("followup_number", 1),
+        )
+        return result
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing required field: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/followups/history")
+async def get_followup_history():
+    """Get follow-up history."""
+    try:
+        history = await response_tracker.get_followup_history()
+        return {"history": history, "count": len(history)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

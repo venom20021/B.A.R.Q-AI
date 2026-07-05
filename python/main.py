@@ -237,6 +237,101 @@ async def shutdown():
     os._exit(0)
 
 
+# ─── Scheduler Configuration Endpoints ─────────────────────────────────────
+
+
+@app.get("/scheduler/tasks")
+async def get_scheduled_tasks():
+    """Get all scheduled tasks from the database."""
+    try:
+        from database import db_connection
+        tasks = await db_connection.fetch_all(
+            "SELECT id, task_type, name, config, cron_expression, enabled, "
+            "last_run, next_run, total_runs, last_status, created_at "
+            "FROM scheduled_tasks ORDER BY task_type"
+        )
+        return {"tasks": tasks}
+    except Exception as e:
+        return {"tasks": [], "error": str(e)}
+
+
+@app.post("/scheduler/tasks")
+async def create_scheduled_task(data: dict):
+    """Create a new scheduled task."""
+    try:
+        from database import db_connection
+        import json
+        task_id = await db_connection.insert(
+            "INSERT INTO scheduled_tasks (task_type, name, config, cron_expression, enabled) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                data.get("task_type", "custom"),
+                data.get("name", "New Task"),
+                json.dumps(data.get("config", {})),
+                data.get("cron_expression", "0 */6 * * *"),
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        return {"status": "created", "id": task_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/scheduler/tasks/{task_id}/toggle")
+async def toggle_scheduled_task(task_id: int):
+    """Enable or disable a scheduled task."""
+    try:
+        from database import db_connection
+        task = await db_connection.fetch_one(
+            "SELECT enabled FROM scheduled_tasks WHERE id = ?", (task_id,)
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        new_enabled = 0 if task["enabled"] else 1
+        await db_connection.update(
+            "UPDATE scheduled_tasks SET enabled = ? WHERE id = ?",
+            (new_enabled, task_id),
+        )
+        return {"status": "toggled", "enabled": bool(new_enabled)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scheduler/status")
+async def scheduler_status():
+    """Get the current status of the APScheduler."""
+    global scheduler
+    if scheduler is None:
+        return {"running": False, "jobs": []}
+    jobs = []
+    for job in scheduler.get_jobs():
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run": str(job.next_run_time) if job.next_run_time else None,
+            "trigger": str(job.trigger),
+        })
+    return {"running": True, "jobs": jobs}
+
+
+@app.post("/scheduler/run/{task_type}")
+async def run_task_manual(task_type: str):
+    """Manually trigger a scheduled task."""
+    try:
+        if task_type == "job_scan":
+            await _auto_scan_jobs()
+            return {"status": "completed", "task": task_type}
+        elif task_type == "job_match":
+            await _auto_match_jobs()
+            return {"status": "completed", "task": task_type}
+        else:
+            return {"status": "unknown_task", "task": task_type}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
 

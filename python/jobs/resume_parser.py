@@ -13,7 +13,7 @@ from datetime import datetime
 
 # Default path for the resume file
 DEFAULT_RESUME_PATH = os.path.join(
-    os.environ.get("CAREER_OPS_PATH", "C:\\Users\\pc\\career-ops"),
+    os.environ.get("CAREER_OPS_PATH", os.path.join(os.path.expanduser("~"), "career-ops")),
     "cv.md"
 )
 

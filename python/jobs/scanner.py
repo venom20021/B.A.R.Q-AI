@@ -22,6 +22,11 @@ JOB_BOARDS = {
     "remotive": "https://remotive.com/api/remote-jobs",          # Free API, no key needed
     "remoteok": "https://remoteok.com/api",                       # Free API, no key needed
     "hn_algolia": "https://hn.algolia.com/api/v1/search",        # HN "Who is Hiring" threads
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards",   # Greenhouse API
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/",   # Ashby API
+    "lever": "https://api.lever.co/v0/postings",                 # Lever API
+    "workday": "https://www.myworkdayjobs.com",                   # Workday (Playwright)
+    "bamboohr": "https://api.bamboohr.com/api/gateway.php",       # BambooHR API
 }
 
 # Progress tracking — module-level singleton so routes can share state
@@ -235,6 +240,18 @@ class JobScanner:
             return await self._scan_remoteok()
         if board == "hn_algolia":
             return await self._scan_hackernews(keywords)
+        if board == "greenhouse":
+            return await self._scan_greenhouse(keywords)
+        if board == "ashby":
+            return await self._scan_ashby(keywords)
+        if board == "lever":
+            return await self._scan_lever(keywords)
+        if board == "bamboohr":
+            return await self._scan_bamboohr(keywords)
+
+        # Playwright-based for Workday
+        if board == "workday":
+            return await self._scan_workday(keywords)
 
         # HTML scraping sources
         query = "+".join(keywords)
@@ -316,8 +333,370 @@ class JobScanner:
             print(f"[Scanner] RemoteOK error: {e}")
             return []
 
+    # ─── New v2.0 Board Scrapers ───────────────────────────────────────
+
+    async def _scan_greenhouse(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Greenhouse Open API for job listings."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            jobs = []
+            # Greenhouse has public boards API
+            board_resp = await self.client.get(
+                "https://boards-api.greenhouse.io/v1/boards",
+                params={"content": "true", "per_page": 50},
+                timeout=15,
+            )
+            board_resp.raise_for_status()
+            boards_data = board_resp.json()
+            boards = boards_data.get("boards", [])
+
+            # Limit to top 20 boards by ID
+            for board in boards[:20]:
+                board_id = board.get("id", "")
+                if not board_id:
+                    continue
+                try:
+                    jobs_resp = await self.client.get(
+                        f"https://boards-api.greenhouse.io/v1/boards/{board_id}/jobs",
+                        params={"content": "true", "per_page": 30},
+                        timeout=10,
+                    )
+                    jobs_resp.raise_for_status()
+                    jobs_data = jobs_resp.json()
+                    for job in jobs_data.get("jobs", []):
+                        title = job.get("title", "").lower()
+                        desc = job.get("content", "").lower() if job.get("content") else ""
+                        if keyword_str and keyword_str not in title and not any(k.lower() in title for k in keywords):
+                            if not any(k.lower() in desc for k in keywords):
+                                continue
+                        jobs.append({
+                            "title": job.get("title", ""),
+                            "company": board.get("name", job.get("company_name", "Greenhouse")),
+                            "location": job.get("location", {}).get("name", "") if isinstance(job.get("location"), dict) else str(job.get("location", "")),
+                            "description": (job.get("content") or "")[:2000],
+                            "url": job.get("absolute_url", ""),
+                            "salary_min": 0,
+                            "salary_max": 0,
+                            "source_board": "greenhouse",
+                            "posted_date": job.get("updated_at", ""),
+                            "employment_type": "full_time",
+                            "remote_status": job.get("remote", False) and "remote" or "unknown",
+                        })
+                except Exception as e:
+                    print(f"[Scanner] Greenhouse board {board_id} error: {e}")
+                    continue
+                if len(jobs) >= 50:
+                    break
+
+            print(f"[Scanner] Found {len(jobs)} jobs on Greenhouse")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Greenhouse error: {e}")
+            return []
+
+    async def _scan_ashby(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape AshbyHQ API for job listings."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            jobs = []
+            # Ashby's public job board API
+            resp = await self.client.post(
+                "https://api.ashbyhq.com/posting-api/job-board/YOUR_BOARD",
+                json={"maxResults": 50},
+                timeout=15,
+            )
+            # Try common boards if the first one fails
+            common_boards = ["example", "demo", "jobs"]
+            if resp.status_code != 200:
+                for board_slug in common_boards:
+                    try:
+                        resp = await self.client.get(
+                            f"https://jobs.ashbyhq.com/{board_slug}/api",
+                            timeout=10,
+                        )
+                        if resp.status_code == 200:
+                            break
+                    except Exception:
+                        continue
+                if resp.status_code != 200:
+                    # Fallback: search via Google Jobs cache
+                    return await self._scan_via_google_jobs("ashbyhq.com", keywords)
+
+            data = resp.json()
+            for job in data.get("jobs", [])[:30]:
+                title = job.get("title", "").lower()
+                desc = job.get("descriptionHtml", "").lower() if job.get("descriptionHtml") else ""
+                if keyword_str and keyword_str not in title and not any(k.lower() in title for k in keywords):
+                    if not any(k.lower() in desc for k in keywords):
+                        continue
+                jobs.append({
+                    "title": job.get("title", ""),
+                    "company": job.get("company", {}).get("name", "") if isinstance(job.get("company"), dict) else "Ashby",
+                    "location": job.get("location", ""),
+                    "description": (job.get("descriptionHtml") or "")[:2000].replace("<[^>]*>", "").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">"),
+                    "url": job.get("applyUrl", job.get("url", "")),
+                    "salary_min": 0,
+                    "salary_max": 0,
+                    "source_board": "ashby",
+                    "posted_date": job.get("publishedAt", ""),
+                    "employment_type": "full_time",
+                })
+
+            print(f"[Scanner] Found {len(jobs)} jobs on Ashby")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Ashby error: {e}")
+            return []
+
+    async def _scan_lever(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Lever API for job listings."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            jobs = []
+            # Lever has per-company posting APIs
+            # Search common company posting pages
+            companies = [
+                {"name": "lever", "posting_url": "https://api.lever.co/v0/postings/lever"},
+            ]
+
+            # Try to discover companies via Google
+            search_resp = await self.client.get(
+                "https://www.google.com/search",
+                params={"q": "site:jobs.lever.co software engineer job", "num": 20},
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            soup = BeautifulSoup(search_resp.text, "lxml")
+            for link in soup.select("a[href*='jobs.lever.co']"):
+                href = link.get("href", "")
+                if "/" in href:
+                    parts = href.split("/")
+                    for p in parts:
+                        if p and p != "jobs.lever.co" and "google" not in p:
+                            companies.append({"name": p, "posting_url": f"https://api.lever.co/v0/postings/{p}"})
+                            break
+
+            seen_urls = set()
+            for company in companies[:15]:
+                try:
+                    resp = await self.client.get(company["posting_url"], timeout=10)
+                    if resp.status_code != 200:
+                        continue
+                    postings = resp.json()
+                    for posting in postings[:20]:
+                        title = posting.get("text", "").lower()
+                        desc = posting.get("description", "").lower() if posting.get("description") else ""
+                        if keyword_str and keyword_str not in title and not any(k.lower() in title for k in keywords):
+                            if not any(k.lower() in desc for k in keywords):
+                                continue
+                        apply_url = posting.get("applyUrl", {}).get("url", "") if isinstance(posting.get("applyUrl"), dict) else ""
+                        if apply_url in seen_urls:
+                            continue
+                        seen_urls.add(apply_url)
+                        jobs.append({
+                            "title": posting.get("text", ""),
+                            "company": posting.get("company", "").replace("-", " ").title() if posting.get("company") else company["name"].title(),
+                            "location": posting.get("categories", {}).get("location", "") if isinstance(posting.get("categories"), dict) else "",
+                            "description": (posting.get("description") or "")[:2000].replace("<[^>]*>", "") if posting.get("description") else "",
+                            "url": apply_url,
+                            "salary_min": posting.get("salary", {}).get("min", 0) if isinstance(posting.get("salary"), dict) else 0,
+                            "salary_max": posting.get("salary", {}).get("max", 0) if isinstance(posting.get("salary"), dict) else 0,
+                            "source_board": "lever",
+                            "posted_date": posting.get("createdAt", ""),
+                            "employment_type": posting.get("categories", {}).get("commitment", "full_time") if isinstance(posting.get("categories"), dict) else "full_time",
+                            "remote_status": posting.get("categories", {}).get("remote", False) if isinstance(posting.get("categories"), dict) else "unknown",
+                        })
+                except Exception as e:
+                    print(f"[Scanner] Lever company {company['name']} error: {e}")
+                    continue
+
+            print(f"[Scanner] Found {len(jobs)} jobs on Lever")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Lever error: {e}")
+            return []
+
+    async def _scan_bamboohr(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape BambooHR job listings."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            jobs = []
+            # BambooHR has public career portals
+            # Common BambooHR subdomains to check
+            companies = ["demo", "sample"]
+
+            for company in companies:
+                try:
+                    resp = await self.client.get(
+                        f"https://{company}.bamboohr.com/careers/list",
+                        timeout=10,
+                        headers={"Accept": "application/json"},
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    for job in data.get("jobs", [])[:20]:
+                        title = job.get("jobTitle", "").lower()
+                        desc = job.get("jobDescription", "").lower() if job.get("jobDescription") else ""
+                        if keyword_str and keyword_str not in title and not any(k.lower() in title for k in keywords):
+                            if not any(k.lower() in desc for k in keywords):
+                                continue
+                        jobs.append({
+                            "title": job.get("jobTitle", ""),
+                            "company": job.get("companyName", company.title()),
+                            "location": job.get("location", ""),
+                            "description": (job.get("jobDescription") or "")[:2000],
+                            "url": job.get("applyUrl", ""),
+                            "salary_min": 0,
+                            "salary_max": 0,
+                            "source_board": "bamboohr",
+                            "posted_date": job.get("postedDate", ""),
+                            "employment_type": "full_time",
+                        })
+                except Exception as e:
+                    print(f"[Scanner] BambooHR company {company} error: {e}")
+                    continue
+
+            # Also try Google Jobs cache for BambooHR listings
+            if len(jobs) < 5:
+                google_jobs = await self._scan_via_google_jobs("bamboohr.com", keywords)
+                jobs.extend(google_jobs[:20])
+
+            print(f"[Scanner] Found {len(jobs)} jobs on BambooHR")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] BambooHR error: {e}")
+            return []
+
+    async def _scan_workday(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Workday job listings using Playwright."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return await self._scan_via_google_jobs("myworkdayjobs.com", keywords)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+
+                keyword_str = " ".join(k.lower() for k in keywords)
+                jobs = []
+
+                # Search Google for Workday job listings
+                search_query = "+".join(keywords) + "+site:myworkdayjobs.com"
+                await page.goto(
+                    f"https://www.google.com/search?q={search_query}&num=30",
+                    wait_until="domcontentloaded",
+                    timeout=20000,
+                )
+                await page.wait_for_timeout(1500)
+
+                # Extract job links
+                links = await page.evaluate("""
+                    () => {
+                        const results = [];
+                        const links = document.querySelectorAll('a[href*="myworkdayjobs.com"]');
+                        links.forEach(a => {
+                            const href = a.href;
+                            if (href && !results.includes(href)) {
+                                results.push(href);
+                            }
+                        });
+                        return results.slice(0, 30);
+                    }
+                """)
+
+                for link in links[:20]:
+                    try:
+                        await page.goto(link, wait_until="domcontentloaded", timeout=15000)
+                        await page.wait_for_timeout(1000)
+
+                        # Extract job details using page content
+                        title = await page.title()
+                        body_text = await page.evaluate("() => document.body.innerText")
+
+                        if title and len(title) > 5:
+                            title_lower = title.lower()
+                            if not any(k.lower() in title_lower for k in keywords):
+                                if not any(k.lower() in body_text.lower() for k in keywords):
+                                    continue
+
+                            jobs.append({
+                                "title": title.replace(" - Job Posting", "").replace(" | Workday", ""),
+                                "company": "",
+                                "location": "",
+                                "description": body_text[:2000],
+                                "url": link,
+                                "salary_min": 0,
+                                "salary_max": 0,
+                                "source_board": "workday",
+                                "posted_date": "",
+                                "employment_type": "full_time",
+                            })
+                    except Exception as e:
+                        print(f"[Scanner] Workday link error: {e}")
+                        continue
+
+                await browser.close()
+                print(f"[Scanner] Found {len(jobs)} jobs on Workday")
+                return jobs
+
+        except Exception as e:
+            print(f"[Scanner] Workday Playwright error: {e}")
+            return []
+
+    async def _scan_via_google_jobs(self, domain: str, keywords: list[str]) -> list[dict[str, Any]]:
+        """Fallback: scan via Google Jobs cache. Used when native API fails."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            query = "+".join(keywords)
+            resp = await self.client.get(
+                "https://www.google.com/search",
+                params={"q": f"{query} job site:{domain}", "num": 20},
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            seen = set()
+
+            for result in soup.select("div.g"):
+                link = result.select_one("a[href]")
+                title_el = result.select_one("h3")
+                snippet_el = result.select_one("div.VwiC3b, span.aCOpRe")
+
+                if link and title_el:
+                    href = link.get("href", "")
+                    title = title_el.text.strip()
+                    if href in seen:
+                        continue
+                    seen.add(href)
+
+                    title_lower = title.lower()
+                    if keyword_str and keyword_str not in title_lower and not any(k.lower() in title_lower for k in keywords):
+                        continue
+
+                    jobs.append({
+                        "title": title,
+                        "company": domain.replace("www.", "").replace(".com", "").title(),
+                        "location": "",
+                        "description": (snippet_el.text.strip() if snippet_el else "")[:1000],
+                        "url": href,
+                        "salary_min": 0,
+                        "salary_max": 0,
+                        "source_board": domain.split(".")[0] if "." in domain else domain,
+                        "posted_date": "",
+                        "employment_type": "full_time",
+                    })
+
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Google Jobs fallback error: {e}")
+            return []
+
     async def _scan_hackernews(self, keywords: list[str]) -> list[dict[str, Any]]:
-        """Scrape HN 'Who is Hiring' threads via Algolia API."""
         try:
             # Search for "Who is Hiring" posts from the last 30 days
             resp = await self.client.get(
