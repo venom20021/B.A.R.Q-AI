@@ -4,6 +4,8 @@
 
 Built with **Python (FastAPI)** for the backend and **Electron + React** for the desktop UI, BARQ runs on **macOS** and **Windows**.
 
+![BARQ Dashboard](screenshots/dashboard.png)
+
 ---
 
 ## Features
@@ -45,6 +47,17 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Package manager** — npm, pip, brew commands by voice
 - **Localhost tunneling** — Expose local ports via cloudflared
 - **Terminal streaming** — Real-time command output via SSE
+
+### 🌐 Neural Dashboard UI
+- **3D particle sphere** — 30,000-particle volumetric cloud with Fibonacci distribution, power-weighted density (5.0) for a packed core that thins toward the surface
+- **Glowing energy core** — Additive blending + soft bokeh texture + tonemapped emissive colors create a bright, volumetric center
+- **Smooth color transitions** — All visual elements (particles, rings, CSS glow) blend to new accent themes simultaneously over ~2.5s
+- **Voice reactivity** — Sphere rotation, wobble, and particle pulse respond to speech in real-time
+- **Mouse parallax** — Surface particles shift with cursor movement while inner particles stay static (depth-aware 3D effect)
+- **CSS glow bloom** — Real-time breathing glow effect that pulses with voice activity intensity
+- **Orbital rings** — Rotating rings with speed boost animation on theme switch
+- **Live system metrics** — Real-time CPU, memory, disk sparkline charts polling the backend every 2s
+- **Multi-city weather** — Track weather for multiple cities with live data from the backend
 
 ---
 
@@ -405,7 +418,7 @@ curl http://127.0.0.1:8956/voice/status
 # 4. Change the wake word
 curl -X POST http://127.0.0.1:8956/voice/wake-word \
   -H 'Content-Type: application/json' \
-  -d '{"wake_word":"hey barq"}'
+  -d '{"wake_word":"computer"}'
 
 # 5. Chat with BARQ (text-only)
 curl -X POST http://127.0.0.1:8956/voice/chat/text \
