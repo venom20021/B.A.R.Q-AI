@@ -14,7 +14,7 @@ from config import get_settings
 from ai.responder import BARQResponder
 from . import WakeWordDetector, SpeechProcessor, play_command_accepted_sound, set_sound_enabled, get_sound_settings
 from .conversation_listener import ConversationListener
-from database import analytics_dao, settings_dao
+from database import analytics_dao, settings_dao, db_connection
 
 router = APIRouter()
 
@@ -39,30 +39,365 @@ def get_wake_word_detector() -> WakeWordDetector:
     return wake_word_detector
 
 
+async def _speak_wake_greeting():
+    """Gather weather, system, and job info and speak a greeting via TTS.
+    Runs after wake word detection, then enters conversation mode."""
+    try:
+        info_parts = []
+
+        # 1. System status
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+            info_parts.append(
+                f"Your system is running. CPU is at {cpu} percent. "
+                f"Memory is {mem.percent} percent used with {mem.available / (1024**3):.1f} gigabytes free."
+            )
+        except Exception:
+            info_parts.append("Your system is running.")
+
+        # 2. Job search status
+        try:
+            row = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM job_listings"
+            )
+            total_jobs = row["count"] if row else 0
+
+            submitted = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM applications WHERE status = 'submitted'"
+            )
+            interviews = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM applications WHERE status = 'interview'"
+            )
+            queued = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM applications WHERE status = 'queued'"
+            )
+
+            sub_count = submitted["count"] if submitted else 0
+            int_count = interviews["count"] if interviews else 0
+            queued_count = queued["count"] if queued else 0
+
+            if total_jobs > 0:
+                info_parts.append(
+                    f"Job search: {total_jobs} jobs scanned, {queued_count} pending review, "
+                    f"{sub_count} applications submitted, {int_count} interviews."
+                )
+        except Exception:
+            pass
+
+        # 3. Weather (if API key is configured — uses saved city from DB or 'London' as fallback)
+        try:
+            import httpx
+            import os as _os
+            api_key = _os.getenv("OPENWEATHER_API_KEY", "")
+            if api_key:
+                # Try to get saved city from user settings
+                city = await settings_dao.get_setting("weather_city")
+                if not city:
+                    city = "London"
+                async with httpx.AsyncClient() as client:
+                    geo_resp = await client.get(
+                        "https://api.openweathermap.org/geo/1.0/direct",
+                        params={"q": city, "limit": 1, "appid": api_key},
+                        timeout=5,
+                    )
+                    geo_data = geo_resp.json()
+                    if geo_data:
+                        lat, lon = geo_data[0]["lat"], geo_data[0]["lon"]
+                        w_resp = await client.get(
+                            "https://api.openweathermap.org/data/2.5/weather",
+                            params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
+                            timeout=5,
+                        )
+                        w = w_resp.json()
+                        if "main" in w:
+                            temp = w["main"]["temp"]
+                            desc = w["weather"][0]["description"]
+                            city_name = geo_data[0].get("name", "your area")
+                            info_parts.append(
+                                f"Weather in {city_name}: {desc}, {temp:.0f} degrees Celsius."
+                            )
+        except Exception:
+            pass
+
+        # 4. Stock prices (if yfinance is installed — reads configured tickers from DB setting)
+        try:
+            import os as _os
+            tickers_str = await settings_dao.get_setting("stock_tickers")
+            if tickers_str:
+                tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()][:5]
+                if tickers:
+                    import yfinance as yf
+                    prices = []
+                    for t in tickers:
+                        try:
+                            stock = yf.Ticker(t)
+                            info = stock.info
+                            price = info.get("currentPrice")
+                            change = info.get("regularMarketChangePercent", 0)
+                            if price:
+                                direction = "up" if change and change >= 0 else "down"
+                                change_str = f"{abs(change):.1f}%" if change else ""
+                                prices.append(f"{t} at ${price:.2f}, {direction} {change_str}")
+                        except Exception:
+                            continue
+                    if prices:
+                        info_parts.append(f"Stocks: {"; ".join(prices)}.")
+        except Exception:
+            pass
+
+        # 5. News headlines (if NEWS_API_KEY is configured)
+        try:
+            import os as _os
+            news_key = _os.getenv("NEWS_API_KEY", "")
+            if news_key:
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        "https://newsapi.org/v2/top-headlines",
+                        params={"language": "en", "pageSize": 3, "apiKey": news_key},
+                        timeout=5,
+                    )
+                    data = resp.json()
+                    articles = data.get("articles", [])
+                    if articles:
+                        headlines = [
+                            a["title"].rstrip(".!?") for a in articles[:3] if a.get("title")
+                        ]
+                        news_text = ". ".join(headlines) + "."
+                        info_parts.append(f"Latest headlines: {news_text}")
+        except Exception:
+            pass
+
+        # 6. Upcoming interviews and scheduled tasks (calendar check)
+        try:
+            from datetime import date
+            today = date.today().isoformat()
+
+            # Upcoming interviews from applications
+            interviews = await db_connection.fetch_all(
+                "SELECT j.company, a.interview_date FROM applications a "
+                "JOIN job_listings j ON a.job_listing_id = j.id "
+                "WHERE a.interview_date IS NOT NULL AND a.interview_date >= ? "
+                "ORDER BY a.interview_date ASC LIMIT 3",
+                (today,),
+            )
+            if interviews:
+                interview_texts = []
+                for row in interviews:
+                    company = row["company"]
+                    iv_date = row["interview_date"]
+                    if iv_date == today:
+                        interview_texts.append(f"{company} today")
+                    else:
+                        interview_texts.append(f"{company} on {iv_date}")
+                info_parts.append(
+                    f"Upcoming interviews: {", ".join(interview_texts)}."
+                )
+
+            # Today's scheduled tasks
+            tasks = await db_connection.fetch_all(
+                "SELECT name FROM scheduled_tasks WHERE enabled = 1 AND (last_run IS NULL OR date(last_run) < ?) LIMIT 2",
+                (today,),
+            )
+            if tasks:
+                task_names = [t["name"] for t in tasks]
+                info_parts.append(
+                    f"Pending tasks: {", ".join(task_names)}."
+                )
+        except Exception:
+            pass
+
+        # 7. Unread email count (if SMTP/IMAP credentials are configured)
+        try:
+            import os as _os
+            host = _os.getenv("SMTP_HOST", "smtp.gmail.com")
+            user = _os.getenv("SMTP_USER", "")
+            password = _os.getenv("SMTP_PASS", "")
+            if user and password:
+                import imaplib
+                # Convert SMTP host to IMAP host (e.g. smtp.gmail.com → imap.gmail.com)
+                imap_host = host.replace("smtp.", "imap.") if "smtp." in host else f"imap.{host}"
+                try:
+                    mail = imaplib.IMAP4_SSL(imap_host, timeout=10)
+                    mail.login(user, password)
+                    mail.select("INBOX")
+                    _, data = mail.search(None, "UNSEEN")
+                    unread_count = len(data[0].split()) if data[0] else 0
+                    mail.logout()
+                    if unread_count > 0:
+                        label = "email" if unread_count == 1 else "emails"
+                        info_parts.append(f"You have {unread_count} unread {label}.")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 8. GitHub notifications (if GITHUB_TOKEN is configured)
+        try:
+            import os as _os
+            gh_token = _os.getenv("GITHUB_TOKEN", "")
+            if gh_token:
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        "https://api.github.com/notifications",
+                        headers={
+                            "Authorization": f"Bearer {gh_token}",
+                            "Accept": "application/vnd.github.v3+json",
+                        },
+                        timeout=5,
+                    )
+                    if resp.status_code == 200:
+                        notifications = resp.json()
+                        gh_count = len(notifications)
+                        if gh_count > 0:
+                            # Count PRs vs issues from notification subjects
+                            pulls = sum(1 for n in notifications if n["subject"]["url"].find("/pulls/") >= 0 or n["subject"]["type"] == "PullRequest")
+                            issues = gh_count - pulls
+                            parts = []
+                            if pulls > 0:
+                                parts.append(f"{pulls} pull request{'s' if pulls > 1 else ''}")
+                            if issues > 0:
+                                parts.append(f"{issues} issue{'s' if issues > 1 else ''}")
+                            info_parts.append(f"GitHub: {" and ".join(parts)} need attention.")
+        except Exception:
+            pass
+
+        # 9. Notes count
+        try:
+            notes_total = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM notes"
+            )
+            notes_pinned = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM notes WHERE pinned = 1"
+            )
+            total = notes_total["count"] if notes_total else 0
+            pinned = notes_pinned["count"] if notes_pinned else 0
+            if total > 0:
+                notes_label = "note" if total == 1 else "notes"
+                pinned_label = f", {pinned} pinned" if pinned > 0 else ""
+                info_parts.append(f"You have {total} {notes_label}{pinned_label}.")
+        except Exception:
+            pass
+
+        # 10. Generated images count (from activity log)
+        try:
+            img_row = await db_connection.fetch_one(
+                "SELECT COUNT(*) as count FROM activity_log WHERE action = 'generate_image'"
+            )
+            img_count = img_row["count"] if img_row else 0
+            if img_count > 0:
+                img_label = "image" if img_count == 1 else "images"
+                info_parts.append(f"Gallery: {img_count} {img_label} generated.")
+        except Exception:
+            pass
+
+        # Compose greeting
+        if info_parts:
+            greeting = "Hello! " + " ".join(info_parts) + " How can I help you?"
+        else:
+            greeting = "Hello! How can I help you?"
+
+        print(f"[WakeGreeting] {greeting}")
+
+        # Synthesize and play greeting via TTS
+        try:
+            import edge_tts
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                tmp_path = f.name
+
+            communicate = edge_tts.Communicate(greeting, _tts_voice)
+            await communicate.save(tmp_path)
+
+            # Play the audio file and WAIT for it to finish before continuing
+            import asyncio as _asyncio
+            import subprocess as _sp
+            import platform as _plat
+            system_plat = _plat.system().lower()
+            if system_plat == "darwin":
+                proc = await _asyncio.create_subprocess_exec(
+                    "afplay", tmp_path,
+                    stdout=_asyncio.subprocess.DEVNULL,
+                    stderr=_asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+            elif system_plat == "windows":
+                proc = await _asyncio.create_subprocess_exec(
+                    "start", tmp_path, shell=True,
+                )
+                await proc.wait()
+            else:
+                proc = await _asyncio.create_subprocess_exec(
+                    "aplay", tmp_path,
+                    stdout=_asyncio.subprocess.DEVNULL,
+                    stderr=_asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+
+            # Cleanup temp file after playback
+            Path(tmp_path).unlink(missing_ok=True)
+
+        except Exception as e:
+            print(f"[WakeGreeting] TTS playback error: {e}")
+
+        # Log the wake greeting activity
+        await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected with greeting")
+
+    except Exception as e:
+        print(f"[WakeGreeting] Error gathering info: {e}")
+
+    # Always enter conversation mode after greeting
+    await conversation_listener.start_conversation()
+
+
 def _on_wake_word_callback():
-    """Callback fired when wake word is detected by the background listener."""
-    print("[Voice] Wake word detected — Electron wake signal sent")
-
-
-def _on_conversation_trigger():
-    """Callback fired from the wake word detector to start the conversation loop.
-    This runs in a background thread, so we use asyncio.run_coroutine_threadsafe
-    to fire the async conversation loop on the event loop.
-    Only triggers if hands-free conversation mode is enabled."""
+    """Callback fired when wake word is detected by the background listener.
+    If wake greeting is enabled, speaks a greeting with system/job/weather/stocks/news info,
+    then starts conversation mode (if hands-free is also enabled).
+    If greeting is disabled, falls through to conversation mode directly."""
     global _hands_free_mode
-    if not _hands_free_mode:
-        print("[Voice] Hands-free mode disabled — skipping conversation trigger")
+    global _wake_greeting_enabled
+    if not _wake_greeting_enabled:
+        if not _hands_free_mode:
+            print("[Voice] Hands-free mode disabled — skipping wake greeting")
+            return
+        print("[Voice] Wake greeting disabled — skipping greeting, starting conversation")
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    conversation_listener.start_conversation(), loop
+                )
+        except RuntimeError:
+            print("[Voice] No event loop available")
         return
+    if not _hands_free_mode:
+        print("[Voice] Hands-free mode disabled — skipping wake greeting")
+        return
+    print("[Voice] Wake word detected — speaking greeting and starting conversation")
     try:
         import asyncio
         loop = asyncio.get_event_loop()
         if loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                conversation_listener.start_conversation(), loop
+                _speak_wake_greeting(), loop
             )
-            print("[Voice] Hands-free conversation mode triggered from wake word")
     except RuntimeError:
-        print("[Voice] No event loop available for conversation trigger")
+        print("[Voice] No event loop available for wake greeting")
+
+
+def _on_conversation_trigger():
+    """Callback fired from the wake word detector.
+    Conversation is now handled by _speak_wake_greeting() which runs after
+    the wake word callback, so this is intentionally a no-op.
+    """
+    pass
 
 
 async def load_sound_settings():
@@ -100,12 +435,20 @@ async def load_sound_settings():
         _hands_free_mode = hf_val.lower() == "true"
         print(f"[Voice] Hands-free mode loaded from DB: {_hands_free_mode}")
 
+    # Load wake greeting enabled setting
+    wg_val = await settings_dao.get_setting("wake_greeting_enabled")
+    if wg_val is not None:
+        global _wake_greeting_enabled
+        _wake_greeting_enabled = wg_val.lower() == "true"
+        print(f"[Voice] Wake greeting enabled loaded from DB: {_wake_greeting_enabled}")
+
 # ─── Multi-turn conversation state ─────────────────────────────────────────
 
 _tts_voice: str = "en-US-JennyNeural"
 _sensitivity: str = "medium"
 _language: str = "en"  # "en" or "hi"
 _hands_free_mode: bool = True  # Alexa/Gemini-style hands-free conversation mode
+_wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected (separate from hands-free)
 # Conversation manager is now managed by the shared responder instance
 # _responder and conversation_listener are the canonical singletons above
 
@@ -147,6 +490,10 @@ class WakeWordRequest(BaseModel):
 
 class ConversationModeRequest(BaseModel):
     enabled: bool  # enable or disable hands-free conversation mode
+
+
+class WeatherCityRequest(BaseModel):
+    city: str  # city name for weather in wake greeting
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -275,11 +622,41 @@ async def set_language(request: LanguageRequest):
 @router.post("/chat")
 async def chat(request: ChatRequest):
     """Send a message to BARQ's conversation AI and get a text+audio response.
-    Uses ConversationManager for context and Ollama for LLM responses."""
+    Uses ConversationManager for context and Ollama for LLM responses.
+    Returns both the text response and base64-encoded TTS audio using the
+    same Edge-TTS voice as the wake greeting."""
     try:
         result = await responder.respond(request.message)
+
+        # Extract text from the response
+        if isinstance(result, dict):
+            text = result.get("text") or result.get("response") or str(result)
+        elif isinstance(result, str):
+            text = result
+        else:
+            text = str(result)
+
+        # Synthesize TTS audio using same voice as wake greeting
+        try:
+            audio_bytes = await speech_processor.synthesize(text, voice=_tts_voice)
+            import base64
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        except Exception:
+            audio_b64 = None
+
         await analytics_dao.log_activity("voice", "chat", f"Chat: {request.message[:50]}...")
-        return result
+
+        response = {
+            "text": text,
+            "audio_base64": audio_b64,
+        }
+        if isinstance(result, dict):
+            # Merge any additional fields from the original result
+            for k, v in result.items():
+                if k not in ("text", "response", "audio_base64"):
+                    response[k] = v
+        return response
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -466,7 +843,7 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
     if command in ("stop listening", "stop voice", "shut up", "silence"):
         return {"action": "voice_stop", "endpoint": "POST /voice/stop", "status": "triggered"}
 
-    if command in ("start listening", "wake up", "hey barq"):
+    if command in ("start listening", "wake up", "computer", "hey computer"):
         return {"action": "voice_start", "endpoint": "POST /voice/start", "status": "triggered"}
 
     # ─── Conversation control ───────────────────────────────────────
@@ -787,6 +1164,38 @@ async def set_wake_word(request: WakeWordRequest):
     return {"status": "updated", "wake_word": new_word}
 
 
+@router.post("/weather-city")
+async def set_weather_city(request: WeatherCityRequest):
+    """Set the city for weather in the wake word greeting."""
+    city = request.city.strip()
+    if not city or len(city) < 2:
+        raise HTTPException(status_code=400, detail="City name must be at least 2 characters")
+
+    await settings_dao.set_setting("weather_city", city, "voice")
+    await analytics_dao.log_activity("voice", "weather_city", f"Weather city set to: {city}")
+    print(f"[Voice] Weather city set to: {city}")
+
+    return {"status": "set", "weather_city": city}
+
+
+@router.post("/wake-greeting-mode")
+async def set_wake_greeting_mode(request: ConversationModeRequest):
+    """Enable or disable the wake word greeting.
+    When enabled, saying the wake word will speak system/job/weather/stocks/news
+    info before entering conversation mode. When disabled, the wake word
+    directly enters conversation mode (or just focuses the window).
+    This is independent of hands-free conversation mode.
+    """
+    global _wake_greeting_enabled
+    _wake_greeting_enabled = request.enabled
+    print(f"[Voice] Wake greeting {'enabled' if request.enabled else 'disabled'}")
+
+    await settings_dao.set_setting("wake_greeting_enabled", str(request.enabled), "voice")
+    await analytics_dao.log_activity("voice", "wake_greeting_mode", f"Wake greeting: {request.enabled}")
+
+    return {"status": "set", "wake_greeting_enabled": request.enabled}
+
+
 @router.post("/conversation-mode")
 async def set_conversation_mode(request: ConversationModeRequest):
     """Enable or disable the hands-free Alexa/Gemini-style conversation mode.
@@ -817,7 +1226,8 @@ async def voice_status():
     if wake_word_detector is not None:
         last_confidence = wake_word_detector.get_last_confidence()
 
-    # Get active language from detector
+    # Get weather city setting
+    weather_city = await settings_dao.get_setting("weather_city")
     language = _language
     if wake_word_detector is not None:
         language = wake_word_detector.language
@@ -834,6 +1244,8 @@ async def voice_status():
         "conversation_active": responder.conversation.is_active,
         "conversation_turns": responder.conversation.turn_count,
         "hands_free_mode": _hands_free_mode,
+        "wake_greeting_enabled": _wake_greeting_enabled,
+        "weather_city": weather_city or "London",
         "recent_commands": [
             {"transcript": c["transcript"], "confidence": c.get("confidence", 0.0), "created_at": c["created_at"]}
             for c in recent_commands

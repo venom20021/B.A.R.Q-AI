@@ -8,8 +8,9 @@ import json
 from typing import Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from . import TrendResearch, ScriptGenerator, VideoAssembler, ContentPoster
+from . import TrendResearch, ScriptGenerator, VideoAssembler, ContentPoster, ContentCalendar
 from database import social_dao, analytics_dao
+
 
 router = APIRouter()
 
@@ -77,6 +78,7 @@ trend_research = TrendResearch()
 script_generator = ScriptGenerator()
 video_assembler = VideoAssembler()
 content_poster = ContentPoster()
+content_calendar = ContentCalendar()
 
 
 class ScriptRequest(BaseModel):
@@ -92,6 +94,19 @@ class RenderRequest(BaseModel):
 class PostRequest(BaseModel):
     video_id: str
     platforms: list[str]
+
+
+class ScheduleRequest(BaseModel):
+    video_id: int
+    platforms: list[str]
+    scheduled_date: str  # ISO datetime or date
+    title: str = ""
+    description: str = ""
+
+
+class CalendarMonthRequest(BaseModel):
+    year: int
+    month: int
 
 
 @router.get("/trends")
@@ -315,6 +330,93 @@ async def pipeline_stats():
     try:
         counts = await social_dao.get_pipeline_counts()
         return {"pipeline": counts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Content Calendar ────────────────────────────────────────────────────
+
+
+@router.get("/calendar/month")
+async def calendar_month(year: int = 0, month: int = 0):
+    """
+    Get calendar overview for a month.
+    Defaults to current month if year/month not provided.
+    """
+    try:
+        from datetime import date
+        today = date.today()
+        y = year or today.year
+        m = month or today.month
+        calendar = await content_calendar.get_calendar_month(y, m)
+        return calendar
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/calendar/week")
+async def calendar_week(start: str = ""):
+    """
+    Get calendar overview for a week.
+    Defaults to current week if start not provided.
+    """
+    try:
+        from datetime import date, timedelta
+        if not start:
+            today = date.today()
+            start = today.isoformat()
+        calendar = await content_calendar.get_calendar_week(start)
+        return calendar
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/calendar/schedule")
+async def schedule_post(request: ScheduleRequest):
+    """Schedule a video for posting at a future date."""
+    try:
+        result = await content_calendar.schedule_post(
+            video_id=request.video_id,
+            platforms=request.platforms,
+            scheduled_date=request.scheduled_date,
+            title=request.title,
+            description=request.description,
+        )
+        await analytics_dao.log_activity(
+            "content", "post_scheduled",
+            f"Scheduled video #{request.video_id} for {request.scheduled_date[:10]} on {', '.join(request.platforms)}"
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/calendar/schedule/{post_id}")
+async def cancel_scheduled_post(post_id: int):
+    """Cancel a scheduled post."""
+    try:
+        await content_calendar.cancel_scheduled_post(post_id)
+        return {"status": "cancelled", "post_id": post_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/calendar/upcoming")
+async def upcoming_schedule(days: int = 14):
+    """Get upcoming scheduled posts for the next N days."""
+    try:
+        schedule = await content_calendar.get_upcoming_schedule(days=days)
+        return {"upcoming": schedule, "total": len(schedule)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/calendar/stats")
+async def calendar_stats():
+    """Get calendar statistics."""
+    try:
+        stats = await content_calendar.get_calendar_stats()
+        return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

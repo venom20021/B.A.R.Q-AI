@@ -88,7 +88,7 @@ class BARQResponder:
         exit_phrases = ["goodbye", "bye", "exit", "end conversation", "that's all", "we're done"]
         if any(p in text.lower() for p in exit_phrases):
             self.conversation.end_session()
-            return "Goodbye! Say 'Hey BARQ' when you need me again."
+            return "Goodbye! Say 'computer' when you need me again."
 
         # Route through the existing command parser from voice.routes
         try:

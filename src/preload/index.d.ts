@@ -28,6 +28,12 @@ interface BarqAPI {
     generateScript: (topic: string, format: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     renderVideo: (scriptId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     post: (videoId: string, platforms: string[]) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    calendarMonth: (year: number, month: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    calendarWeek: (start: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    schedule: (data: { video_id: number; platforms: string[]; scheduled_date: string; title?: string; description?: string }) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    cancelSchedule: (postId: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    upcoming: (days: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    calendarStats: () => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
   analytics: {
     career: () => Promise<{ success: boolean; data?: unknown; error?: string }>

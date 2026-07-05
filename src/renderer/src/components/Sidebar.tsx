@@ -24,7 +24,7 @@ const navSections: { label: string; items: NavItemDef[] }[] = [
   {
     label: 'Overview',
     items: [
-      { path: '/dashboard', label: 'Home', icon: LayoutDashboard },
+      { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { path: '/analytics', label: 'Analytics', icon: BarChart3 },
     ],
   },

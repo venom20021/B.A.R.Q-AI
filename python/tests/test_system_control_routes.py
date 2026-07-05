@@ -262,7 +262,15 @@ async def test_run_command_with_cwd(client):
 
 @pytest.mark.asyncio
 async def test_run_command_failure(client):
-    """POST /terminal/run should handle non-zero exit codes."""
+    """POST /terminal/run should handle non-zero exit codes.
+    Pre-approve the command since unrecognized commands default to WARN tier.
+    """
+    # First, approve the command (exit 1 is unrecognized → WARN tier)
+    await client.post(
+        "/command/approve",
+        json={"command": "exit 1", "tier": "warn"},
+    )
+
     with patch("subprocess.run") as mock_run:
         mock_run.return_value.stdout = "error occurred"
         mock_run.return_value.stderr = "exit code 1"
@@ -289,6 +297,90 @@ async def test_expose_port_no_cloudflared(client):
         json={"port": 3000},
     )
     # Should handle gracefully (FileNotFoundError for cloudflared not installed)
-    assert response.status_code == 200 or response.status_code == 500
-    if response.status_code == 200:
-        assert response.json()["status"] in ("tunnel_unavailable", "tunneling_started")
+    assert response.status_code == 200
+    assert response.json()["status"] in ("tunnel_unavailable",)
+
+
+# ─── System Events ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_system_events_returns_filtered(client):
+    """GET /events should return only system-type events from the activity log."""
+    from database import analytics_dao
+
+    # Seed some system events
+    await analytics_dao.log_activity("system", "startup", "System started", severity="info")
+    await analytics_dao.log_activity("system", "shutdown", "System shutdown", severity="info")
+    await analytics_dao.log_activity("system", "launch_app_error", "Failed to launch app", severity="error")
+
+    # Seed a non-system event that should NOT appear
+    await analytics_dao.log_activity("voice", "wake_word", "Wake word detected", severity="info")
+    await analytics_dao.log_activity("job", "scan_jobs", "Scanned job listings", severity="info")
+
+    response = await client.get("/events?limit=50")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "events" in data
+    assert "total" in data
+    assert data["total"] == 3  # Only the 3 system events
+    assert len(data["events"]) == 3
+
+    # Verify all returned events are system type
+    for event in data["events"]:
+        assert event["type"] == "system"
+        assert "id" in event
+        assert "action" in event
+        assert "description" in event
+        assert "severity" in event
+        assert "created_at" in event
+
+
+@pytest.mark.asyncio
+async def test_system_events_limit(client):
+    """GET /events should respect the limit parameter."""
+    from database import analytics_dao
+
+    # Seed more events than the limit
+    for i in range(5):
+        await analytics_dao.log_activity("system", "test_event", f"Test event {i}", severity="info")
+
+    response = await client.get("/events?limit=2")
+    assert response.status_code == 200
+    data = response.json()
+
+    # total reflects the count after limit is applied
+    assert data["total"] == 2
+    assert len(data["events"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_system_events_empty(client):
+    """GET /events should return empty list when no system events exist."""
+    from database import analytics_dao
+
+    # Only add non-system events
+    await analytics_dao.log_activity("voice", "test", "Voice command", severity="info")
+
+    response = await client.get("/events?limit=50")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["events"] == []
+    assert data["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_system_events_default_limit(client):
+    """GET /events without limit should use default of 50."""
+    from database import analytics_dao
+
+    for i in range(3):
+        await analytics_dao.log_activity("system", "test", f"Event {i}", severity="info")
+
+    response = await client.get("/events")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 3
+    assert len(data["events"]) == 3

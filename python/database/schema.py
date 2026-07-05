@@ -508,7 +508,7 @@ async def seed_defaults(db):
 
     # Default settings
     default_settings = [
-        ("wake_word", "hey barq", "voice"),
+        ("wake_word", "computer", "voice"),
         ("whisper_model", "base", "voice"),
         ("tts_voice", "en-US-JennyNeural", "voice"),
         ("wake_word_sensitivity", "medium", "voice"),
@@ -534,6 +534,7 @@ async def seed_defaults(db):
         ("crash_reporting", "false", "privacy"),
         ("accent_color", "cyan", "appearance"),
         ("theme", "dark", "appearance"),
+        ("wake_greeting_enabled", "true", "voice"),
         ("animations_enabled", "true", "appearance"),
     ]
 

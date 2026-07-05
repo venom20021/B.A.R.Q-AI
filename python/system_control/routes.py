@@ -30,6 +30,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from database import analytics_dao, settings_dao, db_connection
+from .command_whitelist import SAFE, WARN, DANGEROUS, classify_command, describe_classification, approve_command, is_approved, clear_approvals, get_custom_rules, set_custom_rules
 
 router = APIRouter()
 
@@ -58,6 +59,19 @@ class CommandRequest(BaseModel):
 
 class TunnelingRequest(BaseModel):
     port: int
+
+
+class CommandCheckRequest(BaseModel):
+    command: str
+
+
+class CommandApproveRequest(BaseModel):
+    command: str
+    tier: str = WARN
+
+
+class WhitelistRulesRequest(BaseModel):
+    rules: dict[str, list[str]]
 
 # ─── Smart Drop Zone Models ───────────────────────────────────────────────────
 
@@ -587,6 +601,9 @@ async def watch_drop_zone(directory: str = Query(...), recursive: bool = True):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # In-memory store for sort previews and undo history
+
+# Active tunnel processes: port -> { process, url, started_at }
+_active_tunnels: dict[int, dict] = {}
 _sort_previews: dict[str, dict] = {}
 _undo_history: dict[str, list[dict]] = {}
 
@@ -1124,7 +1141,25 @@ async def package_manager_operation(request: PackageManagerRequest):
 
 @router.get("/terminal/stream")
 async def terminal_stream(command: str = Query(...), cwd: Optional[str] = None):
-    """Stream terminal command output via Server-Sent Events."""
+    """Stream terminal command output via Server-Sent Events.
+    Command whitelist security is checked first.
+    """
+    # ─── Whitelist security check (non-streaming, before SSE starts) ──
+    custom_rules = await get_custom_rules()
+    tier = classify_command(command, custom_rules)
+    if tier == DANGEROUS and not is_approved(command, DANGEROUS):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Command classified as DANGEROUS. Approve via POST /system/command/approve first.\n"
+                   f"  Command: {command}",
+        )
+    if tier == WARN and not is_approved(command, WARN):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Command classified as MODERATE RISK. Approve via POST /system/command/approve first.\n"
+                   f"  Command: {command}",
+        )
+
     async def event_generator():
         try:
             process = await asyncio.create_subprocess_shell(
@@ -1215,8 +1250,32 @@ async def _collect_stream(stream):
 
 @router.post("/terminal/run")
 async def run_command(request: CommandRequest):
-    """Execute a terminal command and return output."""
+    """Execute a terminal command and return output.
+    Command whitelist security is checked first.
+    """
     try:
+        # ─── Whitelist security check ─────────────────────────────────
+        custom_rules = await get_custom_rules()
+        tier = classify_command(request.command, custom_rules)
+
+        if tier == DANGEROUS and not is_approved(request.command, DANGEROUS):
+            return {
+                "status": "requires_approval",
+                "tier": DANGEROUS,
+                "description": describe_classification(DANGEROUS),
+                "command": request.command,
+                "message": "This command is classified as DANGEROUS. Approve it first via POST /system/command/approve.",
+            }
+
+        if tier == WARN and not is_approved(request.command, WARN):
+            return {
+                "status": "requires_approval",
+                "tier": WARN,
+                "description": describe_classification(WARN),
+                "command": request.command,
+                "message": "This command is classified as MODERATE RISK. Approve it first via POST /system/command/approve.",
+            }
+
         cwd = request.cwd or os.getcwd()
         result = subprocess.run(
             request.command,
@@ -1239,6 +1298,7 @@ async def run_command(request: CommandRequest):
             "output": output[-5000:],
             "return_code": result.returncode,
             "cwd": cwd,
+            "tier": tier,
         }
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "command": request.command, "output": "Command timed out after 30s"}
@@ -1252,41 +1312,248 @@ async def run_command(request: CommandRequest):
 
 @router.post("/tunnel/expose")
 async def expose_port(request: TunnelingRequest):
-    """Expose a local port via localhost tunneling."""
+    """Expose a local port via cloudflared TryCloudflare tunnel.
+    Uses asyncio subprocess to manage the long-running cloudflared process.
+    """
     try:
-        # Try cloudflared first, then localtunnel
-        cloudflared = subprocess.run(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{request.port}"],
-            capture_output=True, text=True, timeout=10,
+        port = request.port
+
+        # Check if tunnel already exists for this port
+        if port in _active_tunnels and _active_tunnels[port]["process"].returncode is None:
+            existing = _active_tunnels[port]
+            return {
+                "status": "already_active",
+                "port": port,
+                "url": existing.get("url", "connecting..."),
+                "started_at": existing.get("started_at", ""),
+            }
+
+        # Check cloudflared availability
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "cloudflared", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
+        except FileNotFoundError:
+            return {
+                "status": "tunnel_unavailable",
+                "port": port,
+                "message": "cloudflared not found. Install it:\n"
+                           "  macOS: brew install cloudflared\n"
+                           "  Linux: sudo apt install cloudflared\n"
+                           "  Windows: scoop install cloudflared\n"
+                           "Or download from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/",
+            }
+
+        # Start cloudflared tunnel as a long-running background process
+        tunnel_proc = await asyncio.create_subprocess_exec(
+            "cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if cloudflared.returncode == 0:
-            for line in cloudflared.stdout.split("\n"):
-                if "trycloudflare.com" in line:
-                    url = line.strip()
-                    break
-            else:
-                url = f"http://127.0.0.1:{request.port} (tunnel attempt made)"
 
-            await analytics_dao.log_activity("system", "expose_port", f"Exposed port {request.port}")
-            return {"status": "exposed", "port": request.port, "url": url}
+        # Store the tunnel process
+        _active_tunnels[port] = {
+            "process": tunnel_proc,
+            "url": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Read stderr to extract the TryCloudflare URL (cloudflared outputs URL to stderr)
+        async def _read_tunnel_url():
+            try:
+                while True:
+                    line = await asyncio.wait_for(tunnel_proc.stderr.readline(), timeout=8.0)
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace").strip()
+                    # cloudflared outputs the URL in a line like:
+                    # "https://xxxxx.trycloudflare.com"
+                    if "trycloudflare.com" in text:
+                        # Extract the URL
+                        url_match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", text)
+                        if url_match:
+                            tunnel_url = url_match.group(0)
+                            _active_tunnels[port]["url"] = tunnel_url
+                            print(f"[Tunnel] Port {port} exposed at {tunnel_url}")
+                            return
+                    print(f"[Tunnel] {text}")
+            except asyncio.TimeoutError:
+                # URL not yet received — will be picked up on status check
+                print(f"[Tunnel] Timeout waiting for URL on port {port}")
+            except Exception as e:
+                print(f"[Tunnel] Error reading URL: {e}")
+
+        # Start URL reader in background
+        asyncio.create_task(_read_tunnel_url())
+
+        await analytics_dao.log_activity(
+            "system", "expose_port", f"Exposed port {port} via cloudflared tunnel"
+        )
 
         return {
-            "status": "tunnel_unavailable", "port": request.port,
-            "message": "Install cloudflared for tunneling: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+            "status": "starting",
+            "port": port,
+            "message": "Tunnel is starting. Check /system/tunnel/status for the public URL.",
+            "started_at": _active_tunnels[port]["started_at"],
         }
-    except subprocess.TimeoutExpired:
-        return {"status": "tunneling_started", "port": request.port}
-    except FileNotFoundError:
-        return {
-            "status": "tunnel_unavailable", "port": request.port,
-            "message": "cloudflared not found. Install it for tunneling support."
-        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tunnel/status")
+async def tunnel_status(port: int = Query(...)):
+    """Get the status of an active tunnel."""
+    tunnel = _active_tunnels.get(port)
+    if not tunnel:
+        return {"status": "not_found", "port": port}
+
+    proc = tunnel["process"]
+    is_running = proc.returncode is None
+
+    return {
+        "status": "active" if is_running else "stopped",
+        "port": port,
+        "url": tunnel.get("url"),
+        "started_at": tunnel.get("started_at"),
+        "return_code": proc.returncode,
+    }
+
+
+@router.get("/tunnel/list")
+async def tunnel_list():
+    """List all active tunnels."""
+    tunnels = []
+    dead_ports = []
+    for port, tunnel in _active_tunnels.items():
+        proc = tunnel["process"]
+        is_running = proc.returncode is None
+        tunnels.append({
+            "port": port,
+            "url": tunnel.get("url"),
+            "status": "active" if is_running else "stopped",
+            "started_at": tunnel.get("started_at"),
+        })
+        if not is_running:
+            dead_ports.append(port)
+
+    # Clean up dead tunnels
+    for p in dead_ports:
+        del _active_tunnels[p]
+
+    return {"tunnels": tunnels, "count": len(tunnels)}
+
+
+@router.post("/tunnel/stop")
+async def tunnel_stop(request: TunnelingRequest):
+    """Stop an active tunnel."""
+    try:
+        tunnel = _active_tunnels.get(request.port)
+        if not tunnel:
+            return {"status": "not_found", "port": request.port}
+
+        proc = tunnel["process"]
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+
+        del _active_tunnels[request.port]
+
+        await analytics_dao.log_activity(
+            "system", "tunnel_stop", f"Stopped tunnel on port {request.port}"
+        )
+        return {"status": "stopped", "port": request.port}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 11. System Status
+# 11. Command Whitelist Management
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/command/check")
+async def check_command(request: CommandCheckRequest):
+    """Check a command's safety classification without executing it."""
+    custom_rules = await get_custom_rules()
+    tier = classify_command(request.command, custom_rules)
+    return {
+        "command": request.command,
+        "tier": tier,
+        "description": describe_classification(tier),
+        "requires_approval": tier in (WARN, DANGEROUS),
+    }
+
+
+@router.post("/command/approve")
+async def approve_command_endpoint(request: CommandApproveRequest):
+    """Temporarily approve a command for execution in this session."""
+    approve_command(request.command, request.tier)
+    tier_label = "DANGEROUS" if request.tier == DANGEROUS else "MODERATE RISK"
+    return {
+        "status": "approved",
+        "tier": request.tier,
+        "command": request.command,
+        "message": f"{tier_label} command approved for this session.",
+    }
+
+
+@router.get("/command/whitelist/rules")
+async def get_whitelist_rules():
+    """Get the current custom command whitelist rules."""
+    rules = await get_custom_rules()
+    return {"rules": rules}
+
+
+@router.post("/command/whitelist/rules")
+async def set_whitelist_rules(request: WhitelistRulesRequest):
+    """Set custom command whitelist rules."""
+    success = await set_custom_rules(request.rules)
+    return {"status": "saved" if success else "error"}
+
+
+@router.post("/command/approvals/clear")
+async def clear_command_approvals():
+    """Clear all temporary command approvals (resets session)."""
+    clear_approvals()
+    return {"status": "cleared", "message": "All command approvals cleared for this session."}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 12. System Events
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/events")
+async def system_events(limit: int = Query(default=50, ge=1, le=200)):
+    """Get system-level events (startup, shutdown, errors, warnings) from the activity log."""
+    try:
+        events = await analytics_dao.get_recent_activity(limit=limit)
+        # Filter to system-type events only (errors from other types come via /analytics/activity)
+        system_events = [
+            {
+                "id": e.get("id"),
+                "type": e.get("type", "system"),
+                "action": e.get("action", ""),
+                "description": e.get("description", ""),
+                "severity": e.get("severity", "info"),
+                "created_at": e.get("created_at", ""),
+            }
+            for e in events
+            if e.get("type") == "system"
+        ]
+        return {"events": system_events, "total": len(system_events)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. System Status
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/status")

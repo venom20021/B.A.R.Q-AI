@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("BARQ_DEBUG", "false").lower() == "true"
 
     # Voice
-    wake_word: str = "hey barq"
+    wake_word: str = "computer"
     vosk_model_path: str = os.getenv("VOSK_MODEL_PATH", "models/vosk")
     vosk_hindi_model_path: str = os.getenv("VOSK_HINDI_MODEL_PATH", "models/vosk-hi")
     whisper_model: str = os.getenv("WHISPER_MODEL", "base")

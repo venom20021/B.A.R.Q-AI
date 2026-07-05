@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
 import {
   MemoryRouter, Routes, Route, useNavigate, useLocation,
 } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Sidebar } from './components/Sidebar'
 import { QuickOverlay} from './components/QuickOverlay'
-import { ParticleField } from './components/ParticleField'
 import { StartupSequence } from './components/StartupSequence'
+import { Navbar } from './components/Navbar'
+import type { NavTab } from './components/Navbar'
+import { ThemeProvider } from './contexts/ThemeContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { JobsPage } from './pages/JobsPage'
@@ -22,6 +24,10 @@ import { ChatPage } from './pages/ChatPage'
 import { MemoryPage } from './pages/MemoryPage'
 import { WidgetsPage } from './pages/WidgetsPage'
 import { SettingsPage } from './pages/SettingsPage'
+
+// Lazy loaded views for the main navbar tabs
+const NotesView = lazy(() => import('./views/NotesView'))
+const GalleryView = lazy(() => import('./views/GalleryView'))
 
 // ─── Quick Command Router ──────────────────────────────────────────────────
 
@@ -51,7 +57,7 @@ function processQuickCommand(cmd: string, nav: (route: string) => void): void {
   } else if (cmd.includes('stock') || cmd.includes('price')) {
     nav('/web?tab=stocks')
   } else if (cmd.includes('create note') || cmd.includes('note')) {
-    nav('/memory')
+    nav('/notes')
   } else if (cmd.includes('voice') || cmd.includes('listen')) {
     void window.barq?.voice.start()
   } else {
@@ -84,18 +90,80 @@ function AnimatedPage({ children }: { children: React.ReactNode }): JSX.Element 
   )
 }
 
+// ─── Tab View Wrapper (no animated transitions for tab views) ──────────────
+
+function TabView({ children }: { children: React.ReactNode }): JSX.Element {
+  return <div className="h-full">{children}</div>
+}
+
+// ─── Map route to navbar tab ──────────────────────────────────────────────
+
+function routeToTab(pathname: string): NavTab {
+  if (pathname === '/' || pathname.startsWith('/dashboard')) return 'DASHBOARD'
+  if (pathname.startsWith('/notes')) return 'NOTES'
+  if (pathname.startsWith('/gallery')) return 'GALLERY'
+  if (pathname.startsWith('/phone')) return 'PHONE'
+  if (pathname.startsWith('/settings')) return 'SETTINGS'
+  return 'DASHBOARD'
+}
+
 // ─── App Content ───────────────────────────────────────────────────────────
 
 function AppContent(): JSX.Element {
   const navigate = useNavigate()
   const location = useLocation()
   const [bootComplete, setBootComplete] = useState(false)
-
   const [quickOverlay, setQuickOverlay] = useState<{
     visible: boolean
     position: { x: number; y: number }
   }>({ visible: false, position: { x: 0, y: 0 } })
   const [recentCommands, setRecentCommands] = useState<string[]>([])
+  const [isConnected, setIsConnected] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+
+  const activeTab = routeToTab(location.pathname)
+
+  const handleTabChange = useCallback((tab: NavTab) => {
+    const routeMap: Record<NavTab, string> = {
+      DASHBOARD: '/dashboard',
+      NOTES: '/notes',
+      GALLERY: '/gallery',
+      PHONE: '/phone',
+      SETTINGS: '/settings',
+    }
+    navigate(routeMap[tab])
+  }, [navigate])
+
+  const handleMicToggle = useCallback(() => {
+    const nextMuted = !isMuted
+    setIsMuted(nextMuted)
+    if (nextMuted) {
+      void window.barq?.voice.stop()
+    } else {
+      void window.barq?.voice.start()
+    }
+  }, [isMuted])
+
+  // Poll connection status
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const resp = await window.barq?.python.request('/health')
+        setIsConnected(resp !== undefined)
+      } catch {
+        setIsConnected(false)
+      }
+    }
+    check()
+    const interval = setInterval(check, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Listen for speaking/mute state
+  useEffect(() => {
+    // Placeholder for voice state integration
+  }, [])
 
   useEffect(() => {
     if (window.barq?.onNavigate) {
@@ -152,11 +220,21 @@ function AppContent(): JSX.Element {
         )}
       </AnimatePresence>
 
-      {/* Particle field background */}
-      <ParticleField />
+      {/* Radial gradient background (replaces ParticleField) */}
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_center,var(--tw-gradient-stops))] from-zinc-950 via-black to-black pointer-events-none" />
 
       {/* Main layout */}
       <div className="relative z-10 h-screen flex flex-col">
+        {/* Top Navbar */}
+        <Navbar
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+          isConnected={isConnected}
+          isSpeaking={isSpeaking}
+          isMuted={isMuted}
+          onMicToggle={handleMicToggle}
+        />
+
         {/* Content area: Sidebar + Main */}
         <div className="flex-1 flex overflow-hidden">
           {/* Sidebar is fixed-position, add left padding to main content */}
@@ -176,8 +254,31 @@ function AppContent(): JSX.Element {
               {/* Page content with transitions */}
               <AnimatePresence mode="wait">
                 <Routes location={location} key={location.pathname}>
-                  <Route path="/" element={<AnimatedPage><DashboardPage /></AnimatedPage>} />
-                  <Route path="/dashboard" element={<AnimatedPage><DashboardPage /></AnimatedPage>} />
+                  {/* Main navbar tabs */}
+                  <Route path="/" element={<TabView><DashboardPage /></TabView>} />
+                  <Route path="/dashboard" element={<TabView><DashboardPage /></TabView>} />
+                  <Route path="/notes" element={
+                    <Suspense fallback={
+                      <div className="flex h-full items-center justify-center">
+                        <div className="w-5 h-5 border-2 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
+                      </div>
+                    }>
+                      <TabView><NotesView glassPanel="bg-zinc-950/40 backdrop-blur-xl border border-white/5 rounded-2xl shadow-xl" /></TabView>
+                    </Suspense>
+                  } />
+                  <Route path="/gallery" element={
+                    <Suspense fallback={
+                      <div className="flex h-full items-center justify-center">
+                        <div className="w-5 h-5 border-2 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
+                      </div>
+                    }>
+                      <TabView><GalleryView /></TabView>
+                    </Suspense>
+                  } />
+                  <Route path="/phone" element={<TabView><PhonePage /></TabView>} />
+                  <Route path="/settings" element={<TabView><SettingsPage /></TabView>} />
+
+                  {/* Sidebar secondary pages */}
                   <Route path="/analytics" element={<AnimatedPage><AnalyticsPage /></AnimatedPage>} />
                   <Route path="/jobs" element={<AnimatedPage><JobsPage /></AnimatedPage>} />
                   <Route path="/content" element={<AnimatedPage><ContentPage /></AnimatedPage>} />
@@ -185,18 +286,14 @@ function AppContent(): JSX.Element {
                   <Route path="/dev" element={<AnimatedPage><DevPage /></AnimatedPage>} />
                   <Route path="/system" element={<AnimatedPage><SystemPage /></AnimatedPage>} />
                   <Route path="/web" element={<AnimatedPage><WebPage /></AnimatedPage>} />
-                  <Route path="/phone" element={<AnimatedPage><PhonePage /></AnimatedPage>} />
                   <Route path="/research" element={<AnimatedPage><ResearchPage /></AnimatedPage>} />
                   <Route path="/docs" element={<AnimatedPage><DocsPage /></AnimatedPage>} />
                   <Route path="/chat" element={<AnimatedPage><ChatPage /></AnimatedPage>} />
                   <Route path="/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
                   <Route path="/widgets" element={<AnimatedPage><WidgetsPage /></AnimatedPage>} />
-                  <Route path="/settings" element={<AnimatedPage><SettingsPage /></AnimatedPage>} />
                 </Routes>
               </AnimatePresence>
             </div>
-
-
           </main>
         </div>
       </div>
@@ -216,9 +313,11 @@ function AppContent(): JSX.Element {
 
 function App(): JSX.Element {
   return (
-    <MemoryRouter>
-      <AppContent />
-    </MemoryRouter>
+    <ThemeProvider>
+      <MemoryRouter>
+        <AppContent />
+      </MemoryRouter>
+    </ThemeProvider>
   )
 }
 

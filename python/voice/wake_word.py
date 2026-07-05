@@ -358,6 +358,16 @@ class WakeWordDetector:
             patterns["medium"].append(rf"\b{escaped_wake_up}\b")
             patterns["high"].append(rf"\b{escaped_wake_up}\b")
 
+        # Always add "hey <primary>" as an additional variant
+        # so users can say "hey computer", "hey jarvis", etc.
+        # Skip if the wake word itself already starts with "hey"
+        hey_phrase = f"hey {primary}"
+        if hey_phrase != word:
+            escaped_hey = re.escape(hey_phrase)
+            patterns["low"].append(rf"\b{escaped_hey}\b")
+            patterns["medium"].append(rf"\b{escaped_hey}\b")
+            patterns["high"].append(rf"\b{escaped_hey}\b")
+
         # Add phonetic variations for medium/high
         # Vosk often confuses similar-sounding words, so we add variants
         if len(primary) > 2:
@@ -380,6 +390,33 @@ class WakeWordDetector:
                 else:
                     phrase = truncated
                 patterns["high"].append(rf"\b{re.escape(phrase)}\w*\b")
+
+            # Common vowel-substitution variants for Vosk misrecognition
+            # Vosk often confuses similar-sounding vowels, especially at word endings
+            # e.g. "computer" → "computa", "computor"; "compute" → "computa"; "computa" → "compute"
+            vowel_variants: list[str] = []
+            if primary.endswith("er"):
+                # "computer" → "computa" (dropped 'r', vowel swap)
+                vowel_variants.append(primary[:-2] + "a")
+                # "computer" → "computor" (vowel swap)
+                vowel_variants.append(primary[:-2] + "or")
+            elif primary.endswith("e") and len(primary) > 2:
+                # "compute" → "computa"
+                vowel_variants.append(primary[:-1] + "a")
+            elif primary.endswith("a") and len(primary) > 2:
+                # "computa" → "compute"
+                vowel_variants.append(primary[:-1] + "e")
+
+            for variant in vowel_variants:
+                if variant == primary:
+                    continue
+                if prefix:
+                    phrase = f"{prefix} {variant}"
+                else:
+                    phrase = variant
+                full_pattern = rf"\b{re.escape(phrase)}\b"
+                patterns["medium"].append(full_pattern)
+                patterns["high"].append(full_pattern)
 
         return patterns
 

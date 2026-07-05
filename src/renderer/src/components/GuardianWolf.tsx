@@ -100,6 +100,8 @@ interface GuardianWolfProps {
   className?: string
   theme?: 'cyan' | 'gold'
   size?: number
+  isSpeaking?: boolean
+  micLevel?: number
 }
 
 export const GuardianWolf = memo(function GuardianWolf({
@@ -107,6 +109,8 @@ export const GuardianWolf = memo(function GuardianWolf({
   className = '',
   theme = 'cyan',
   size = 300,
+  isSpeaking = false,
+  micLevel = 0,
 }: GuardianWolfProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -115,6 +119,13 @@ export const GuardianWolf = memo(function GuardianWolf({
   const mouseRef = useRef({ x: -9999, y: -9999 })
   const hoverLabelRef = useRef('')
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
+
+  // Refs for voice-reactive props — read fresh values each animation frame
+  // without recreating the animation loop
+  const isSpeakingRef = useRef(isSpeaking)
+  const micLevelRef = useRef(micLevel)
+  isSpeakingRef.current = isSpeaking
+  micLevelRef.current = micLevel
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -220,9 +231,15 @@ export const GuardianWolf = memo(function GuardianWolf({
       ctx.fillStyle = '#000000'
       ctx.fillRect(0, 0, w, h)
 
-      // ── Breathing/pulsing animation ──
-      const breath = Math.sin(timestamp * 0.001) * 0.015 + 1
-      const pulsePhase = Math.sin(timestamp * 0.002) * 0.5 + 0.5
+      // ── Breathing/pulsing animation — reacts to speaking ──
+      const _speaking = isSpeakingRef.current
+      const _micLvl = micLevelRef.current
+      const speakBoost = _speaking ? 1 + _micLvl * 2 : 1
+      const breathSpeed = _speaking ? 0.004 : 0.001
+      const breath = Math.sin(timestamp * breathSpeed) * 0.015 * speakBoost + 1
+      const pulsePhase = _speaking
+        ? 0.5 + _micLvl * 0.5 + Math.sin(timestamp * 0.008) * 0.3
+        : Math.sin(timestamp * 0.002) * 0.5 + 0.5
 
       // Animated connection progress — cycles continuously
       connectProgress += delta * 0.003
@@ -311,10 +328,11 @@ export const GuardianWolf = memo(function GuardianWolf({
         ctx.stroke()
       })
 
-      // ── Eyes ──
+      // ── Eyes — voice-reactive glow ──
       const eyeLeft = { x: cx - 0.22 * scale, y: cy - 0.35 * scale }
       const eyeRight = { x: cx + 0.22 * scale, y: cy - 0.35 * scale }
-      const eyeGlowSize = 8 + pulsePhase * 6
+      const speakGlow = _speaking ? 1 + _micLvl * 2 : 1
+      const eyeGlowSize = (8 + pulsePhase * 6) * speakGlow
 
       // Left eye glow
       const lGlow = ctx.createRadialGradient(eyeLeft.x, eyeLeft.y, 0, eyeLeft.x, eyeLeft.y, eyeGlowSize)
@@ -336,9 +354,10 @@ export const GuardianWolf = memo(function GuardianWolf({
       ctx.fillStyle = rGlow
       ctx.fill()
 
-      // Left eye pupil (sharp, angular)
+      // Left eye pupil (sharp, angular) — dilates when speaking
       ctx.beginPath()
-      const eyeSize = 2.5 + pulsePhase * 1.5
+      const pupilDilation = _speaking ? 1 + _micLvl * 0.8 : 1
+      const eyeSize = (2.5 + pulsePhase * 1.5) * pupilDilation
       ctx.moveTo(eyeLeft.x, eyeLeft.y - eyeSize)
       ctx.lineTo(eyeLeft.x + eyeSize * 0.7, eyeLeft.y)
       ctx.lineTo(eyeLeft.x, eyeLeft.y + eyeSize)

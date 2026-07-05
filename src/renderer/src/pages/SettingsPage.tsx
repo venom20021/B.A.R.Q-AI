@@ -26,6 +26,8 @@ interface VoiceStatus {
   stt_model: string
   tts_model: string
   recent_commands: { transcript: string; created_at: string }[]
+  wake_greeting_enabled?: boolean
+  weather_city?: string
 }
 
 const TTS_VOICES = [
@@ -50,6 +52,8 @@ export function SettingsPage(): JSX.Element {
   const [wakeSoundEnabled, setWakeSoundEnabled] = useState(true)
   const [commandSoundEnabled, setCommandSoundEnabled] = useState(true)
   const [soundSettingsLoading, setSoundSettingsLoading] = useState(false)
+  const [wakeGreetingEnabled, setWakeGreetingEnabled] = useState(true)
+  const [weatherCity, setWeatherCity] = useState('Lucknow')
 
   // Notification settings
   const [notifSettings, setNotifSettings] = useState({
@@ -100,10 +104,39 @@ export function SettingsPage(): JSX.Element {
       if (resp && typeof resp === 'object') {
         const data = resp as unknown as VoiceStatus
         setVoiceStatus(data)
+        if (data.wake_greeting_enabled !== undefined) {
+          setWakeGreetingEnabled(data.wake_greeting_enabled)
+        }
+        if (data.weather_city) {
+          setWeatherCity(data.weather_city)
+        }
       }
     } catch { /* ignore */ }
     setVoiceLoading(false)
   }, [])
+
+  const handleWeatherCityChange = useCallback(async (city: string) => {
+    setWeatherCity(city)
+    try {
+      await window.barq?.python.request('/voice/weather-city', {
+        method: 'POST',
+        body: JSON.stringify({ city }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch { /* ignore */ }
+  }, [])
+
+  const handleWakeGreetingToggle = useCallback(async () => {
+    const newVal = !wakeGreetingEnabled
+    setWakeGreetingEnabled(newVal)
+    try {
+      await window.barq?.python.request('/voice/wake-greeting-mode', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: newVal }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch { /* ignore */ }
+  }, [wakeGreetingEnabled])
 
   const toggleListening = useCallback(async () => {
     setTogglingVoice(true)
@@ -267,7 +300,7 @@ export function SettingsPage(): JSX.Element {
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Wake Word</p>
-                    <p className="text-xs font-exo text-dim-400">Trigger phrase: &quot;{voiceStatus?.wake_word || 'Hey BARQ'}&quot;</p>
+                    <p className="text-xs font-exo text-dim-400">Trigger phrase: &quot;{voiceStatus?.wake_word || 'Computer'}&quot;</p>
                   </div>
                   <span className={`${voiceStatus?.is_listening ? 'badge-green' : 'badge-dim'}`}>
                     {voiceStatus?.is_listening ? 'Active' : 'Inactive'}
@@ -297,9 +330,9 @@ export function SettingsPage(): JSX.Element {
                   <div className="flex-1">
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Wake Word Sensitivity</p>
                     <p className="text-xs font-exo text-dim-400 mt-1">
-                      {sensitivity === 'low' && 'Strict — only exact "barq" match (fewest false positives)'}
-                      {sensitivity === 'medium' && 'Balanced — exact + "bark" variants (recommended)'}
-                      {sensitivity === 'high' && 'Sensitive — includes "bar" partial matches (most responsive)'}
+                      {sensitivity === 'low' && 'Strict — only exact match (fewest false positives)'}
+                      {sensitivity === 'medium' && 'Balanced — exact + phonetic variants (recommended)'}
+                      {sensitivity === 'high' && 'Sensitive — includes partial matches (most responsive)'}
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1 w-48">
@@ -352,6 +385,37 @@ export function SettingsPage(): JSX.Element {
                   <span className="badge-cyan">Active</span>
                 </div>
 
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Wake Word Greeting</p>
+                    <p className="text-xs font-exo text-dim-400">Speak system status, jobs, stocks & news when woken</p>
+                  </div>
+                  {renderToggle(wakeGreetingEnabled, handleWakeGreetingToggle)}
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Weather City</p>
+                    <p className="text-xs font-exo text-dim-400">Used in the wake greeting weather report</p>
+                  </div>
+                  {renderSelect(weatherCity, [
+                    { value: 'Lucknow', label: 'Lucknow' },
+                    { value: 'New York', label: 'New York' },
+                    { value: 'London', label: 'London' },
+                    { value: 'Tokyo', label: 'Tokyo' },
+                    { value: 'Mumbai', label: 'Mumbai' },
+                    { value: 'San Francisco', label: 'San Francisco' },
+                    { value: 'Berlin', label: 'Berlin' },
+                    { value: 'Paris', label: 'Paris' },
+                    { value: 'Sydney', label: 'Sydney' },
+                    { value: 'Dubai', label: 'Dubai' },
+                    { value: 'Bengaluru', label: 'Bengaluru' },
+                    { value: 'Delhi', label: 'Delhi' },
+                    { value: 'Chennai', label: 'Chennai' },
+                    { value: 'Hyderabad', label: 'Hyderabad' },
+                  ], handleWeatherCityChange)}
+                </div>
+
                 <div className="flex items-center justify-between py-3">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Always-on Listening</p>
@@ -392,7 +456,7 @@ export function SettingsPage(): JSX.Element {
                       </div>
                       <div>
                         <p className="text-sm font-rajdhani font-semibold text-ghost">Wake Sound</p>
-                        <p className="text-xs font-exo text-dim-400">Ascending two-tone (880→1320Hz) — played when &quot;hey barq&quot; is detected</p>
+                        <p className="text-xs font-exo text-dim-400">Ascending two-tone (880→1320Hz) — played when the wake word is detected</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">

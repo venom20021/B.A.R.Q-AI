@@ -218,6 +218,36 @@ class SocialDAO:
         sql = f"UPDATE posts SET {', '.join(sets)} WHERE id = ?"
         return await db_connection.update(sql, tuple(params))
 
+    # ─── Calendar / Schedule ────────────────────────────────────────────────
+
+    async def get_scheduled_posts(
+        self, start_date: str, end_date: str
+    ) -> list[dict]:
+        """Get posts scheduled within a date range."""
+        return await db_connection.fetch_all(
+            "SELECT p.*, v.title as video_title, v.file_path, v.duration_seconds, "
+            "cs.topic, cs.format as script_format "
+            "FROM posts p "
+            "LEFT JOIN videos v ON v.id = p.video_id "
+            "LEFT JOIN content_scripts cs ON cs.id = v.script_id "
+            "WHERE p.scheduled_at IS NOT NULL "
+            "AND p.scheduled_at >= ? AND p.scheduled_at < ? "
+            "ORDER BY p.scheduled_at ASC",
+            (start_date, end_date),
+        )
+
+    async def get_posts_by_status(self, status: str, limit: int = 100) -> list[dict]:
+        """Get posts filtered by status."""
+        return await db_connection.fetch_all(
+            "SELECT p.*, v.title as video_title, v.file_path "
+            "FROM posts p "
+            "LEFT JOIN videos v ON v.id = p.video_id "
+            "WHERE p.status = ? "
+            "ORDER BY COALESCE(p.scheduled_at, p.posted_at, p.created_at) DESC "
+            "LIMIT ?",
+            (status, limit),
+        )
+
     # ─── Pipeline Stats ────────────────────────────────────────────────────
 
     async def get_pipeline_counts(self) -> dict[str, int]:
@@ -228,6 +258,7 @@ class SocialDAO:
             UNION ALL SELECT 'videos_rendering', COUNT(*) FROM videos WHERE status = 'rendering'
             UNION ALL SELECT 'videos_ready', COUNT(*) FROM videos WHERE status = 'completed'
             UNION ALL SELECT 'posts_queued', COUNT(*) FROM posts WHERE status = 'queued'
+            UNION ALL SELECT 'posts_scheduled', COUNT(*) FROM posts WHERE status = 'scheduled'
             UNION ALL SELECT 'posts_posted', COUNT(*) FROM posts WHERE status = 'posted'
         """)
         return {row["stage"]: row["count"] for row in rows}

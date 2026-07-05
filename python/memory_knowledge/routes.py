@@ -96,71 +96,139 @@ async def search_memory(query: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── Notes ────────────────────────────────────────────────────────────────────
+# ─── Notes (SQLite) ───────────────────────────────────────────────────────────
 
-NOTES_FILE = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "notes.json"))
-
-
-def _load_notes() -> list[dict]:
-    """Load notes from JSON file."""
-    if NOTES_FILE.exists():
-        try:
-            return json.loads(NOTES_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-    return []
-
-
-def _save_notes(notes: list[dict]):
-    """Save notes to JSON file."""
-    NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    NOTES_FILE.write_text(json.dumps(notes, indent=2), encoding="utf-8")
+from database.connection import db_connection
 
 
 @router.get("/notes")
 async def get_notes():
-    """Get all saved notes."""
+    """Get all saved notes from the database."""
     try:
-        notes = _load_notes()
-        # Return newest first
-        notes.reverse()
+        rows = await db_connection.fetch_all(
+            "SELECT id, title, content, tags, pinned, color, created_at, updated_at "
+            "FROM notes ORDER BY pinned DESC, created_at DESC"
+        )
+        notes = []
+        for row in rows:
+            note = dict(row)
+            # Parse tags from JSON string
+            if isinstance(note.get("tags"), str):
+                try:
+                    note["tags"] = json.loads(note["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    note["tags"] = []
+            notes.append(note)
         return {"notes": notes}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Fallback to file-based notes if table doesn't exist yet
+        return _fallback_get_notes()
+
+
+def _fallback_get_notes() -> dict:
+    """Fallback: load notes from JSON file."""
+    NOTES_FILE = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "notes.json"))
+    if NOTES_FILE.exists():
+        try:
+            notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+            notes.reverse()
+            return {"notes": notes}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"notes": []}
 
 
 @router.post("/notes")
 async def create_note(request: NoteItem):
-    """Create a new note."""
+    """Create a new note in the database."""
     try:
-        notes = _load_notes()
-        note = {
-            "id": len(notes) + 1,
-            "title": request.title,
-            "content": request.content,
-            "tags": request.tags,
-            "created_at": _now_iso(),
-        }
-        notes.append(note)
-        _save_notes(notes)
+        # Migrate old notes from JSON file if they exist
+        NOTES_FILE = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "notes.json"))
+        if NOTES_FILE.exists():
+            await _migrate_notes_from_json(NOTES_FILE)
+
+        note_id = await db_connection.insert(
+            "INSERT INTO notes (title, content, tags) VALUES (?, ?, ?)",
+            (request.title, request.content, json.dumps(request.tags)),
+        )
 
         await analytics_dao.log_activity(
             "memory", "create_note", f"Created note: {request.title[:50]}"
         )
-        return {"status": "created", "note": note}
+        return {
+            "status": "created",
+            "note": {
+                "id": note_id,
+                "title": request.title,
+                "content": request.content,
+                "tags": request.tags,
+                "created_at": _now_iso(),
+            },
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Fallback to file-based notes
+        return _fallback_create_note(request)
+
+
+def _fallback_create_note(request: NoteItem) -> dict:
+    """Fallback: create note in JSON file."""
+    NOTES_FILE = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "notes.json"))
+    notes = []
+    if NOTES_FILE.exists():
+        try:
+            notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            notes = []
+    note = {
+        "id": len(notes) + 1,
+        "title": request.title,
+        "content": request.content,
+        "tags": request.tags,
+        "created_at": _now_iso(),
+    }
+    notes.append(note)
+    NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    NOTES_FILE.write_text(json.dumps(notes, indent=2), encoding="utf-8")
+    return {"status": "created", "note": note}
+
+
+async def _migrate_notes_from_json(json_path: Path):
+    """Migrate notes from JSON file to SQLite."""
+    try:
+        old_notes = json.loads(json_path.read_text(encoding="utf-8"))
+        for note in old_notes:
+            try:
+                await db_connection.insert(
+                    "INSERT INTO notes (title, content, tags) VALUES (?, ?, ?)",
+                    (note.get("title", ""), note.get("content", ""), json.dumps(note.get("tags", []))),
+                )
+            except Exception:
+                continue
+        # Rename old file as backup
+        backup_path = json_path.with_suffix(".json.bak")
+        json_path.rename(backup_path)
+        print(f"[Notes] Migrated {len(old_notes)} notes from JSON to SQLite. Backup saved to {backup_path}")
+    except Exception as e:
+        print(f"[Notes] Migration error: {e}")
 
 
 @router.delete("/notes/{note_id}")
 async def delete_note(note_id: int):
     """Delete a note by ID."""
     try:
-        notes = _load_notes()
-        notes = [n for n in notes if n.get("id") != note_id]
-        _save_notes(notes)
+        await db_connection.delete("DELETE FROM notes WHERE id = ?", (note_id,))
         return {"status": "deleted", "note_id": note_id}
     except Exception as e:
+        # Fallback to file-based deletion
+        NOTES_FILE = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "notes.json"))
+        if NOTES_FILE.exists():
+            try:
+                notes = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+                notes = [n for n in notes if n.get("id") != note_id]
+                NOTES_FILE.write_text(json.dumps(notes, indent=2), encoding="utf-8")
+                return {"status": "deleted", "note_id": note_id}
+            except (json.JSONDecodeError, OSError):
+                pass
         raise HTTPException(status_code=500, detail=str(e))
 
 

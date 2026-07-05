@@ -10,6 +10,21 @@ import pytest
 from database import social_dao
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async def _seed_script_and_video(title: str = "Test") -> tuple[int, int]:
+    """Create a script + video pair and return (script_id, video_id)."""
+    script_id = await social_dao.insert_script({
+        "title": title, "topic": "Test", "format": "youtube_shorts",
+        "script_content": "Test content", "status": "finalized",
+    })
+    video_id = await social_dao.insert_video({
+        "script_id": script_id, "title": f"{title} Video",
+        "file_path": "/tmp/test.mp4", "status": "completed",
+    })
+    return script_id, video_id
+
+
 @pytest.fixture
 def router():
     """Import social routes, mocking moviepy to avoid FFMPEG dependency at import time."""
@@ -211,12 +226,16 @@ async def test_post_content_invalid_video_id(client):
 
 @pytest.mark.asyncio
 async def test_pipeline_stats(client):
-    """GET /pipeline should return pipeline counts."""
+    """GET /pipeline should return pipeline counts including scheduled."""
     response = await client.get("/pipeline")
     assert response.status_code == 200
     data = response.json()
     assert "pipeline" in data
     assert isinstance(data["pipeline"], dict)
+    # Should include the new 'posts_scheduled' key
+    assert "posts_scheduled" in data["pipeline"]
+    assert "scripts_draft" in data["pipeline"]
+    assert "videos_ready" in data["pipeline"]
 
 
 @pytest.mark.asyncio
@@ -234,3 +253,120 @@ async def test_social_status(client):
     data = response.json()
     assert "platforms" in data
     assert "pipeline" in data
+
+
+# ─── Content Calendar Routes ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_calendar_month_default(client):
+    """GET /calendar/month with defaults should return current month."""
+    response = await client.get("/calendar/month")
+    assert response.status_code == 200
+    data = response.json()
+    assert "year" in data
+    assert "month" in data
+    assert "days" in data
+    assert isinstance(data["days"], dict)
+
+
+@pytest.mark.asyncio
+async def test_calendar_month_specific(client):
+    """GET /calendar/month with specific year/month."""
+    response = await client.get("/calendar/month?year=2026&month=7")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["year"] == 2026
+    assert data["month"] == 7
+    assert data["total_scheduled"] == 0
+    assert data["total_posted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_calendar_week_default(client):
+    """GET /calendar/week with no start should return current week."""
+    response = await client.get("/calendar/week")
+    assert response.status_code == 200
+    data = response.json()
+    assert "week_start" in data
+    assert "days" in data
+    assert len(data["days"]) == 7
+
+
+@pytest.mark.asyncio
+async def test_calendar_week_specific(client):
+    """GET /calendar/week with a specific start date."""
+    response = await client.get("/calendar/week?start=2026-07-13")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["week_start"] == "2026-07-13"
+    assert len(data["days"]) == 7
+
+
+@pytest.mark.asyncio
+async def test_schedule_video(client):
+    """POST /calendar/schedule should schedule a video."""
+    _, video_id = await _seed_script_and_video("Schedule Route")
+
+    response = await client.post(
+        "/calendar/schedule",
+        json={
+            "video_id": video_id,
+            "platforms": ["youtube", "twitter"],
+            "scheduled_date": "2026-08-15T14:00:00",
+            "title": "Scheduled From Route",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "scheduled"
+    assert len(data["platforms"]) == 2
+    assert data["platforms"][0]["platform"] == "youtube"
+    assert data["platforms"][1]["platform"] == "twitter"
+
+
+@pytest.mark.asyncio
+async def test_cancel_scheduled(client):
+    """DELETE /calendar/schedule/{id} should cancel a scheduled post."""
+    _, video_id = await _seed_script_and_video("Cancel Route")
+
+    # Schedule
+    schedule_resp = await client.post(
+        "/calendar/schedule",
+        json={
+            "video_id": video_id,
+            "platforms": ["tiktok"],
+            "scheduled_date": "2026-09-01T12:00:00",
+        },
+    )
+    post_id = schedule_resp.json()["platforms"][0]["post_id"]
+
+    # Cancel
+    cancel_resp = await client.delete(f"/calendar/schedule/{post_id}")
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_upcoming_schedule(client):
+    """GET /calendar/upcoming should list future scheduled posts."""
+    response = await client.get("/calendar/upcoming?days=14")
+    assert response.status_code == 200
+    data = response.json()
+    assert "upcoming" in data
+    assert "total" in data
+    assert isinstance(data["upcoming"], list)
+
+
+@pytest.mark.asyncio
+async def test_calendar_stats(client):
+    """GET /calendar/stats should return calendar statistics."""
+    response = await client.get("/calendar/stats")
+    assert response.status_code == 200
+    data = response.json()
+    assert "total_scheduled" in data
+    assert "total_posted" in data
+    assert "scheduled_this_month" in data
+    assert "platform_distribution" in data
+    assert "videos_ready" in data
+    assert "scripts_draft" in data

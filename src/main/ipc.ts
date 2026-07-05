@@ -130,6 +130,66 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // Get calendar month view
+  ipcMain.handle('social:calendar-month', async (_event, year: number, month: number) => {
+    try {
+      const result = await pythonBridge.request(`/social/calendar/month?year=${year}&month=${month}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Get calendar week view
+  ipcMain.handle('social:calendar-week', async (_event, start: string) => {
+    try {
+      const result = await pythonBridge.request(`/social/calendar/week?start=${encodeURIComponent(start)}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Schedule a post
+  ipcMain.handle('social:schedule', async (_event, data: { video_id: number; platforms: string[]; scheduled_date: string; title?: string; description?: string }) => {
+    try {
+      const result = await pythonBridge.request('/social/calendar/schedule', data)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Cancel a scheduled post
+  ipcMain.handle('social:cancel-schedule', async (_event, postId: number) => {
+    try {
+      const result = await pythonBridge.request(`/social/calendar/schedule/${postId}`, {}, 5000)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Get upcoming schedule
+  ipcMain.handle('social:upcoming', async (_event, days: number) => {
+    try {
+      const result = await pythonBridge.request(`/social/calendar/upcoming?days=${days}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Get calendar stats
+  ipcMain.handle('social:calendar-stats', async () => {
+    try {
+      const result = await pythonBridge.request('/social/calendar/stats')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // --- Analytics ---
 
   // Get career analytics

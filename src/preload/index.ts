@@ -38,7 +38,19 @@ contextBridge.exposeInMainWorld('barq', {
       ipcRenderer.invoke('social:generate-script', topic, format),
     renderVideo: (scriptId: string) => ipcRenderer.invoke('social:render-video', scriptId),
     post: (videoId: string, platforms: string[]) =>
-      ipcRenderer.invoke('social:post', videoId, platforms)
+      ipcRenderer.invoke('social:post', videoId, platforms),
+    calendarMonth: (year: number, month: number) =>
+      ipcRenderer.invoke('social:calendar-month', year, month),
+    calendarWeek: (start: string) =>
+      ipcRenderer.invoke('social:calendar-week', start),
+    schedule: (data: { video_id: number; platforms: string[]; scheduled_date: string; title?: string; description?: string }) =>
+      ipcRenderer.invoke('social:schedule', data),
+    cancelSchedule: (postId: number) =>
+      ipcRenderer.invoke('social:cancel-schedule', postId),
+    upcoming: (days: number) =>
+      ipcRenderer.invoke('social:upcoming', days),
+    calendarStats: () =>
+      ipcRenderer.invoke('social:calendar-stats'),
   },
 
   // Analytics

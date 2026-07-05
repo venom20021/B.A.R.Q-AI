@@ -18,7 +18,6 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -27,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import get_settings
 from database import init_db, close_db
+from database import analytics_dao
 from voice.routes import router as voice_router
 from jobs.routes import router as jobs_router
 from social.routes import router as social_router
@@ -163,11 +163,25 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"[BARQ Sidecar] Starting on {settings.host}:{settings.port}")
     await init_db()
+    try:
+        await analytics_dao.log_activity(
+            "system", "startup", f"BARQ Sidecar v2.0 started on {settings.host}:{settings.port}",
+            severity="info"
+        )
+    except Exception:
+        pass  # DB might not be ready yet
     await start_scheduler()
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown
     await stop_scheduler()
+    try:
+        await analytics_dao.log_activity(
+            "system", "shutdown", "BARQ Sidecar shutting down",
+            severity="info"
+        )
+    except Exception:
+        pass
     await close_db()
     print("[BARQ Sidecar] Shutting down")
 

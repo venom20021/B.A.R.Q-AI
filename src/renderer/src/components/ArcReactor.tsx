@@ -119,12 +119,16 @@ interface ArcReactorProps {
   fullscreen?: boolean
   className?: string
   theme?: 'cyan' | 'gold'
+  isSpeaking?: boolean
+  micLevel?: number
 }
 
 export const ArcReactor = memo(function ArcReactor({
   fullscreen = false,
   className = '',
   theme = 'cyan',
+  isSpeaking = false,
+  micLevel = 0,
 }: ArcReactorProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -528,6 +532,50 @@ export const ArcReactor = memo(function ArcReactor({
       ctx.arc(cx, cy, outerGlowRadius, 0, Math.PI * 2)
       ctx.fillStyle = outerGlow2
       ctx.fill()
+
+      // ── Voice-reactive waveform between reactor and subtitle ──
+      const waveformY = cy + ringRadius + ringWidth * 0.5 + 8
+      const waveformW = ringRadius * 1.2
+      const waveformH = 14
+      const waveformStartX = cx - waveformW / 2
+
+      // Generate waveform bars that react to speaking
+      const waveformBars = 32
+      const barW = waveformW / waveformBars - 1
+      const barGap = 1
+
+      ctx.save()
+      for (let i = 0; i < waveformBars; i++) {
+        let barH: number
+        if (isSpeaking) {
+          // Active speaking — reactive waveform based on micLevel + sin for variety
+          const t = timestamp * 0.005 + i * 0.4
+          const react = micLevel * 0.8 + Math.sin(t) * 0.2 + Math.sin(t * 2.3 + i * 0.7) * 0.15
+          barH = Math.max(1, react * waveformH)
+        } else {
+          // Idle — gentle ambient pulse
+          const t = timestamp * 0.0008 + i * 0.3
+          barH = Math.max(1, (Math.sin(t) * 0.3 + 0.5) * 3)
+        }
+
+        const x = waveformStartX + i * (barW + barGap)
+        const y = waveformY + (waveformH - barH) / 2
+        const alpha = 0.4 + (barH / waveformH) * 0.6
+
+        ctx.beginPath()
+        ctx.roundRect(x, y, barW, barH, [barW / 2, barW / 2, barW / 2, barW / 2])
+        ctx.fillStyle = `rgba(${colors.plasmaRgb}, ${alpha})`
+        ctx.fill()
+
+        // Bright core line for active speaking
+        if (isSpeaking && barH > 3) {
+          ctx.beginPath()
+          ctx.roundRect(x + 0.3, y + 1, Math.max(barW - 0.6, 1), barH - 2, [1, 1, 1, 1])
+          ctx.fillStyle = `rgba(${colors.plasmaRgb}, ${alpha * 0.7})`
+          ctx.fill()
+        }
+      }
+      ctx.restore()
 
       // ── Subtitle between reactor and BARQ text ──
       const textY = cy + ringRadius + ringWidth * 0.5 + 30

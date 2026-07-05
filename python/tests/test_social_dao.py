@@ -112,10 +112,10 @@ async def test_post_recording():
 
 @pytest.mark.asyncio
 async def test_pipeline_counts():
-    """Test pipeline stage counts."""
+    """Test pipeline stage counts include new scheduled key."""
     counts = await social_dao.get_pipeline_counts()
     assert isinstance(counts, dict)
-    for key in ("scripts_draft", "scripts_finalized", "videos_rendering", "videos_ready", "posts_queued", "posts_posted"):
+    for key in ("scripts_draft", "scripts_finalized", "videos_rendering", "videos_ready", "posts_queued", "posts_scheduled", "posts_posted"):
         assert key in counts
 
 
@@ -155,3 +155,121 @@ async def test_get_nonexistent():
     assert await social_dao.get_script(99999) is None
     assert await social_dao.get_video(99999) is None
     assert await social_dao.get_post(99999) is None
+
+
+# ─── Calendar / Scheduled Posts DAO ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_posts_empty():
+    """get_scheduled_posts should return empty list when no posts exist."""
+    posts = await social_dao.get_scheduled_posts("2026-01-01", "2026-12-31")
+    assert posts == []
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_posts_with_data():
+    """get_scheduled_posts should return posts scheduled in range."""
+    script_id = await social_dao.insert_script({
+        "title": "Sched DAO", "topic": "Test", "script_content": "C",
+    })
+    video_id = await social_dao.insert_video({
+        "script_id": script_id, "title": "Sched DAO Vid",
+        "file_path": "/tmp/v.mp4",
+    })
+
+    # Post inside range
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "youtube", "title": "In Range",
+        "status": "scheduled", "scheduled_at": "2026-06-15T10:00:00",
+    })
+    # Post outside range
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "twitter", "title": "Out Of Range",
+        "status": "scheduled", "scheduled_at": "2026-01-01T10:00:00",
+    })
+
+    posts = await social_dao.get_scheduled_posts("2026-06-01", "2026-06-30")
+    assert len(posts) == 1
+    assert posts[0]["title"] == "In Range"
+    assert posts[0]["platform"] == "youtube"
+    assert "video_title" in posts[0]
+    assert "script_format" in posts[0]
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_posts_none_scheduled():
+    """get_scheduled_posts should only return posts with scheduled_at set."""
+    script_id = await social_dao.insert_script({
+        "title": "No Sched", "topic": "Test", "script_content": "C",
+    })
+    video_id = await social_dao.insert_video({
+        "script_id": script_id, "title": "No Sched Vid",
+        "file_path": "/tmp/v.mp4",
+    })
+
+    # Post without scheduled_at
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "instagram", "title": "No Date",
+        "status": "queued",
+    })
+
+    posts = await social_dao.get_scheduled_posts("2026-01-01", "2026-12-31")
+    assert posts == []
+
+
+@pytest.mark.asyncio
+async def test_get_posts_by_status():
+    """get_posts_by_status should filter posts by status."""
+    script_id = await social_dao.insert_script({
+        "title": "Status DAO", "topic": "Test", "script_content": "C",
+    })
+    video_id = await social_dao.insert_video({
+        "script_id": script_id, "title": "Status Vid",
+        "file_path": "/tmp/v.mp4",
+    })
+
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "youtube", "title": "Queued",
+        "status": "queued",
+    })
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "twitter", "title": "Posted",
+        "status": "posted",
+    })
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "tiktok", "title": "Scheduled",
+        "status": "scheduled", "scheduled_at": "2026-07-01T10:00:00",
+    })
+
+    queued = await social_dao.get_posts_by_status("queued")
+    assert len(queued) >= 1
+    assert queued[0]["title"] == "Queued"
+
+    posted = await social_dao.get_posts_by_status("posted")
+    assert len(posted) >= 1
+    assert posted[0]["title"] == "Posted"
+
+    scheduled = await social_dao.get_posts_by_status("scheduled")
+    assert len(scheduled) >= 1
+    assert scheduled[0]["title"] == "Scheduled"
+
+
+@pytest.mark.asyncio
+async def test_get_posts_by_status_includes_video_title():
+    """get_posts_by_status should include video title via LEFT JOIN."""
+    script_id = await social_dao.insert_script({
+        "title": "Join Script", "topic": "Test", "script_content": "C",
+    })
+    video_id = await social_dao.insert_video({
+        "script_id": script_id, "title": "Join Video Title",
+        "file_path": "/tmp/v.mp4",
+    })
+    await social_dao.insert_post({
+        "video_id": video_id, "platform": "youtube", "title": "Join Post",
+        "status": "queued",
+    })
+
+    posts = await social_dao.get_posts_by_status("queued")
+    assert len(posts) >= 1
+    assert posts[0]["video_title"] == "Join Video Title"

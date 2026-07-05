@@ -9,5 +9,12 @@ from .trends import TrendResearch
 from .script import ScriptGenerator
 from .video import VideoAssembler
 from .poster import ContentPoster
+from .calendar import ContentCalendar
 
-__all__ = ["TrendResearch", "ScriptGenerator", "VideoAssembler", "ContentPoster"]
+__all__ = [
+    "TrendResearch",
+    "ScriptGenerator",
+    "VideoAssembler",
+    "ContentPoster",
+    "ContentCalendar",
+]
