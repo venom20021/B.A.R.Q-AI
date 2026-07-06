@@ -12,6 +12,10 @@ interface BarqAPI {
     setSensitivity: (level: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     setTtsVoice: (voice: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     history: (limit?: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    actionLog: {
+      recent: (limit?: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    }
+    chatStream: (message: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
   jobs: {
     scan: () => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -84,6 +88,15 @@ interface BarqAPI {
     git: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
     packageManager: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
     monitors: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    command: {
+      check: (command: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      approve: (command: string, tier: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      whitelist: {
+        rules: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+        setRules: (rules: { safe: string[]; warn: string[]; dangerous: string[] }) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      }
+      clearApprovals: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    }
   }
   desktop: {
     ocr: (region?: number[]) => Promise<{ success: boolean; data?: unknown; error?: string }>

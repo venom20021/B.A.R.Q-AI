@@ -221,9 +221,10 @@ async def get_custom_rules() -> dict[str, list[str]]:
 
 async def set_custom_rules(rules: dict[str, list[str]]) -> bool:
     """Save custom whitelist rules to the database."""
-    return await settings_dao.set_setting(
+    result = await settings_dao.set_setting(
         "command_whitelist_rules", json.dumps(rules), category="system"
     )
+    return bool(result)
 
 
 # ─── Evaluation ──────────────────────────────────────────────────────────────

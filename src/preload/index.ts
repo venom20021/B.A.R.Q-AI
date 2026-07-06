@@ -16,7 +16,11 @@ contextBridge.exposeInMainWorld('barq', {
     command: (text: string) => ipcRenderer.invoke('voice:command', text),
     setSensitivity: (level: string) => ipcRenderer.invoke('voice:sensitivity', level),
     setTtsVoice: (voice: string) => ipcRenderer.invoke('voice:set-tts-voice', voice),
-    history: (limit?: number) => ipcRenderer.invoke('voice:history', limit || 50)
+    history: (limit?: number) => ipcRenderer.invoke('voice:history', limit || 50),
+    actionLog: {
+      recent: (limit?: number) => ipcRenderer.invoke('voice:action-log:recent', limit || 10),
+    },
+    chatStream: (message: string) => ipcRenderer.invoke('voice:chat:stream', message),
   },
 
   // Job search
@@ -117,6 +121,15 @@ contextBridge.exposeInMainWorld('barq', {
     git: (data: unknown) => ipcRenderer.invoke('system:git', data),
     packageManager: (data: unknown) => ipcRenderer.invoke('system:package-manager', data),
     monitors: () => ipcRenderer.invoke('system:monitors'),
+    command: {
+      check: (command: string) => ipcRenderer.invoke('system:command:check', command),
+      approve: (command: string, tier: string) => ipcRenderer.invoke('system:command:approve', command, tier),
+      whitelist: {
+        rules: () => ipcRenderer.invoke('system:command:whitelist:rules'),
+        setRules: (rules: { safe: string[]; warn: string[]; dangerous: string[] }) => ipcRenderer.invoke('system:command:whitelist:rules:set', rules),
+      },
+      clearApprovals: () => ipcRenderer.invoke('system:command:approvals:clear'),
+    },
   },
 
   // Desktop
@@ -134,6 +147,13 @@ contextBridge.exposeInMainWorld('barq', {
     weather: (city: string) => ipcRenderer.invoke('web:weather', city),
     generateImage: (prompt: string, style?: string) =>
       ipcRenderer.invoke('web:generate-image', prompt, style || 'auto')
+  },
+
+  // Desktop Overlay
+  overlay: {
+    show: () => ipcRenderer.send('overlay:show'),
+    hide: () => ipcRenderer.send('overlay:hide'),
+    toggle: () => ipcRenderer.send('overlay:toggle'),
   },
 
   // Navigation listener

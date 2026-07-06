@@ -40,12 +40,28 @@ export function ChatPage(): JSX.Element {
       })
       if (resp && typeof resp === 'object') {
         const data = resp as { action?: string; target?: string; status?: string }
+
+        // Dispatch custom event for global listeners (TransientDiagnostics, etc.)
+        if (data.action) {
+          window.dispatchEvent(
+            new CustomEvent('barq:voice-command', { detail: { action: data.action } })
+          )
+        }
+
         const response = data.action === 'navigate'
           ? `Navigating to ${data.target || '/dashboard'}`
           : data.action === 'scan_jobs'
             ? 'Triggered job scan'
             : data.action === 'check_trends'
               ? 'Checking social trends'
+              : data.action === 'show_diagnostics'
+                ? 'Showing system diagnostics'
+              : data.action === 'overlay_show'
+                ? 'Showing desktop overlay'
+              : data.action === 'overlay_hide'
+                ? 'Hiding desktop overlay'
+              : data.action === 'overlay_toggle'
+                ? 'Toggled desktop overlay'
               : data.status === 'triggered'
                 ? `Action "${data.action}" triggered`
                 : `Command processed: ${data.action || data.status || 'ok'}`

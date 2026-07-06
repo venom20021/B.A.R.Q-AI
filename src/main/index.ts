@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createTray, setAppIsQuitting } from './tray'
 import { registerIpcHandlers } from './ipc'
 import { PythonSidecar } from './python-bridge'
+import { initOverlayManager, destroyOverlayManager } from './overlay-manager'
 
 let mainWindow: BrowserWindow | null = null
 let pythonSidecar: PythonSidecar | null = null
@@ -158,6 +159,9 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   registerIpcHandlers()
 
+  // Initialize desktop overlay manager
+  initOverlayManager()
+
   // Start Python sidecar
   pythonSidecar = new PythonSidecar()
   await pythonSidecar.start()
@@ -182,6 +186,8 @@ app.whenReady().then(async () => {
 })
 
 app.on('will-quit', () => {
+  // Cleanup overlay manager
+  destroyOverlayManager()
   // Unregister all shortcuts
   globalShortcut.unregisterAll()
 })

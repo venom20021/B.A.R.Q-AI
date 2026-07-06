@@ -725,6 +725,75 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ─── Command Whitelist ───────────────────────────────────────────
+
+  ipcMain.handle('system:command:check', async (_event, command: string) => {
+    try {
+      const result = await pythonBridge.request('/system/command/check', { command })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:command:approve', async (_event, command: string, tier: string) => {
+    try {
+      const result = await pythonBridge.request('/system/command/approve', { command, tier })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:command:whitelist:rules', async () => {
+    try {
+      const result = await pythonBridge.request('/system/command/whitelist/rules')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:command:whitelist:rules:set', async (_event, rules: { safe: string[]; warn: string[]; dangerous: string[] }) => {
+    try {
+      const result = await pythonBridge.request('/system/command/whitelist/rules', { rules })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('system:command:approvals:clear', async () => {
+    try {
+      const result = await pythonBridge.request('/system/command/approvals/clear', {})
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Action Log ───────────────────────────────────────────────────
+
+  ipcMain.handle('voice:action-log:recent', async (_event, limit: number) => {
+    try {
+      const result = await pythonBridge.request(`/voice/action-log/recent?limit=${limit || 10}`)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Streaming Chat ───────────────────────────────────────────────
+
+  ipcMain.handle('voice:chat:stream', async (_event, message: string) => {
+    try {
+      const result = await pythonBridge.request('/voice/chat/stream', { message, language: 'en' })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // ─── Phase 2: Multi-Monitor ───────────────────────────────────────
 
   ipcMain.handle('system:monitors', async () => {

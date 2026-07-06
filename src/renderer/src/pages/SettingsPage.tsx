@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings, Shield, Bell, Mic, Key, Palette, Loader2, CheckCircle, Briefcase, Video, Volume2, Play } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { Settings, Shield, Bell, Mic, Key, Palette, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 
 interface SettingsSection {
   id: string
@@ -16,7 +16,8 @@ const sections: SettingsSection[] = [
   { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alerts and digest preferences' },
   { id: 'jobs', label: 'Job Search', icon: Briefcase, description: 'Job search preferences and filters' },
   { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },
-  { id: 'privacy', label: 'Privacy', icon: Shield, description: 'Data storage and local processing' },
+  { id: 'security', label: 'Security', icon: Shield, description: 'Command whitelist and approvals' },
+  { id: 'privacy', label: 'Privacy', icon: ShieldOff, description: 'Data storage and local processing' },
   { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display settings' },
 ]
 
@@ -96,6 +97,21 @@ export function SettingsPage(): JSX.Element {
     font_scale: '100',
     animations: true,
   })
+
+  // ─── Security / Command Whitelist State ───────────────────────────
+  const [checkCommand, setCheckCommand] = useState('')
+  const [checkResult, setCheckResult] = useState<{ tier: string; description: string; requires_approval: boolean } | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const [approveMsg, setApproveMsg] = useState('')
+  const [whitelistRules, setWhitelistRules] = useState<{ safe: string[]; warn: string[]; dangerous: string[] }>({ safe: [], warn: [], dangerous: [] })
+  const [rulesLoading, setRulesLoading] = useState(true)
+  const [savingRules, setSavingRules] = useState(false)
+  const [clearMsg, setClearMsg] = useState('')
+  // Custom rule editor
+  const [editTier, setEditTier] = useState<'safe' | 'warn' | 'dangerous'>('safe')
+  const [newRulePattern, setNewRulePattern] = useState('')
+  const [rulesSavedMsg, setRulesSavedMsg] = useState('')
 
   const fetchVoiceStatus = useCallback(async () => {
     setVoiceLoading(true)
@@ -233,11 +249,97 @@ export function SettingsPage(): JSX.Element {
     } catch { /* ignore */ }
   }, [])
 
+  // ─── Security Callbacks ──────────────────────────────────────────
+
+  const handleCheckCommand = useCallback(async () => {
+    if (!checkCommand.trim()) return
+    setChecking(true)
+    setCheckResult(null)
+    setApproveMsg('')
+    try {
+      const resp = await window.barq?.system.command.check(checkCommand.trim())
+      if (resp?.success && resp.data) {
+        const data = resp.data as { tier: string; description: string; requires_approval: boolean }
+        setCheckResult(data)
+      }
+    } catch { /* ignore */ }
+    setChecking(false)
+  }, [checkCommand])
+
+  const handleApproveCommand = useCallback(async () => {
+    if (!checkResult || !checkCommand.trim()) return
+    setApproving(true)
+    setApproveMsg('')
+    try {
+      const resp = await window.barq?.system.command.approve(checkCommand.trim(), checkResult.tier)
+      if (resp?.success && resp.data) {
+        const data = resp.data as { status: string; message: string }
+        setApproveMsg(data.message || 'Approved')
+      }
+    } catch { setApproveMsg('Approval failed') }
+    setApproving(false)
+  }, [checkCommand, checkResult])
+
+  const fetchWhitelistRules = useCallback(async () => {
+    setRulesLoading(true)
+    try {
+      const resp = await window.barq?.system.command.whitelist.rules()
+      if (resp?.success && resp.data) {
+        const data = resp.data as { rules: { safe: string[]; warn: string[]; dangerous: string[] } }
+        setWhitelistRules(data.rules || { safe: [], warn: [], dangerous: [] })
+      }
+    } catch { /* ignore */ }
+    setRulesLoading(false)
+  }, [])
+
+  const handleAddRulePattern = useCallback(() => {
+    if (!newRulePattern.trim()) return
+    setWhitelistRules(prev => ({
+      ...prev,
+      [editTier]: [...prev[editTier], newRulePattern.trim()],
+    }))
+    setNewRulePattern('')
+  }, [newRulePattern, editTier])
+
+  const handleRemoveRulePattern = useCallback((tier: 'safe' | 'warn' | 'dangerous', index: number) => {
+    setWhitelistRules(prev => ({
+      ...prev,
+      [tier]: prev[tier].filter((_, i) => i !== index),
+    }))
+  }, [])
+
+  const handleSaveWhitelistRules = useCallback(async () => {
+    setSavingRules(true)
+    setRulesSavedMsg('')
+    try {
+      const resp = await window.barq?.system.command.whitelist.setRules(whitelistRules)
+      if (resp?.success) {
+        setRulesSavedMsg('Rules saved successfully')
+        setTimeout(() => setRulesSavedMsg(''), 3000)
+      }
+    } catch { setRulesSavedMsg('Failed to save')
+      setTimeout(() => setRulesSavedMsg(''), 3000) }
+    setSavingRules(false)
+  }, [whitelistRules])
+
+  const handleClearApprovals = useCallback(async () => {
+    try {
+      const resp = await window.barq?.system.command.clearApprovals()
+      if (resp?.success && resp.data) {
+        const data = resp.data as { message: string }
+        setClearMsg(data.message || 'Cleared')
+        setTimeout(() => setClearMsg(''), 3000)
+      }
+    } catch { setClearMsg('Failed to clear')
+      setTimeout(() => setClearMsg(''), 3000) }
+  }, [])
+
   useEffect(() => {
     void fetchVoiceStatus()
     void fetchSettings()
     void fetchSoundSettings()
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings])
+    void fetchWhitelistRules()
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -719,6 +821,257 @@ export function SettingsPage(): JSX.Element {
                     <p className="text-xs font-exo text-dim-400">Automatically post rendered content</p>
                   </div>
                   {renderToggle(socialSettings.auto_post, () => setSocialSettings(prev => ({ ...prev, auto_post: !prev.auto_post })))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Security Section ─── */}
+          {activeSection === 'security' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Command Whitelist Security</h3>
+                <p className="text-sm font-rajdhani text-dim-400">Manage command safety tiers, approve commands, and customize whitelist rules</p>
+              </div>
+
+              {/* ─── Command Checker ─── */}
+              <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10">
+                <div className="flex items-center gap-2 mb-3">
+                  <Terminal className="w-4 h-4 text-cyan-300" />
+                  <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">Command Classifier</h4>
+                </div>
+                <p className="text-xs font-exo text-dim-400 mb-3">
+                  Type a command to check its safety classification and approve it for execution.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={checkCommand}
+                    onChange={(e) => setCheckCommand(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleCheckCommand()}
+                    placeholder="e.g. rm -rf /"
+                    className="flex-1 bg-void-800/60 text-ghost text-sm font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500"
+                  />
+                  <button
+                    onClick={handleCheckCommand}
+                    disabled={checking || !checkCommand.trim()}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-40 transition-all"
+                  >
+                    {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Eye className="w-3 h-3" />}
+                    Classify
+                  </button>
+                </div>
+
+                <AnimatePresence>
+                  {checkResult && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden mt-3"
+                    >
+                      <div className={`rounded-lg p-3 border ${
+                        checkResult.tier === 'safe'
+                          ? 'bg-green-500/10 border-green-500/20'
+                          : checkResult.tier === 'warn'
+                            ? 'bg-amber-500/10 border-amber-500/20'
+                            : 'bg-red-500/10 border-red-500/20'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            {checkResult.tier === 'safe' ? (
+                              <ShieldCheck className="w-4 h-4 text-green-400" />
+                            ) : checkResult.tier === 'warn' ? (
+                              <AlertTriangle className="w-4 h-4 text-amber-400" />
+                            ) : (
+                              <ShieldOff className="w-4 h-4 text-red-400" />
+                            )}
+                            <div>
+                              <span className={`text-xs font-rajdhani font-bold uppercase ${
+                                checkResult.tier === 'safe' ? 'text-green-300' : checkResult.tier === 'warn' ? 'text-amber-300' : 'text-red-300'
+                              }`}>
+                                {checkResult.tier}
+                              </span>
+                              <p className="text-xs font-exo text-dim-400 mt-0.5">{checkResult.description}</p>
+                            </div>
+                          </div>
+                          {checkResult.requires_approval && (
+                            <button
+                              onClick={handleApproveCommand}
+                              disabled={approving}
+                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 transition-all disabled:opacity-40"
+                            >
+                              {approving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                              Approve
+                            </button>
+                          )}
+                        </div>
+                        {approveMsg && (
+                          <p className="text-xs font-exo text-cyan-300 mt-2 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> {approveMsg}
+                          </p>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* ─── Custom Rules Editor ─── */}
+              <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-cyan-300" />
+                    <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">Custom Whitelist Rules</h4>
+                  </div>
+                  <button
+                    onClick={handleSaveWhitelistRules}
+                    disabled={savingRules}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-40"
+                  >
+                    {savingRules ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Save Rules
+                  </button>
+                </div>
+                {rulesSavedMsg && (
+                  <p className="text-xs font-exo text-green-400 mb-2 flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" /> {rulesSavedMsg}
+                  </p>
+                )}
+
+                {/* Tier tabs */}
+                <div className="flex gap-1 mb-3">
+                  {(['safe', 'warn', 'dangerous'] as const).map(tier => (
+                    <button
+                      key={tier}
+                      onClick={() => setEditTier(tier)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-rajdhani font-semibold transition-all ${
+                        editTier === tier
+                          ? tier === 'safe'
+                            ? 'bg-green-500/15 text-green-300 border border-green-500/25'
+                            : tier === 'warn'
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/25'
+                              : 'bg-red-500/15 text-red-300 border border-red-500/25'
+                          : 'bg-void-800/40 text-dim-400 hover:text-ghost border border-transparent'
+                      }`}
+                    >
+                      {tier === 'safe' && <ShieldCheck className="w-3 h-3 inline mr-1" />}
+                      {tier === 'warn' && <AlertTriangle className="w-3 h-3 inline mr-1" />}
+                      {tier === 'dangerous' && <ShieldOff className="w-3 h-3 inline mr-1" />}
+                      {tier.charAt(0).toUpperCase() + tier.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Add pattern */}
+                <div className="flex gap-2 mb-3">
+                  <input
+                    type="text"
+                    value={newRulePattern}
+                    onChange={(e) => setNewRulePattern(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddRulePattern()}
+                    placeholder="Add regex pattern..."
+                    className="flex-1 bg-void-800/60 text-ghost text-xs font-mono px-2.5 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500"
+                  />
+                  <button
+                    onClick={handleAddRulePattern}
+                    disabled={!newRulePattern.trim()}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 disabled:opacity-40 transition-all"
+                  >
+                    <Plus className="w-3 h-3" /> Add
+                  </button>
+                </div>
+
+                {/* Rule list */}
+                {rulesLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-4 h-4 animate-spin text-dim-400" />
+                  </div>
+                ) : (
+                  <div className="space-y-1 max-h-40 overflow-y-auto scroll-cyan">
+                    {whitelistRules[editTier].length === 0 ? (
+                      <p className="text-xs font-exo text-dim-500 text-center py-3">No custom {editTier} rules.</p>
+                    ) : (
+                      whitelistRules[editTier].map((pattern, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between bg-void-800/40 rounded px-2.5 py-1.5 group"
+                        >
+                          <code className="text-xs font-mono text-dim-300 truncate flex-1">{pattern}</code>
+                          <button
+                            onClick={() => handleRemoveRulePattern(editTier, i)}
+                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-dim-400 hover:text-red-400 transition-all"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {/* Tips */}
+                <div className="mt-3 pt-3 border-t border-cyan-500/8">
+                  <p className="text-xs font-exo text-dim-500">
+                    Patterns are regex. They are checked <strong>before</strong> built-in patterns,
+                    so you can override the default classification for specific commands.
+                    Built-in patterns are not affected by this list.
+                  </p>
+                </div>
+              </div>
+
+              {/* ─── Approvals Controls ─── */}
+              <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    <div>
+                      <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">Session Approvals</h4>
+                      <p className="text-xs font-exo text-dim-400">
+                        Approved commands persist only for this session—cleared on restart.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleClearApprovals}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20 transition-all"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Clear All
+                  </button>
+                </div>
+                {clearMsg && (
+                  <p className="text-xs font-exo text-amber-300 mt-2 flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" /> {clearMsg}
+                  </p>
+                )}
+              </div>
+
+              {/* ─── Threat Model Info ─── */}
+              <div className="pt-2">
+                <h4 className="text-xs font-rajdhani font-bold text-dim-300 mb-2">Safety Tiers</h4>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-green-500/8 border border-green-500/15 rounded-lg p-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-green-400" />
+                      <span className="text-xs font-rajdhani font-bold text-green-300">SAFE</span>
+                    </div>
+                    <p className="text-hud text-dim-400 text-xs">Read-only commands like ls, echo, ping, git status. Auto-approved.</p>
+                  </div>
+                  <div className="bg-amber-500/8 border border-amber-500/15 rounded-lg p-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="text-xs font-rajdhani font-bold text-amber-300">WARN</span>
+                    </div>
+                    <p className="text-hud text-dim-400 text-xs">Modification commands like mkdir, kill, pip install, git push. Needs approval.</p>
+                  </div>
+                  <div className="bg-red-500/8 border border-red-500/15 rounded-lg p-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <ShieldOff className="w-3.5 h-3.5 text-red-400" />
+                      <span className="text-xs font-rajdhani font-bold text-red-300">DANGEROUS</span>
+                    </div>
+                    <p className="text-hud text-dim-400 text-xs">Destructive commands like rm, sudo, dd, reboot. Explicit approval required.</p>
+                  </div>
                 </div>
               </div>
             </div>

@@ -455,12 +455,25 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 """
 
+CREATE_ACTION_LOG = """
+CREATE TABLE IF NOT EXISTS action_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info'
+        CHECK (severity IN ('info', 'warning', 'danger')),
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 # ─── Aggregate schema creation ───────────────────────────────────────────────
 
 ALL_TABLES = [
     ("user_settings", CREATE_USER_SETTINGS),
     ("user_profiles", CREATE_USER_PROFILES),
     ("notes", CREATE_NOTES),
+    ("action_log", CREATE_ACTION_LOG),
     ("job_listings", CREATE_JOB_LISTINGS),
     ("job_evaluations", CREATE_JOB_EVALUATIONS),
     ("applications", CREATE_APPLICATIONS),

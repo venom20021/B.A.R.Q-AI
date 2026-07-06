@@ -94,18 +94,43 @@ class BARQResponder:
         try:
             from voice.routes import _parse_and_route
             result = await _parse_and_route(text, is_follow_up=False, last_intent=None)
-            if result.get("action") == "unknown":
+
+            action = result.get("action", "unknown")
+
+            # ─── Handle whitelist confirmation prompt ─────────────────
+            if action == "run_command_confirm":
+                cmd = result.get("command", "")
+                tier = result.get("tier", "warn")
+                desc = result.get("tier_description", "")
+                tier_upper = "DANGEROUS" if tier == "dangerous" else "MODERATE RISK"
+                return (
+                    f"The command {cmd} is flagged as {tier_upper}. "
+                    f"{desc} "
+                    f"Say 'yes' to confirm or 'cancel' to abort."
+                )
+
+            # ─── Handle executed command result ───────────────────────
+            if action == "run_command_execute":
+                msg = result.get("message", "Command approved and executed.")
+                return msg
+
+            if action == "cancel":
+                return "Command cancelled."
+
+            if action == "unknown":
                 # Unknown command — fall back to LLM conversation
                 context = self.conversation.get_context()
                 try:
                     return await self.llm.chat(context)
                 except Exception:
                     return f"Sorry, I didn't understand that command."
-            action = result.get("action", "unknown").replace("_", " ")
+
+            # Standard response
+            action_text = action.replace("_", " ")
             target = result.get("target", "") or result.get("query", "")
             if target:
-                return f"Okay, I'll {action} {target}."
-            return f"Okay, {action}."
+                return f"Okay, I'll {action_text} {target}."
+            return f"Okay, {action_text}."
         except Exception as e:
             return f"I heard: '{text}' but couldn't process it. {e}"
 

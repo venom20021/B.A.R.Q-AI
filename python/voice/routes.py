@@ -15,6 +15,8 @@ from ai.responder import BARQResponder
 from . import WakeWordDetector, SpeechProcessor, play_command_accepted_sound, set_sound_enabled, get_sound_settings
 from .conversation_listener import ConversationListener
 from database import analytics_dao, settings_dao, db_connection
+from system_control.command_whitelist import SAFE, WARN, DANGEROUS, classify_command, describe_classification, approve_command, is_approved, get_custom_rules
+from .action_log import log_action, get_recent_actions, INFO, WARNING, DANGER as ACTION_DANGER
 
 router = APIRouter()
 
@@ -452,6 +454,14 @@ _wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected
 # Conversation manager is now managed by the shared responder instance
 # _responder and conversation_listener are the canonical singletons above
 
+# ─── Pending command approval state ────────────────────────────────
+# Stores the command + tier awaiting voice confirmation (yes/no).
+# Cleared after a confirmation decision is made.
+_pending_run_command: dict[str, Any] = {
+    "command": None,
+    "tier": None,
+}
+
 
 class CommandRequest(BaseModel):
     command: str
@@ -792,8 +802,24 @@ async def process_command(request: CommandRequest):
 
     result = await _parse_and_route(command, is_follow_up, last_intent)
 
+    # Log every parsed command to the floating action log
+    action = result.get("action", "unknown")
+    if action != "unknown":
+        desc = result.get("command", result.get("target", result.get("query", action.replace("_", " "))))
+        severity = INFO
+        if action in ("run_command_confirm",) and result.get("tier") in (WARN, DANGEROUS):
+            severity = WARNING
+        if result.get("tier") == DANGEROUS:
+            severity = ACTION_DANGER
+        await log_action(
+            action=action,
+            description=str(desc)[:120],
+            severity=severity,
+            metadata={"command": command[:80], "tier": result.get("tier")},
+        )
+
     # Play command accepted sound + update conversation manager
-    if result.get("action") != "unknown":
+    if action != "unknown":
         play_command_accepted_sound()
         if not cm.is_active:
             cm.start_session()
@@ -805,15 +831,133 @@ async def process_command(request: CommandRequest):
     return result
 
 
+@router.post("/command/approve")
+async def voice_approve_command(request: CommandRequest):
+    """Approve a voice-parsed command for execution.
+    Delegates to the system whitelist approval mechanism.
+    Returns tier info so the caller knows if it's safe, warn, or dangerous.
+    """
+    cmd_text = request.command.strip()
+    custom_rules = await get_custom_rules()
+    tier = classify_command(cmd_text, custom_rules)
+
+    if tier in (WARN, DANGEROUS):
+        approve_command(cmd_text, tier)
+        return {
+            "status": "approved",
+            "tier": tier,
+            "tier_description": describe_classification(tier),
+            "command": cmd_text,
+            "message": f"{'DANGEROUS' if tier == DANGEROUS else 'MODERATE RISK'} command approved for this session via voice.",
+        }
+
+    return {
+        "status": "already_safe",
+        "tier": SAFE,
+        "command": cmd_text,
+        "message": "Command is classified as SAFE — no approval needed.",
+    }
+
+
+@router.post("/command/execute")
+async def voice_execute_approved_command(request: CommandRequest):
+    """Execute a command that has been pre-approved through the voice pipeline.
+    Checks whitelist before executing, returning requires_approval if not yet approved.
+    """
+    cmd_text = request.command.strip()
+    custom_rules = await get_custom_rules()
+    tier = classify_command(cmd_text, custom_rules)
+
+    # Check approval
+    if tier == DANGEROUS and not is_approved(cmd_text, DANGEROUS):
+        return {
+            "status": "requires_approval",
+            "tier": DANGEROUS,
+            "tier_description": describe_classification(DANGEROUS),
+            "command": cmd_text,
+            "message": "This command is DANGEROUS. Approve via POST /voice/command/approve first.",
+        }
+
+    if tier == WARN and not is_approved(cmd_text, WARN):
+        return {
+            "status": "requires_approval",
+            "tier": WARN,
+            "tier_description": describe_classification(WARN),
+            "command": cmd_text,
+            "message": "This command is MODERATE RISK. Approve via POST /voice/command/approve first.",
+        }
+
+    # Execute via the system terminal endpoint
+    from system_control.routes import run_command as system_run_command
+    from system_control.routes import CommandRequest as SysCommandRequest
+
+    sys_request = SysCommandRequest(command=cmd_text, cwd=None)
+    result = await system_run_command(sys_request)
+
+    # Log the voice-executed command
+    await analytics_dao.log_activity(
+        "voice", "command_execute",
+        f"Voice executed: {cmd_text[:80]} — tier: {tier}"
+    )
+
+    return {
+        "source": "voice",
+        "tier": tier,
+        **result,
+    }
+
+
 async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent: Optional[str] = None) -> dict[str, Any]:
     """
     Parse a voice command and determine the appropriate action.
     Supports follow-up context resolution for multi-turn conversations.
     """
 
+    global _pending_run_command
+
     # ─── Conversation follow-up handling ────────────────────────────
 
     if is_follow_up and last_intent:
+        # ─── Handle run_command_confirm (voice whitelist approval) ─
+        if last_intent == "run_command_confirm":
+            pending = _pending_run_command
+
+            if command in ("yes", "yeah", "confirm", "do it", "go ahead", "okay"):
+                cmd_text = pending.get("command")
+                tier = pending.get("tier")
+                if cmd_text and tier:
+                    # Approve and execute the command
+                    approve_command(cmd_text, tier)
+                    _pending_run_command = {"command": None, "tier": None}
+                    if tier == DANGEROUS:
+                        tier_label = "DANGEROUS"
+                    else:
+                        tier_label = "MODERATE RISK"
+                    tier_label_text = f"{tier_label} command approved. Executing..."
+                    return {
+                        "action": "run_command_execute",
+                        "command": cmd_text,
+                        "tier": tier,
+                        "status": "approved",
+                        "message": tier_label_text,
+                        "follow_up": True,
+                    }
+                return {
+                    "action": "run_command_execute",
+                    "status": "error",
+                    "message": "No pending command to execute.",
+                    "follow_up": True,
+                }
+
+            if command in ("no", "nope", "cancel", "stop", "never mind", "abort"):
+                _pending_run_command = {"command": None, "tier": None}
+                return {
+                    "action": "cancel",
+                    "status": "cancelled",
+                    "message": "Command cancelled.",
+                    "follow_up": True,
+                }
+
         # Handle follow-ups like "that one", "this", "the second"
         if command in ("that one", "this", "yes", "yeah", "confirm", "do it"):
             # _conversation_context was never defined; return a simple confirmation
@@ -923,7 +1067,43 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
     if "run" in command or "execute" in command:
         cmd_match = re.search(r"(?:run|execute)\s+(.+)$", command)
         if cmd_match and "scan" not in command and "match" not in command:
-            return {"action": "run_command", "command": cmd_match.group(1), "endpoint": "POST /system/terminal/run", "status": "parsed"}
+            cmd_text = cmd_match.group(1)
+            custom = await get_custom_rules()
+            tier = classify_command(cmd_text, custom)
+
+            # Already approved in this session → proceed directly
+            if is_approved(cmd_text, tier):
+                return {
+                    "action": "run_command",
+                    "command": cmd_text,
+                    "endpoint": "POST /system/terminal/run",
+                    "status": "parsed",
+                    "tier": tier,
+                    "tier_description": describe_classification(tier),
+                    "requires_approval": False,
+                }
+
+            # Needs approval → enter voice confirmation flow
+            if tier in (WARN, DANGEROUS):
+                _pending_run_command = {"command": cmd_text, "tier": tier}
+                return {
+                    "action": "run_command_confirm",
+                    "command": cmd_text,
+                    "tier": tier,
+                    "tier_description": describe_classification(tier),
+                    "status": "needs_confirmation",
+                }
+
+            # SAFE → proceed directly
+            return {
+                "action": "run_command",
+                "command": cmd_text,
+                "endpoint": "POST /system/terminal/run",
+                "status": "parsed",
+                "tier": tier,
+                "tier_description": describe_classification(tier),
+                "requires_approval": False,
+            }
 
     if "git" in command:
         return {"action": "git_command", "command": command, "status": "parsed"}
@@ -934,6 +1114,28 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
     tunnel_match = re.search(r"(?:expose|tunnel)\s+port\s+(\d+)", command)
     if tunnel_match:
         return {"action": "expose_port", "port": int(tunnel_match.group(1)), "endpoint": "POST /system/tunnel/expose", "status": "parsed"}
+
+    # ─── Approvals / Whitelist ──────────────────────────────────────────
+
+    if "clear" in command and "approval" in command:
+        return {"action": "clear_approvals", "status": "triggered"}
+
+    if "show" in command and "approval" in command:
+        return {"action": "navigate", "target": "/settings"}
+
+    # ─── Desktop Overlay ──────────────────────────────────────────
+
+    if "overlay" in command:
+        if "show" in command:
+            return {"action": "overlay_show", "status": "triggered"}
+        if "hide" in command:
+            return {"action": "overlay_hide", "status": "triggered"}
+        return {"action": "overlay_toggle", "status": "triggered"}
+
+    # ─── Diagnostics ─────────────────────────────────────────────────
+
+    if "diagnostics" in command or ("system" in command and "status" in command):
+        return {"action": "show_diagnostics", "status": "triggered"}
 
     # ─── Desktop / Wallpaper Commands ───────────────────────────────
 
@@ -1126,6 +1328,67 @@ async def transcribe_audio():
     except Exception as e:
         await analytics_dao.log_activity("voice", "transcribe_error", str(e), severity="error")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/action-log/recent")
+async def action_log_recent(limit: int = Query(default=10, ge=1, le=100)):
+    """Get the most recent AI-executed actions for the floating action log."""
+    actions = await get_recent_actions(limit=limit)
+    return {"actions": actions}
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Stream a chat response token-by-token via Server-Sent Events.
+    Each token is sent as an SSE event and can be played via incremental TTS.
+    """
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        import asyncio as _asyncio
+        import json as _json
+
+        try:
+            # Stream from Ollama's native streaming API token-by-token
+            # This uses the responder's Ollama client with stream=True
+            from utils.ollama_client import OllamaClient
+
+            cm = responder.conversation
+            cm.add_user_message(request.message)
+            context = cm.get_context()
+
+            llm = OllamaClient()
+            full_text = ""
+
+            # Use the streaming chat method
+            async for token in llm.stream_chat(context):
+                full_text += token
+                yield f"data: {_json.dumps({'type': 'token', 'text': token})}\n\n"
+
+            cm.add_assistant_message(full_text)
+
+            # Log the action
+            action_text = full_text[:80]
+            await log_action(
+                "chat_response",
+                f"AI: {action_text}..." if len(full_text) > 80 else f"AI: {full_text}",
+                severity=INFO,
+                metadata={"message": request.message[:100], "response_length": len(full_text)},
+            )
+
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/speak")

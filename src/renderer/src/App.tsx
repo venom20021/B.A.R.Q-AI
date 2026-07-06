@@ -6,6 +6,9 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Sidebar } from './components/Sidebar'
 import { QuickOverlay} from './components/QuickOverlay'
 import { StartupSequence } from './components/StartupSequence'
+import { FloatingActionLog } from './components/FloatingActionLog'
+import { ApprovalModal } from './components/ApprovalModal'
+import { TransientDiagnostics } from './components/TransientDiagnostics'
 import { Navbar } from './components/Navbar'
 import type { NavTab } from './components/Navbar'
 import { ThemeProvider } from './contexts/ThemeContext'
@@ -58,6 +61,22 @@ function processQuickCommand(cmd: string, nav: (route: string) => void): void {
     nav('/web?tab=stocks')
   } else if (cmd.includes('create note') || cmd.includes('note')) {
     nav('/notes')
+  } else if (cmd.includes('approval') && cmd.includes('clear')) {
+    void window.barq?.system.command.clearApprovals()
+  } else if (cmd.includes('approval')) {
+    nav('/settings')
+  } else if (cmd.includes('diagnostics') || cmd.includes('system status')) {
+    window.dispatchEvent(
+      new CustomEvent('barq:voice-command', { detail: { action: 'show_diagnostics' } })
+    )
+  } else if (cmd.includes('overlay')) {
+    if (cmd.includes('show')) {
+      window.barq?.overlay.show()
+    } else if (cmd.includes('hide')) {
+      window.barq?.overlay.hide()
+    } else {
+      window.barq?.overlay.toggle()
+    }
   } else if (cmd.includes('voice') || cmd.includes('listen')) {
     void window.barq?.voice.start()
   } else {
@@ -160,9 +179,22 @@ function AppContent(): JSX.Element {
     return () => clearInterval(interval)
   }, [])
 
-  // Listen for speaking/mute state
+  // Listen for barq:voice-command events from ChatPage and voice pipeline
   useEffect(() => {
-    // Placeholder for voice state integration
+    const handler = (e: CustomEvent<{ action: string }>): void => {
+      const action = e.detail?.action
+      if (action === 'clear_approvals') {
+        void window.barq?.system.command.clearApprovals()
+      } else if (action === 'overlay_show') {
+        window.barq?.overlay.show()
+      } else if (action === 'overlay_hide') {
+        window.barq?.overlay.hide()
+      } else if (action === 'overlay_toggle') {
+        window.barq?.overlay.toggle()
+      }
+    }
+    window.addEventListener('barq:voice-command', handler as EventListener)
+    return () => window.removeEventListener('barq:voice-command', handler as EventListener)
   }, [])
 
   useEffect(() => {
@@ -305,6 +337,15 @@ function AppContent(): JSX.Element {
         position={quickOverlay.position}
         recentCommands={recentCommands}
       />
+
+      {/* Floating Action Log — shows AI-executed commands in bottom-right */}
+      <FloatingActionLog />
+
+      {/* Approval Modal — triggered by dangerous voice commands */}
+      <ApprovalModal />
+
+      {/* Transient Diagnostics — auto-dismissing system stats overlay */}
+      <TransientDiagnostics />
     </>
   )
 }
