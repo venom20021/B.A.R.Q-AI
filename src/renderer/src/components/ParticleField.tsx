@@ -53,7 +53,7 @@ export function ParticleField({ id, className }: ParticleFieldProps): JSX.Elemen
   return (
     <Particles
       id={id || 'particle-field'}
-      init={particlesInit}
+      {...{ init: particlesInit } as any}
       options={options as any}
       className={className || 'fixed inset-0 pointer-events-none z-0'}
     />

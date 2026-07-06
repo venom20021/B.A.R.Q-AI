@@ -1223,9 +1223,42 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
     if ("application" in command and ("show" in command or "status" in command or "my" in command)):
         return {"action": "list_applications", "endpoint": "GET /api/v1/applications", "status": "triggered"}
 
+    # Upload/update resume (specific action, check before generic resume and optimize)
+    if ("upload" in command or "update" in command) and "resume" in command:
+        return {"action": "upload_resume", "endpoint": "POST /api/v1/resume/upload", "status": "needs_file"}
+
+    # Optimize resume (must come before generic resume check since "optimize resume" contains "resume")
+    opt_match = re.search(r"optimize(?:\s+resume)?(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
+    if opt_match:
+        job_id = opt_match.group(1)
+        return {"action": "optimize_resume", "endpoint": f"POST /api/v1/jobs/{job_id}/optimize", "payload": {"job_id": job_id}, "status": "parsed"}
+
+    # Cover letter with job ID (check before generic resume since "cover letter" could be near "resume")
+    cl_match = re.search(r"(?:cover letter|coverletter)(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
+    if cl_match:
+        job_id = cl_match.group(1)
+        return {"action": "cover_letter", "endpoint": f"POST /api/v1/jobs/{job_id}/cover-letter", "payload": {"job_id": job_id}, "status": "parsed"}
+    if "cover letter" in command or "write a letter" in command:
+        return {"action": "cover_letter", "endpoint": "POST /api/v1/jobs/{id}/cover-letter", "status": "needs_job_id"}
+
+    # Cold mail with job ID (check before generic resume for similar reasons)
+    ce_match = re.search(r"(?:cold mail|cold email|email)(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
+    if ce_match:
+        job_id = ce_match.group(1)
+        return {"action": "cold_mail", "endpoint": f"POST /api/v1/jobs/{job_id}/cold-mail", "payload": {"job_id": job_id}, "status": "parsed"}
+    if "cold mail" in command or "cold email" in command or "send email" in command or "email about" in command:
+        return {"action": "cold_mail", "endpoint": "POST /api/v1/jobs/{id}/cold-mail", "status": "needs_job_id"}
+
+    # Apply with job ID (check before generic resume just in case)
+    apply_match = re.search(r"apply(?:\s+to|\s+for)?(?:\s+job)?\s+(\d+)", command)
+    if apply_match:
+        job_id = apply_match.group(1)
+        return {"action": "apply", "endpoint": f"POST /api/v1/jobs/{job_id}/apply", "payload": {"job_id": job_id}, "status": "parsed"}
+    if "apply" in command or "submit application" in command:
+        return {"action": "apply", "endpoint": "POST /api/v1/jobs/{id}/apply", "status": "needs_job_id"}
+
+    # Generic resume (fallback — any other "resume" command)
     if "resume" in command:
-        if "upload" in command or "update" in command:
-            return {"action": "upload_resume", "endpoint": "POST /api/v1/resume/upload", "status": "needs_file"}
         return {"action": "get_resume", "endpoint": "GET /api/v1/resume", "status": "triggered"}
 
     # Scan jobs with optional keyword filter
@@ -1257,32 +1290,6 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
 
     if ("match" in command and "jobs" in command) or "score jobs" in command or "evaluate jobs" in command:
         return {"action": "batch_match", "endpoint": "POST /api/v1/jobs/batch-match", "status": "triggered"}
-
-    opt_match = re.search(r"optimize(?:\s+resume)?(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
-    if opt_match:
-        job_id = opt_match.group(1)
-        return {"action": "optimize_resume", "endpoint": f"POST /api/v1/jobs/{job_id}/optimize", "payload": {"job_id": job_id}, "status": "parsed"}
-
-    cl_match = re.search(r"(?:cover letter|coverletter)(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
-    if cl_match:
-        job_id = cl_match.group(1)
-        return {"action": "cover_letter", "endpoint": f"POST /api/v1/jobs/{job_id}/cover-letter", "payload": {"job_id": job_id}, "status": "parsed"}
-    if "cover letter" in command or "write a letter" in command:
-        return {"action": "cover_letter", "endpoint": "POST /api/v1/jobs/{id}/cover-letter", "status": "needs_job_id"}
-
-    ce_match = re.search(r"(?:cold mail|cold email|email)(?:\s+for)?(?:\s+job)?\s+(\d+)", command)
-    if ce_match:
-        job_id = ce_match.group(1)
-        return {"action": "cold_mail", "endpoint": f"POST /api/v1/jobs/{job_id}/cold-mail", "payload": {"job_id": job_id}, "status": "parsed"}
-    if "cold mail" in command or "cold email" in command or "send email" in command or "email about" in command:
-        return {"action": "cold_mail", "endpoint": "POST /api/v1/jobs/{id}/cold-mail", "status": "needs_job_id"}
-
-    apply_match = re.search(r"apply(?:\s+to|\s+for)?(?:\s+job)?\s+(\d+)", command)
-    if apply_match:
-        job_id = apply_match.group(1)
-        return {"action": "apply", "endpoint": f"POST /api/v1/jobs/{job_id}/apply", "payload": {"job_id": job_id}, "status": "parsed"}
-    if "apply" in command or "submit application" in command:
-        return {"action": "apply", "endpoint": "POST /api/v1/jobs/{id}/apply", "status": "needs_job_id"}
 
     # ─── Content Pipeline Commands ───────────────────────────────────
 

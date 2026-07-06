@@ -30,13 +30,13 @@ function DigitalClock(): JSX.Element {
           <span>{hh}</span>
           <motion.span
             animate={{ opacity: [1, 0, 1] }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' as unknown as undefined }}
             className="text-purple-500 mx-0.5"
           >:</motion.span>
           <span>{mm}</span>
           <motion.span
             animate={{ opacity: [1, 0, 1] }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)', delay: 0.5 }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' as unknown as undefined, delay: 0.5 }}
             className="text-purple-500 mx-0.5"
           >:</motion.span>
           <span>{ss}</span>
@@ -365,10 +365,9 @@ function useWeatherData(): WeatherData | null {
         const resp = await window.barq?.python.request(`/web/weather?city=${encodeURIComponent(city)}`)
         if (!mounted) return
 
-        if (resp && typeof resp === 'object') {
-          const w = resp as WeatherData & { status?: string }
-          if (w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
-            setData({
+        if (resp && typeof resp === 'object') {            const w = (resp as { success: boolean; data?: WeatherData & { status?: string } }).data
+            if (w && w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
+              setData({
               city: w.city ?? city,
               country: w.country ?? '',
               temperature_c: w.temperature_c,
@@ -446,9 +445,10 @@ function useMultiCityWeather(): {
         cities.map(async (city) => {
           const resp = await window.barq?.python.request(`/web/weather?city=${encodeURIComponent(city)}`)
           if (resp && typeof resp === 'object') {
-            const w = resp as CityWeather & { status?: string }
-            if (w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
-              return { city, data: w as CityWeather }
+            const result = resp as { success: boolean; data?: CityWeather & { status?: string } }
+            const w = result.data
+          if (w && w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
+            return { city, data: w }
             }
           }
           return null

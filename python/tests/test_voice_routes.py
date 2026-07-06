@@ -658,6 +658,470 @@ async def test_launch_app_map(client, command, expected):
     assert data["target"] == expected
 
 
+# ─── Job Pipeline Commands ────────────────────────────────────────────────
+
+# ─── Applications List ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_show_applications(client):
+    """'show applications' should return list_applications."""
+    response = await client.post("/command", json={"command": "show applications"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "list_applications"
+    assert data["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+async def test_application_status(client):
+    """'application status' should return list_applications."""
+    response = await client.post("/command", json={"command": "application status"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "list_applications"
+
+
+@pytest.mark.asyncio
+async def test_my_applications(client):
+    """'my applications' should return list_applications."""
+    response = await client.post("/command", json={"command": "my applications"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "list_applications"
+
+
+# ─── Resume ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upload_resume(client):
+    """'upload resume' should return upload_resume."""
+    response = await client.post("/command", json={"command": "upload resume"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "upload_resume"
+    assert data["status"] == "needs_file"
+
+
+@pytest.mark.asyncio
+async def test_update_resume(client):
+    """'update my resume' should return upload_resume."""
+    response = await client.post("/command", json={"command": "update my resume"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "upload_resume"
+    assert data["status"] == "needs_file"
+
+
+@pytest.mark.asyncio
+async def test_get_resume(client):
+    """'get resume' should return get_resume."""
+    response = await client.post("/command", json={"command": "get resume"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_resume"
+    assert data["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+async def test_show_resume(client):
+    """'show my resume' should return get_resume (resume keyword, no upload/update)."""
+    response = await client.post("/command", json={"command": "show my resume"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_resume"
+
+
+# ─── Scan Jobs ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_scan_for_keyword_jobs(client):
+    """'scan for python jobs' should return scan_jobs with keywords 'python'."""
+    response = await client.post("/command", json={"command": "scan for python jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_find_for_keyword_positions(client):
+    """'find for react positions' should return scan_jobs with keywords 'react'."""
+    response = await client.post("/command", json={"command": "find for react positions"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "react"
+
+
+@pytest.mark.asyncio
+async def test_find_for_keyword_openings(client):
+    """'find for devops openings' should return scan_jobs with keywords 'devops'."""
+    response = await client.post("/command", json={"command": "find for devops openings"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "devops"
+
+
+@pytest.mark.asyncio
+async def test_scan_jobs_startswith(client):
+    """'scan python jobs' (without 'for') should return scan_jobs with keywords 'python'."""
+    response = await client.post("/command", json={"command": "scan python jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_find_jobs_startswith(client):
+    """'find react jobs' (starts with 'find') should return scan_jobs."""
+    response = await client.post("/command", json={"command": "find react jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "react"
+
+
+@pytest.mark.asyncio
+async def test_scan_jobs_generic(client):
+    """'scan jobs' (no keyword) should return scan_jobs with status triggered."""
+    response = await client.post("/command", json={"command": "scan jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["payload"]["keywords"] == "all"
+    assert data["status"] == "parsed"
+
+
+@pytest.mark.asyncio
+async def test_find_jobs_generic(client):
+    """'find jobs' (no keyword) should return scan_jobs."""
+    response = await client.post("/command", json={"command": "find jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+
+
+# ─── Job Stats ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_how_many_jobs(client):
+    """'how many jobs are there' should return get_stats."""
+    response = await client.post("/command", json={"command": "how many jobs are there"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_stats"
+    assert data["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+async def test_job_stats(client):
+    """'job stats' should return get_stats."""
+    response = await client.post("/command", json={"command": "job stats"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_stats"
+
+
+@pytest.mark.asyncio
+async def test_application_stats(client):
+    """'application stats' should return get_stats."""
+    response = await client.post("/command", json={"command": "application stats"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_stats"
+
+
+# ─── Batch Match Jobs ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_match_jobs(client):
+    """'match jobs' should return batch_match."""
+    response = await client.post("/command", json={"command": "match jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "batch_match"
+    assert data["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+async def test_score_jobs(client):
+    """'score jobs' should return batch_match."""
+    response = await client.post("/command", json={"command": "score jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "batch_match"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_jobs(client):
+    """'evaluate jobs' should return batch_match."""
+    response = await client.post("/command", json={"command": "evaluate jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "batch_match"
+
+
+# ─── Optimize Resume ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_optimize_resume_for_job(client):
+    """'optimize resume for job 42' should return optimize_resume with job_id 42."""
+    response = await client.post("/command", json={"command": "optimize resume for job 42"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "optimize_resume"
+    assert data["payload"]["job_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_optimize_for_job_number(client):
+    """'optimize for job 7' should return optimize_resume with job_id 7."""
+    response = await client.post("/command", json={"command": "optimize for job 7"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "optimize_resume"
+    assert data["payload"]["job_id"] == "7"
+
+
+@pytest.mark.asyncio
+async def test_optimize_job_only(client):
+    """'optimize job 15' should return optimize_resume with job_id 15."""
+    response = await client.post("/command", json={"command": "optimize job 15"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "optimize_resume"
+    assert data["payload"]["job_id"] == "15"
+
+
+# ─── Cover Letter ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cover_letter_for_job(client):
+    """'cover letter for job 15' should return cover_letter with job_id 15."""
+    response = await client.post("/command", json={"command": "cover letter for job 15"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cover_letter"
+    assert data["payload"]["job_id"] == "15"
+
+
+@pytest.mark.asyncio
+async def test_coverletter_job_number(client):
+    """'coverletter 8' should return cover_letter with job_id 8."""
+    response = await client.post("/command", json={"command": "coverletter 8"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cover_letter"
+    assert data["payload"]["job_id"] == "8"
+
+
+@pytest.mark.asyncio
+async def test_cover_letter_generic(client):
+    """'cover letter' (no job ID) should return cover_letter with needs_job_id."""
+    response = await client.post("/command", json={"command": "cover letter"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cover_letter"
+    assert data["status"] == "needs_job_id"
+
+
+@pytest.mark.asyncio
+async def test_write_a_letter(client):
+    """'write a letter' should return cover_letter with needs_job_id."""
+    response = await client.post("/command", json={"command": "write a letter"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cover_letter"
+    assert data["status"] == "needs_job_id"
+
+
+@pytest.mark.asyncio
+async def test_cover_letter_not_confused_with_jobs(client):
+    """'jobs' navigation should not be affected by cover letter keyword."""
+    response = await client.post("/command", json={"command": "jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] != "cover_letter"
+    assert data["action"] == "navigate"
+    assert data["target"] == "/jobs"
+
+
+# ─── Cold Mail ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cold_mail_for_job(client):
+    """'cold mail for job 15' should return cold_mail with job_id 15."""
+    response = await client.post("/command", json={"command": "cold mail for job 15"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["payload"]["job_id"] == "15"
+
+
+@pytest.mark.asyncio
+async def test_cold_email_job_number(client):
+    """'cold email for job 12' should return cold_mail with job_id 12."""
+    response = await client.post("/command", json={"command": "cold email for job 12"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["payload"]["job_id"] == "12"
+
+
+@pytest.mark.asyncio
+async def test_email_for_job(client):
+    """'email for job 9' should return cold_mail with job_id 9."""
+    response = await client.post("/command", json={"command": "email for job 9"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["payload"]["job_id"] == "9"
+
+
+@pytest.mark.asyncio
+async def test_cold_mail_generic(client):
+    """'cold mail' (no job ID) should return cold_mail with needs_job_id."""
+    response = await client.post("/command", json={"command": "cold mail"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["status"] == "needs_job_id"
+
+
+@pytest.mark.asyncio
+async def test_send_email_generic(client):
+    """'send email' (no job ID) should return cold_mail with needs_job_id."""
+    response = await client.post("/command", json={"command": "send email"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["status"] == "needs_job_id"
+
+
+@pytest.mark.asyncio
+async def test_email_about_generic(client):
+    """'email about opportunity' (no job ID) should return cold_mail with needs_job_id."""
+    response = await client.post("/command", json={"command": "email about opportunity"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "cold_mail"
+    assert data["status"] == "needs_job_id"
+
+
+# ─── Apply ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_apply_to_job(client):
+    """'apply to job 25' should return apply with job_id 25."""
+    response = await client.post("/command", json={"command": "apply to job 25"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["payload"]["job_id"] == "25"
+
+
+@pytest.mark.asyncio
+async def test_apply_for_job(client):
+    """'apply for job 10' should return apply with job_id 10."""
+    response = await client.post("/command", json={"command": "apply for job 10"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["payload"]["job_id"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_apply_job_number(client):
+    """'apply job 33' should return apply with job_id 33."""
+    response = await client.post("/command", json={"command": "apply job 33"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["payload"]["job_id"] == "33"
+
+
+@pytest.mark.asyncio
+async def test_apply_generic(client):
+    """'apply' (no job ID) should return apply with needs_job_id."""
+    response = await client.post("/command", json={"command": "apply"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["status"] == "needs_job_id"
+
+
+@pytest.mark.asyncio
+async def test_submit_application(client):
+    """'submit application' (no job ID) should return apply with needs_job_id."""
+    response = await client.post("/command", json={"command": "submit application"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["status"] == "needs_job_id"
+
+
+# ─── Keyword Ordering Edge Cases ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_apply_not_confused_with_developer_run(client):
+    """'apply' keyword should not be caught by 'run' developer command."""
+    response = await client.post("/command", json={"command": "apply"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "apply"
+    assert data["action"] != "run_command"
+
+
+@pytest.mark.asyncio
+async def test_scan_jobs_not_confused_with_developer_run(client):
+    """'scan jobs' should not be caught by the developer 'run/execute' handler."""
+    response = await client.post("/command", json={"command": "scan jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["action"] != "run_command"
+
+
+@pytest.mark.asyncio
+async def test_scan_for_keyword_not_run(client):
+    """'scan for python jobs' does not contain 'run' keyword so dev handler never fires."""
+    response = await client.post("/command", json={"command": "scan for python jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+
+
+@pytest.mark.asyncio
+async def test_match_jobs_not_confused(client):
+    """'match jobs' should route to batch_match, not other actions."""
+    response = await client.post("/command", json={"command": "match jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "batch_match"
+
+
+@pytest.mark.asyncio
+async def test_show_resume_not_confused_with_read_file(client):
+    """'show my resume' should go to get_resume, not read_file."""
+    response = await client.post("/command", json={"command": "show my resume"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "get_resume"
+    assert data["action"] != "read_file"
+
+
 # ─── Desktop Overlay Voice Commands ──────────────────────────────────────────
 
 

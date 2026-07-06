@@ -31,10 +31,12 @@ export function TransientDiagnostics(): JSX.Element {
     try {
       const resp = await window.barq?.python.request('/system/status')
       if (resp && typeof resp === 'object') {
-        const d = resp as DiagnosticsData
-        setData(d)
-        setVisible(true)
-        setTimeout(() => setVisible(false), 12000)
+        const result = resp as { success: boolean; data?: DiagnosticsData }
+        if (result.data) {
+          setData(result.data)
+          setVisible(true)
+          setTimeout(() => setVisible(false), 12000)
+        }
       }
     } catch { /* ignore */ }
   }, [])

@@ -30,13 +30,13 @@ function DigitalClock(): JSX.Element {
           <span>{hh}</span>
           <motion.span
             animate={{ opacity: [1, 0, 1] }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' as unknown as undefined }}
             className="text-violet-500 mx-0.5"
           >:</motion.span>
           <span>{mm}</span>
           <motion.span
             animate={{ opacity: [1, 0, 1] }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)', delay: 0.5 }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'steps(1)' as unknown as undefined, delay: 0.5 }}
             className="text-violet-500 mx-0.5"
           >:</motion.span>
           <span>{ss}</span>

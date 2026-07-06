@@ -108,6 +108,11 @@ interface BarqAPI {
     weather: (city: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     generateImage: (prompt: string, style?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
   }
+  overlay: {
+    show: () => void
+    hide: () => void
+    toggle: () => void
+  }
   onNavigate: (callback: (route: string) => void) => void
   onVoiceToggle: (callback: () => void) => void
   onNotificationsUpdate: (callback: (data: unknown) => void) => void

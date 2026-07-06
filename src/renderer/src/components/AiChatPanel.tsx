@@ -90,13 +90,8 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     }
   }, [])
 
-  interface ChatResponse {
-    text: string
-    audio_base64?: string
-  }
-
   // Send message to AI backend and get text + audio
-  const sendToAI = useCallback(async (text: string): Promise<ChatResponse> => {
+  const sendToAI = useCallback(async (text: string): Promise<{ text: string; audio_base64?: string }> => {
     try {
       const resp = await window.barq?.python.request('/voice/chat', {
         method: 'POST',
@@ -104,10 +99,11 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
         headers: { 'Content-Type': 'application/json' },
       })
       if (resp && typeof resp === 'object') {
-        const d = resp as ChatResponse
+        const result = resp as { success: boolean; data?: { text?: string; audio_base64?: string } }
+        const data = result.data || {}
         return {
-          text: d.text || 'Command processed.',
-          audio_base64: d.audio_base64,
+          text: data.text || 'Command processed.',
+          audio_base64: data.audio_base64,
         }
       }
       return { text: 'Command processed.' }
