@@ -1,0 +1,25 @@
+fix: voice pipeline, system data, weather, and IPC bridge fixes
+
+## Voice Pipeline Fixes
+- Wake word -> STT handoff: pause wake detector before starting STT to free mic (pause/resume in wake_word.py)
+- Managed event loop pattern: avoid interfering with test event loops
+- 500ms PortAudio release delay after barge-in to prevent mic contention on Windows
+- STT confidence scoring from Whisper avg_logprob (speech.py)
+- stt_confidence field propagated through responder to WebSocket (responder.py)
+- on_stop callback to resume wake detector after conversation ends
+
+## System Data Fix
+- Installed psutil (missing dependency) - CPU, Memory, Memory Used metrics now show real data
+- Added psutil to requirements.txt
+
+## Weather Fix
+- Replaced OpenWeatherMap (required API key) with Open-Meteo (free, no API key)
+- Weather now works out of the box without any configuration
+
+## Dashboard & IPC Bridge Fixes
+- Fixed python.request to unwrap { success, data, error } IPC envelope in preload bridge
+- Fixed toggleDetector optimistic UI toggle - instant mute/unmute response
+- Fixed weather hooks to use unwrapped response data
+
+## Bug Fix
+- Fixed NameError in routes.py: _on_conversation_stopped referenced before definition
