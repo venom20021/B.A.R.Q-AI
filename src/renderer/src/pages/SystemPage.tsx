@@ -936,7 +936,7 @@ function SystemInfoPanel(): JSX.Element {
     })()
   }, [])
 
-  // Poll mic level every 300ms for real-time indicator
+  // Poll mic level for real-time indicator
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -947,7 +947,7 @@ function SystemInfoPanel(): JSX.Element {
           setIsListening(Boolean(data.is_listening))
         }
       } catch { /* ignore */ }
-    }, 300)
+    }, 1000)
     return () => clearInterval(interval)
   }, [])
 

@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from config import get_settings
 from ai.responder import BARQResponder
@@ -41,9 +41,73 @@ def get_wake_word_detector() -> WakeWordDetector:
     return wake_word_detector
 
 
+def _play_mp3_via_sounddevice(mp3_path: str):
+    """Play an MP3 file through sounddevice with the configured output device.
+
+    Uses the ffmpeg binary bundled with imageio-ffmpeg (moviepy dependency)
+    to convert MP3 to WAV, then plays through sounddevice. This ensures audio
+    goes through the BARQ-selected output device instead of the OS default.
+    """
+    import os
+    import tempfile
+    import wave
+    import subprocess
+    import numpy as np
+
+    # Find ffmpeg via imageio-ffmpeg (bundled with moviepy)
+    ffmpeg_path = None
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+
+    if not ffmpeg_path or not os.path.isfile(ffmpeg_path):
+        print("[Audio] ffmpeg not available \u2014 cannot play greeting audio")
+        return
+
+    # Convert MP3 to WAV using ffmpeg
+    wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(wav_fd)
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-y", "-i", mp3_path,
+             "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", wav_path],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode(errors='replace')[:200]
+            print(f"[Audio] ffmpeg conversion failed: {err}")
+            return
+
+        # Read WAV and play through sounddevice with configured output device
+        import sounddevice as sd
+        from .audio_device import resolve_output_device
+        from config import get_settings as _cfg
+
+        output_device = resolve_output_device(_cfg().audio_output_device)
+
+        with wave.open(wav_path, "rb") as wf:
+            data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+            rate = wf.getframerate()
+
+        sd.play(data, rate, device=output_device)
+        sd.wait()
+        print("[Audio] Wake greeting played through sounddevice")
+    except Exception as e:
+        print(f"[Audio] TTS playback error: {e}")
+    finally:
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+
+
 async def _speak_wake_greeting():
     """Gather weather, system, and job info and speak a greeting via TTS.
     Runs after wake word detection, then enters conversation mode."""
+    responder.is_processing = True
     try:
         info_parts = []
 
@@ -316,30 +380,12 @@ async def _speak_wake_greeting():
             communicate = edge_tts.Communicate(greeting, _tts_voice)
             await communicate.save(tmp_path)
 
-            # Play the audio file and WAIT for it to finish before continuing
-            import asyncio as _asyncio
-            import subprocess as _sp
-            import platform as _plat
-            system_plat = _plat.system().lower()
-            if system_plat == "darwin":
-                proc = await _asyncio.create_subprocess_exec(
-                    "afplay", tmp_path,
-                    stdout=_asyncio.subprocess.DEVNULL,
-                    stderr=_asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
-            elif system_plat == "windows":
-                proc = await _asyncio.create_subprocess_exec(
-                    "start", tmp_path, shell=True,
-                )
-                await proc.wait()
-            else:
-                proc = await _asyncio.create_subprocess_exec(
-                    "aplay", tmp_path,
-                    stdout=_asyncio.subprocess.DEVNULL,
-                    stderr=_asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
+            # Play through sounddevice with configured output device
+            responder.is_speaking = True
+            try:
+                _play_mp3_via_sounddevice(tmp_path)
+            finally:
+                responder.is_speaking = False
 
             # Cleanup temp file after playback
             Path(tmp_path).unlink(missing_ok=True)
@@ -354,6 +400,7 @@ async def _speak_wake_greeting():
         print(f"[WakeGreeting] Error gathering info: {e}")
 
     # Always enter conversation mode after greeting
+    responder.is_processing = False
     await conversation_listener.start_conversation()
 
 
@@ -371,13 +418,12 @@ def _on_wake_word_callback():
         print("[Voice] Wake greeting disabled — skipping greeting, starting conversation")
         try:
             import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    conversation_listener.start_conversation(), loop
-                )
-        except RuntimeError:
-            print("[Voice] No event loop available")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(conversation_listener.start_conversation())
+            loop.close()
+        except Exception as e:
+            print(f"[Voice] Conversation start error: {e}")
         return
     if not _hands_free_mode:
         print("[Voice] Hands-free mode disabled — skipping wake greeting")
@@ -385,13 +431,12 @@ def _on_wake_word_callback():
     print("[Voice] Wake word detected — speaking greeting and starting conversation")
     try:
         import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                _speak_wake_greeting(), loop
-            )
-    except RuntimeError:
-        print("[Voice] No event loop available for wake greeting")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_speak_wake_greeting())
+        loop.close()
+    except Exception as e:
+        print(f"[Voice] Wake greeting error: {e}")
 
 
 def _on_conversation_trigger():
@@ -418,6 +463,22 @@ async def load_sound_settings():
 
     current = get_sound_settings()
     print(f"[Voice] Sound settings loaded from DB: {current}")
+
+    # Load VAD silence timeout from DB
+    vad_val = await settings_dao.get_setting("vad_silence_timeout")
+    if vad_val is not None:
+        try:
+            global _vad_silence_timeout
+            _vad_silence_timeout = float(vad_val)
+            if _vad_silence_timeout < 0.1 or _vad_silence_timeout > 3.0:
+                _vad_silence_timeout = 0.4
+            print(f"[Voice] VAD silence timeout loaded from DB: {_vad_silence_timeout}s")
+        except (ValueError, TypeError):
+            pass
+    else:
+        print(f"[Voice] No saved VAD timeout in DB, using default: {_vad_silence_timeout}s")
+    # Propagate to the conversation listener
+    conversation_listener.vad_silence_timeout = _vad_silence_timeout
 
     # Load saved sensitivity level from DB
     sens_val = await settings_dao.get_setting("wake_word_sensitivity")
@@ -451,6 +512,7 @@ _sensitivity: str = "medium"
 _language: str = "en"  # "en" or "hi"
 _hands_free_mode: bool = True  # Alexa/Gemini-style hands-free conversation mode
 _wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected (separate from hands-free)
+_vad_silence_timeout: float = 0.4  # VAD endpointing silence threshold in seconds (300-500ms range)
 # Conversation manager is now managed by the shared responder instance
 # _responder and conversation_listener are the canonical singletons above
 
@@ -504,6 +566,10 @@ class ConversationModeRequest(BaseModel):
 
 class WeatherCityRequest(BaseModel):
     city: str  # city name for weather in wake greeting
+
+
+class VADSettingsRequest(BaseModel):
+    silence_timeout: float  # seconds of silence before VAD endpointing (0.1–3.0)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -1408,6 +1474,39 @@ async def speak_text(request: CommandRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/devices")
+async def list_audio_devices():
+    """List all available audio input/output devices.
+    Used by the frontend to let users choose which mic/speaker to use.
+    """
+    from .audio_device import get_device_list, reset_cache
+    reset_cache()  # Refresh device list in case hardware changed
+    devices = get_device_list()
+    # Also show which device is currently selected
+    cfg = get_settings()
+    input_device = None
+    output_device = None
+    import sounddevice as sd
+    try:
+        default_input = sd.query_devices(kind='input')
+        default_output = sd.query_devices(kind='output')
+        input_device = default_input['name'] if default_input else None
+        output_device = default_output['name'] if default_output else None
+    except Exception:
+        pass
+    return {
+        "devices": devices,
+        "config": {
+            "input_setting": cfg.audio_input_device,
+            "output_setting": cfg.audio_output_device,
+        },
+        "defaults": {
+            "input_device": input_device,
+            "output_device": output_device,
+        },
+    }
+
+
 @router.get("/mic-level")
 async def get_mic_level():
     """Get the current microphone audio level (0.0–1.0) from the wake word detector.
@@ -1432,6 +1531,42 @@ async def set_wake_word(request: WakeWordRequest):
     await analytics_dao.log_activity("voice", "wake_word", f"Wake word changed to: {new_word}")
 
     return {"status": "updated", "wake_word": new_word}
+
+
+@router.get("/vad-settings")
+async def get_vad_settings():
+    """Get current VAD (Voice Activity Detection) settings."""
+    return {
+        "silence_timeout": round(_vad_silence_timeout, 2),
+        "min": 0.1,
+        "max": 3.0,
+        "step": 0.05,
+    }
+
+
+@router.post("/vad-settings")
+async def set_vad_settings(request: VADSettingsRequest):
+    """Update VAD silence timeout and persist to database."""
+    global _vad_silence_timeout
+
+    timeout = max(0.1, min(3.0, request.silence_timeout))
+    _vad_silence_timeout = timeout
+    # Propagate to the conversation listener immediately
+    conversation_listener.vad_silence_timeout = timeout
+
+    await settings_dao.set_setting(
+        "vad_silence_timeout", str(round(timeout, 2)), "voice"
+    )
+    await analytics_dao.log_activity(
+        "voice", "vad_settings",
+        f"VAD silence timeout set to {timeout}s"
+    )
+    print(f"[Voice] VAD silence timeout updated to {timeout}s")
+
+    return {
+        "status": "set",
+        "silence_timeout": round(timeout, 2),
+    }
 
 
 @router.post("/weather-city")
@@ -1483,6 +1618,32 @@ async def set_conversation_mode(request: ConversationModeRequest):
     return {"status": "set", "hands_free_enabled": request.enabled}
 
 
+@router.websocket("/ws/status")
+async def voice_status_ws(websocket: WebSocket):
+    """WebSocket endpoint for real-time voice status updates.
+    Pushes full status + mic level every 100ms — no polling needed."""
+    await websocket.accept()
+    try:
+        while True:
+            detector = get_wake_word_detector()
+            is_running = detector._running if detector else False
+            mic_level = detector.get_mic_level() if detector else 0.0
+
+            await websocket.send_json({
+                "type": "voice_status",
+                "is_listening": is_running,
+                "conversation_active": responder.conversation.is_active,
+                "is_speaking": responder.is_speaking,
+                "is_processing": responder.is_processing,
+                "conversation_turns": responder.conversation.turn_count,
+                "mic_level": round(mic_level, 4),
+                "stt_text": getattr(responder, 'stt_text', ''),
+            })
+            await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        pass
+
+
 @router.get("/status")
 async def voice_status():
     """Get the current status of the voice system."""
@@ -1513,6 +1674,8 @@ async def voice_status():
         "last_confidence": round(last_confidence, 4),
         "conversation_active": responder.conversation.is_active,
         "conversation_turns": responder.conversation.turn_count,
+        "is_speaking": responder.is_speaking,
+        "is_processing": responder.is_processing,
         "hands_free_mode": _hands_free_mode,
         "wake_greeting_enabled": _wake_greeting_enabled,
         "weather_city": weather_city or "London",

@@ -3,11 +3,10 @@ Speech processing using Whisper for STT and Edge TTS for synthesis.
 """
 
 import asyncio
-import math
-import struct
 import tempfile
+import wave
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterable, Optional
 import edge_tts
 
 from config import get_settings
@@ -92,35 +91,30 @@ class SpeechProcessor:
         Returns:
             Transcribed text
         """
-        import pyaudio
-        import wave
+        import sounddevice as sd
+        import numpy as np
+
+        # Resolve input device from config
+        from .audio_device import resolve_input_device
+        device = resolve_input_device(self.settings.audio_input_device)
 
         # Record audio
-        p = pyaudio.PyAudio()
-        stream = p.open(
-            format=pyaudio.paInt16,
+        data = sd.rec(
+            int(16000 * duration),
+            samplerate=16000,
             channels=1,
-            rate=16000,
-            input=True,
-            frames_per_buffer=1024,
+            dtype='int16',
+            device=device,
+            blocking=True,
         )
-
-        frames = []
-        for _ in range(0, int(16000 / 1024 * duration)):
-            data = stream.read(1024)
-            frames.append(data)
-
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
 
         # Save to temporary file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             with wave.open(f, "wb") as wf:
                 wf.setnchannels(1)
-                wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+                wf.setsampwidth(2)  # 16-bit = 2 bytes
                 wf.setframerate(16000)
-                wf.writeframes(b"".join(frames))
+                wf.writeframes(data.tobytes())
             temp_path = f.name
 
         # Transcribe
@@ -147,67 +141,181 @@ class SpeechProcessor:
         Returns:
             Transcribed text, or None if no speech detected.
         """
-        import pyaudio
-        import wave
+        import sounddevice as sd
+        import numpy as np
 
-        p = pyaudio.PyAudio()
-        stream = p.open(
-            format=pyaudio.paInt16,
+        from .audio_device import resolve_input_device
+        device = resolve_input_device(self.settings.audio_input_device)
+
+        stream = sd.InputStream(
+            device=device,
+            samplerate=16000,
             channels=1,
-            rate=16000,
-            input=True,
-            frames_per_buffer=1024,
+            dtype='int16',
+            blocksize=1024,
         )
+        stream.start()
 
-        frames = []
+        frames: list[np.ndarray] = []
         silence_chunks = 0
         silence_limit = int(silence_timeout * 16000 / 1024)
         max_chunks = int(max_duration * 16000 / 1024)
         has_speech = False
 
         for _ in range(max_chunks):
-            data = stream.read(1024, exception_on_overflow=False)
+            data, overflowed = stream.read(1024)
             frames.append(data)
 
-            # Compute RMS energy for VAD
             try:
-                samples = struct.unpack_from("<" + "h" * (len(data) // 2), data)
-                if samples:
-                    sum_sq = sum(s * s for s in samples)
-                    rms = math.sqrt(sum_sq / len(samples))
+                rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
 
-                    if rms < energy_threshold:
-                        silence_chunks += 1
-                    else:
-                        silence_chunks = 0
-                        has_speech = True
+                if rms < energy_threshold:
+                    silence_chunks += 1
+                else:
+                    silence_chunks = 0
+                    has_speech = True
             except Exception:
                 pass
 
-            # If we detected speech and now silence has persisted — stop
             if has_speech and silence_chunks >= silence_limit:
-                # Trim trailing silence frames
                 if silence_chunks > 0:
                     frames = frames[:-silence_chunks]
                 break
 
-        stream.stop_stream()
+        stream.stop()
         stream.close()
-        p.terminate()
 
         if not has_speech or not frames:
             return None
 
-        # Save to temp file and transcribe
+        audio_data = np.concatenate(frames) if len(frames) > 1 else frames[0]
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             with wave.open(f, "wb") as wf:
                 wf.setnchannels(1)
-                wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+                wf.setsampwidth(2)
                 wf.setframerate(16000)
-                wf.writeframes(b"".join(frames))
+                wf.writeframes(audio_data.tobytes())
             temp_path = f.name
 
         text = self.transcribe(temp_path)
         Path(temp_path).unlink(missing_ok=True)
 
         return text
+
+    async def transcribe_streaming(
+        self,
+        max_duration: float = 15.0,
+        silence_timeout: float = 0.4,
+        energy_threshold: float = 300.0,
+        interim_interval: float = 1.0,
+    ) -> AsyncIterable[dict]:
+        """Streaming transcription with overlapping-window interim results.
+
+        Records from the microphone and yields partial transcripts as they
+        become available — the caller does NOT need to wait for silence to
+        begin processing.  Useful for live-caption-like UX or for feeding
+        partial text into a streaming LLM pipeline.
+
+        Each yielded dict has the shape:
+            {"type": "interim", "text": "..."}
+            {"type": "final",  "text": "..."}
+
+        Args:
+            max_duration: Maximum recording duration in seconds.
+            silence_timeout: Seconds of silence before auto-stopping.
+            energy_threshold: RMS energy threshold for silence detection.
+            interim_interval: How often (seconds) to run Whisper on the
+                              accumulated buffer for interim results.
+
+        Yields:
+            Interim dicts while the user is speaking, then one final dict.
+            Yields nothing if no speech is detected.
+        """
+        import asyncio
+        import sounddevice as sd
+        import numpy as np
+
+        from .audio_device import resolve_input_device
+        device = resolve_input_device(self.settings.audio_input_device)
+
+        stream = sd.InputStream(
+            device=device,
+            samplerate=16000,
+            channels=1,
+            dtype='int16',
+            blocksize=1024,
+        )
+        stream.start()
+
+        frames: list[np.ndarray] = []
+        silence_chunks = 0
+        silence_limit = int(silence_timeout * 16000 / 1024)
+        max_chunks = int(max_duration * 16000 / 1024)
+        interim_chunks = int(interim_interval * 16000 / 1024)
+        has_speech = False
+        last_interim_at = 0
+        chunk_count = 0
+
+        try:
+            for _ in range(max_chunks):
+                data, overflowed = stream.read(1024)
+                frames.append(data)
+                chunk_count += 1
+
+                try:
+                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    if rms < energy_threshold:
+                        silence_chunks += 1
+                    else:
+                        silence_chunks = 0
+                        has_speech = True
+                except Exception:
+                    pass
+
+                # Fire interim transcription at regular intervals once speech starts
+                if (has_speech
+                    and (chunk_count - last_interim_at) >= interim_chunks
+                    and len(frames) > 1):
+                    last_interim_at = chunk_count
+                    interim_text = await self._transcribe_frames(list(frames))
+                    if interim_text:
+                        yield {"type": "interim", "text": interim_text}
+
+                # Check for end-of-speech (VAD silence timeout)
+                if has_speech and silence_chunks >= silence_limit:
+                    if silence_chunks > 0:
+                        frames = frames[:-silence_chunks]
+                    break
+
+            # ── Final transcription ───────────────────────────────
+            if has_speech and frames:
+                final_text = await self._transcribe_frames(frames)
+                if final_text:
+                    yield {"type": "final", "text": final_text}
+                else:
+                    yield {"type": "final", "text": ""}
+
+        finally:
+            stream.stop()
+            stream.close()
+
+    async def _transcribe_frames(self, frames: list) -> str:
+        """Helper: save audio frames to a temp WAV and return Whisper transcription."""
+        import numpy as np
+
+        audio_data = np.concatenate(frames) if len(frames) > 1 else frames[0]
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            with wave.open(f, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(audio_data.tobytes())
+            temp_path = f.name
+
+        try:
+            text = self.transcribe(temp_path)
+            return text
+        finally:
+            Path(temp_path).unlink(missing_ok=True)

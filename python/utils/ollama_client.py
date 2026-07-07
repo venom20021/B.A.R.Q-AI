@@ -6,13 +6,15 @@ Connects to a local Ollama instance to generate natural language replies.
 import httpx
 from typing import Any, AsyncIterable
 
+from config import get_settings
+
 
 class OllamaClient:
     """Client for Ollama's local LLM API."""
 
-    def __init__(self, host: str = "http://127.0.0.1:11434", model: str = "llama3.1"):
+    def __init__(self, host: str = "http://127.0.0.1:11434", model: str | None = None):
         self.host = host
-        self.model = model
+        self.model = model or get_settings().ollama_model
 
     async def chat(self, messages: list[dict]) -> str:
         """Send a conversation to Ollama and get a response.

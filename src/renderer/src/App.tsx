@@ -198,14 +198,19 @@ function AppContent(): JSX.Element {
   }, [])
 
   useEffect(() => {
+    // Track cleanup functions returned by preload listeners
+    const cleanups: (() => void)[] = []
+
     if (window.barq?.onNavigate) {
-      window.barq.onNavigate((route: string) => navigate(route))
+      const cleanup = window.barq.onNavigate((route: string) => navigate(route))
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
     }
 
     if (window.barq?.onQuickOverlay) {
-      window.barq.onQuickOverlay((pos: { x: number; y: number }) => {
+      const cleanup = window.barq.onQuickOverlay((pos: { x: number; y: number }) => {
         setQuickOverlay({ visible: true, position: pos })
       })
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
     }
 
     const handleQuickCmd = (e: CustomEvent<{ command: string }>): void => {
@@ -222,6 +227,10 @@ function AppContent(): JSX.Element {
         'barq:quick-command',
         handleQuickCmd as EventListener,
       )
+      // Run all preload listener cleanups
+      for (const cleanup of cleanups) {
+        cleanup()
+      }
     }
   }, [navigate])
 

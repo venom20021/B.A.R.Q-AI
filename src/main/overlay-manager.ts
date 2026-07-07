@@ -323,6 +323,35 @@ export function initOverlayManager(): void {
   ipcMain.on('overlay:show', () => showOverlay())
   ipcMain.on('overlay:hide', () => hideOverlay())
 
+  ipcMain.on('overlay:move-to', (_event, { deltaX, deltaY }: { deltaX: number; deltaY: number }) => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return
+
+    const [cx, cy] = overlayWindow.getPosition()
+    const bounds = overlayWindow.getBounds()
+    const newX = cx + Math.round(deltaX)
+    const newY = cy + Math.round(deltaY)
+
+    // Find the display the window is on (or closest to)
+    const displays = screen.getAllDisplays()
+    const currentDisplay = displays.find(d => {
+      const wa = d.workArea
+      return (
+        newX + bounds.width / 2 >= wa.x &&
+        newX + bounds.width / 2 <= wa.x + wa.width &&
+        newY + bounds.height / 2 >= wa.y &&
+        newY + bounds.height / 2 <= wa.y + wa.height
+      )
+    }) || screen.getDisplayNearestPoint({ x: newX, y: newY })
+
+    const wa = currentDisplay.workArea
+    // Clamp so at least 20% of the overlay stays visible on any edge
+    const minVisible = 60
+    const clampedX = Math.max(wa.x - bounds.width + minVisible, Math.min(wa.x + wa.width - minVisible, newX))
+    const clampedY = Math.max(wa.y - bounds.height + minVisible, Math.min(wa.y + wa.height - minVisible, newY))
+
+    overlayWindow.setPosition(clampedX, clampedY)
+  })
+
   ipcMain.on('overlay:refresh', () => {
     if (overlayVisible) {
       pollWeather()

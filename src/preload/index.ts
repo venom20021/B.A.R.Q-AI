@@ -156,24 +156,32 @@ contextBridge.exposeInMainWorld('barq', {
     toggle: () => ipcRenderer.send('overlay:toggle'),
   },
 
-  // Navigation listener
+  // Navigation listener (returns cleanup function)
   onNavigate: (callback: (route: string) => void) => {
-    ipcRenderer.on('navigate', (_event, route) => callback(route))
+    const handler = (_event: Electron.IpcRendererEvent, route: string) => callback(route)
+    ipcRenderer.on('navigate', handler)
+    return () => ipcRenderer.removeListener('navigate', handler)
   },
 
-  // Voice toggle listener
+  // Voice toggle listener (returns cleanup function)
   onVoiceToggle: (callback: () => void) => {
-    ipcRenderer.on('toggle-voice', () => callback())
+    const handler = () => callback()
+    ipcRenderer.on('toggle-voice', handler)
+    return () => ipcRenderer.removeListener('toggle-voice', handler)
   },
 
-  // Notification update listener (from polling)
+  // Notification update listener (returns cleanup function)
   onNotificationsUpdate: (callback: (data: unknown) => void) => {
-    ipcRenderer.on('notifications:update', (_event, data) => callback(data))
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+    ipcRenderer.on('notifications:update', handler)
+    return () => ipcRenderer.removeListener('notifications:update', handler)
   },
 
-  // Quick Overlay listener (triggered by Ctrl+Shift+I global shortcut)
+  // Quick Overlay listener (returns cleanup function)
   onQuickOverlay: (callback: (position: { x: number; y: number }) => void) => {
-    ipcRenderer.on('quick-overlay:show', (_event, position) => callback(position))
+    const handler = (_event: Electron.IpcRendererEvent, position: { x: number; y: number }) => callback(position)
+    ipcRenderer.on('quick-overlay:show', handler)
+    return () => ipcRenderer.removeListener('quick-overlay:show', handler)
   },
 
   // Window management

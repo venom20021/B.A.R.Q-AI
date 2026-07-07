@@ -19,11 +19,16 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("BARQ_DEBUG", "false").lower() == "true"
 
     # Voice
-    wake_word: str = "computer"
+    wake_word: str = os.getenv("WAKE_WORD", "computer")
     vosk_model_path: str = os.getenv("VOSK_MODEL_PATH", "models/vosk")
     vosk_hindi_model_path: str = os.getenv("VOSK_HINDI_MODEL_PATH", "models/vosk-hi")
     whisper_model: str = os.getenv("WHISPER_MODEL", "base")
     voice_language: str = os.getenv("VOICE_LANGUAGE", "en")  # "en" or "hi"
+
+    # Audio device selection (empty = system default)
+    # Use "auto" to auto-detect the best physical mic, or set device index/name
+    audio_input_device: str = os.getenv("AUDIO_INPUT_DEVICE", "auto")
+    audio_output_device: str = os.getenv("AUDIO_OUTPUT_DEVICE", "auto")
 
     # LLM
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")

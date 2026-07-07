@@ -6,11 +6,11 @@ the wake word to be said again for each turn.
 
 This provides a Gemini/Alexa-like experience:
 1. Wake word triggers conversation mode
-2. Records with VAD (silence endpointing) — no need to press a button
+2. Records with aggressive VAD (400 ms silence endpointing)
 3. Transcribes speech using Whisper
-4. Generates AI response via Ollama
-5. Plays TTS audio response
-6. Automatically re-enters listening for follow-ups
+4. Generates AI response via streaming Ollama
+5. Sentence-aware TTS chunking — begins playback while LLM continues
+6. Barge-in — user speech during playback stops audio + flushes LLM
 7. "Goodbye" / silence timeout returns to wake-word-only standby
 """
 
@@ -22,6 +22,13 @@ from typing import Optional
 from ai.responder import BARQResponder
 from voice.speech import SpeechProcessor
 from voice.interrupt_handler import InterruptHandler
+
+
+# Aggressive silence endpointing defaults (overridable per-instance)
+# Use conversation_listener.vad_silence_timeout to customise at runtime
+VAD_SILENCE_TIMEOUT = 0.4        # seconds of silence before cutting
+VAD_ENERGY_THRESHOLD = 300.0     # RMS floor
+VAD_MAX_DURATION = 15.0          # safety cap
 
 
 class ConversationListener:
@@ -37,6 +44,7 @@ class ConversationListener:
         self.interrupt_handler = InterruptHandler()
         self._conversation_active = False
         self._loop_task: Optional[asyncio.Task] = None
+        self.vad_silence_timeout: float = VAD_SILENCE_TIMEOUT  # overridable per-instance
         self._exit_phrases = [
             "goodbye", "bye bye", "that's all", "we're done",
             "end conversation", "stop conversation", "never mind",
@@ -71,36 +79,56 @@ class ConversationListener:
 
     async def trigger_conversation_turn(self, text: str) -> dict:
         """Process a single conversation turn (used by the wake word callback or API)."""
-        # Check exit command
         if self._is_exit_command(text):
             await self.stop_conversation()
             goodbye = await self.responder.respond("Goodbye!")
-            return {"action": "exit", "text": goodbye["text"], "audio_path": goodbye.get("audio_path")}
+            return {"action": "exit", "text": goodbye["text"],
+                    "audio_path": goodbye.get("audio_path")}
 
-        # Process through the responder
         result = await self.responder.respond(text)
         return {
             "action": "response",
             "text": result["text"],
-            "audio_path": result.get("audio_path"),
+            "audio_path": result.get("audio_path", ""),
         }
 
+    # ── Core conversation loop ──────────────────────────────────────
+
     async def _conversation_loop(self):
-        """Main conversation loop: listen → transcribe → respond → speak → repeat."""
+        """Main conversation loop: listen → transcribe → stream-respond → play → repeat.
+
+        Uses aggressive VAD (400 ms silence), streaming LLM, and sentence-aware
+        TTS chunking for sub-second first-audible latency.  Barge-in stops
+        audio playback AND flushes the active LLM stream so the system is
+        immediately ready for the next user utterance.
+        """
         try:
             while self._conversation_active:
-                # 1. Listen with VAD (silence endpointing)
-                print("[Conversation] Listening for speech...")
-                text = await self.stt.transcribe_until_silence(
-                    max_duration=15.0,
-                    silence_timeout=1.8,
-                    energy_threshold=300.0,
-                )
+                # ── 1. Listen with streaming STT (interim + final) ──
+                print("[Conversation] Listening for speech (streaming STT)...")
+                self.responder.stt_text = ""
+                text = None
+
+                try:
+                    async for result in self.stt.transcribe_streaming(
+                        max_duration=VAD_MAX_DURATION,
+                        silence_timeout=self.vad_silence_timeout,
+                        energy_threshold=VAD_ENERGY_THRESHOLD,
+                    ):
+                        if result["type"] == "interim":
+                            self.responder.stt_text = result["text"]
+                            print(f"[Conversation] STT interim: '{result['text']}'")
+                        elif result["type"] == "final":
+                            text = result["text"] if result["text"].strip() else None
+                            self.responder.stt_text = ""  # clear after final
+                except Exception as e:
+                    print(f"[Conversation] STT streaming error: {e}")
+                    text = None
+                    self.responder.stt_text = ""
 
                 if not self._conversation_active:
                     break
 
-                # 2. If no speech detected (silence timeout), exit
                 if text is None or not text.strip():
                     print("[Conversation] No speech detected — ending conversation")
                     await self.stop_conversation()
@@ -108,39 +136,61 @@ class ConversationListener:
 
                 print(f"[Conversation] User: '{text}'")
 
-                # 3. Check exit command
+                # ── 2. Check exit command ────────────────────────────
                 if self._is_exit_command(text):
                     print("[Conversation] Exit command detected")
-                    result = await self.responder.respond("Goodbye! Say the wake word when you need me again.")
-                    await self.interrupt_handler.play_with_interrupt(
-                        str(result.get("audio_path", "")),
-                        listen_for_interrupt=False,
+                    result = await self.responder.respond(
+                        "Goodbye! Say the wake word when you need me again."
                     )
+                    audio_path = result.get("audio_path", "")
+                    if audio_path:
+                        self.responder.is_speaking = True
+                        try:
+                            await self.interrupt_handler.play_with_interrupt(
+                                str(audio_path),
+                                listen_for_interrupt=False,
+                            )
+                        finally:
+                            self.responder.is_speaking = False
                     await self.stop_conversation()
                     return
 
-                # 4. Process through BARQResponder (LLM + TTS)
+                # ── 3. Streaming respond with sentence-aware TTS ─────
                 try:
-                    result = await self.responder.respond(text)
-                    response_text = result.get("text", "")
-                    audio_path = result.get("audio_path", "")
+                    self.responder.is_speaking = True
+                    interrupted = False
 
-                    print(f"[Conversation] BARQ: {response_text}")
+                    async for chunk in self.responder.stream_respond(text):
+                        if self._interrupt_requested():
+                            # Barge-in signalled during TTS gen — cancel
+                            self.responder._interrupt_requested = True
+                            interrupted = True
+                            break
 
-                    # 5. Play response with interrupt detection
-                    if audio_path and Path(audio_path).exists():
-                        interrupted = await self.interrupt_handler.play_with_interrupt(
-                            str(audio_path),
-                            listen_for_interrupt=True,
-                        )
-                        if interrupted:
-                            # User spoke over BARQ — record and process the interruption
-                            print("[Conversation] Interrupted — listening for follow-up...")
-                            continue
+                        audio_path = chunk.get("audio_path", "")
+                        if audio_path and Path(audio_path).exists():
+                            playback_interrupted = (
+                                await self.interrupt_handler.play_with_interrupt(
+                                    str(audio_path),
+                                    listen_for_interrupt=True,
+                                )
+                            )
+                            if playback_interrupted:
+                                # User spoke over BARQ — flush LLM stream
+                                self.responder._interrupt_requested = True
+                                interrupted = True
+                                break
+
+                    if interrupted:
+                        print("[Conversation] Barge-in — flushing LLM & restarting listen")
+                        continue
+
                 except Exception as e:
                     print(f"[Conversation] Error processing response: {e}")
                     await asyncio.sleep(0.5)
                     continue
+                finally:
+                    self.responder.is_speaking = False
 
         except asyncio.CancelledError:
             print("[Conversation] Conversation loop cancelled")
@@ -150,9 +200,14 @@ class ConversationListener:
             self._conversation_active = False
             self.responder.conversation.end_session()
 
+    # ── Helpers ─────────────────────────────────────────────────────
+
+    def _interrupt_requested(self) -> bool:
+        """Check whether the responder has been flagged for interrupt."""
+        return self.responder._interrupt_requested
+
     def _is_exit_command(self, text: str) -> bool:
-        """Check if user wants to end the conversation.
-        Uses word-boundary matching to avoid accidental triggers (e.g. "stop" in "stop that song")."""
+        """Check if user wants to end the conversation."""
         text_lower = text.lower().strip()
         for phrase in self._exit_phrases:
             if re.search(rf"\b{re.escape(phrase)}\b", text_lower):

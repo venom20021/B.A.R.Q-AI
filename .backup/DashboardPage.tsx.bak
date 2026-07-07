@@ -217,7 +217,7 @@ interface MetricTileProps {
 function MetricTile({ label, value, sparklineData }: MetricTileProps): JSX.Element {
   return (
     <div className="group">
-      <span className="text-[10px] font-mono text-zinc-300 uppercase tracking-[0.15em]">{label}</span>
+      <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.15em]">{label}</span>
       <div className="flex items-baseline gap-1.5 mt-0.5">
         <span className="text-3xl font-orbitron font-bold text-zinc-100 tabular-nums" style={{ filter: 'drop-shadow(0 0 8px rgba(var(--a400-rgb), 0.08))' }}>
           {value}
@@ -287,15 +287,33 @@ const WEATHER_FALLBACKS = [
   { temp: 32, condition: 'Clear', city: 'Dubai', humidity: 20 },
 ]
 
-// ─── Voice Waveform (uses parent's audioAmplitude from WebSocket) ──
+// ─── Voice Waveform (isolated — polls /voice/mic-level internally) ──
 
-function VoiceWaveform({ isListening, amplitude }: { isListening: boolean; amplitude: number }): JSX.Element {
+function VoiceWaveform({ isListening }: { isListening: boolean }): JSX.Element {
+  const [level, setLevel] = useState(0)
+
+  useEffect(() => {
+    let mounted = true
+    const fetchLevel = async () => {
+      try {
+        const resp = await window.barq?.python.request('/voice/mic-level')
+        if (!mounted) return
+        if (resp && typeof resp === 'object') {
+          setLevel((resp as { level?: number }).level ?? 0)
+        }
+      } catch { /* stay at previous level */ }
+    }
+    fetchLevel()
+    const interval = setInterval(fetchLevel, 500)
+    return () => { mounted = false; clearInterval(interval) }
+  }, [])
+
   const BAR_WEIGHTS = [0.3, 0.55, 0.8, 1.0, 0.8, 0.55, 0.3]
 
   return (
     <div className="flex items-center gap-[2px] h-3">
       {BAR_WEIGHTS.map((w, i) => {
-        const h = Math.max(2, amplitude * 14 * w)
+        const h = Math.max(2, level * 14 * w)
         return (
           <motion.span
             key={i}
@@ -777,11 +795,6 @@ export function DashboardPage(): JSX.Element {
   const threads = useThreadStatuses()
   const [displayExecTime, setDisplayExecTime] = useState('0.42')
   const [voiceListening, setVoiceListening] = useState(false)
-  const [detectorRunning, setDetectorRunning] = useState(false)
-  const [wsConnected, setWsConnected] = useState(false)
-  const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
-  const [audioAmplitude, setAudioAmplitude] = useState(0)
-  const [sttText, setSttText] = useState('')  // live interim transcription from STT
   const [activityFilter, setActivityFilter] = useState<'all' | 'weather' | 'chat' | 'voice' | 'system'>('all')
 
   const weather = useWeatherData()
@@ -801,19 +814,6 @@ export function DashboardPage(): JSX.Element {
     setAddingCity(false)
   }
   const { accent } = useTheme()
-
-  // Toggle wake word detector on/off (mute/unmute)
-  const toggleDetector = useCallback(async () => {
-    try {
-      if (detectorRunning) {
-        await window.barq?.python.request('/voice/stop', { method: 'POST' })
-      } else {
-        await window.barq?.python.request('/voice/start', { method: 'POST' })
-      }
-    } catch (err) {
-      console.error('[Voice] Failed to toggle detector:', err)
-    }
-  }, [detectorRunning])
 
   // Update execution time
   useEffect(() => {
@@ -835,75 +835,20 @@ export function DashboardPage(): JSX.Element {
     return () => { if (transcriptTimer.current) clearTimeout(transcriptTimer.current) }
   }, [latestVoice])
 
-  // WebSocket for real-time voice status + mic level (replaces HTTP polling)
+  // Poll voice status
   useEffect(() => {
-    const WS_URL = 'ws://127.0.0.1:8956/voice/ws/status'
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let mounted = true
-
-    const connect = () => {
+    const fetchVoiceStatus = async () => {
       try {
-        ws = new WebSocket(WS_URL)
-      } catch (err) {
-        console.error('[Voice] WebSocket creation failed:', err)
-        reconnectTimer = setTimeout(connect, 2000)
-        return
-      }
-
-      ws.onopen = () => {
-        setWsConnected(true)
-        console.log('[Voice] WebSocket connected')
-      }
-
-      ws.onmessage = (event) => {
-        if (!mounted) return
-        try {
-          const data = JSON.parse(event.data)
-          if (data.type === 'voice_status') {
-            setVoiceListening(data.conversation_active ?? false)
-            setDetectorRunning(data.is_listening ?? false)
-            setAudioAmplitude(data.mic_level ?? 0)
-            setSttText(data.stt_text ?? '')
-
-            // Derive AI state from backend status (order matters: most specific first)
-            if (data.is_speaking) {
-              setAiState('responding')
-            } else if (data.is_processing) {
-              setAiState('thinking')
-            } else if (data.conversation_active) {
-              setAiState('listening')
-            } else {
-              setAiState('idle')
-            }
-          }
-        } catch (err) {
-          console.error('[Voice] WebSocket parse error:', err)
+        const resp = await window.barq?.python.request('/voice/status')
+        if (resp && typeof resp === 'object') {
+          const v = resp as { is_listening?: boolean; data?: { is_listening?: boolean } }
+          setVoiceListening(v.is_listening ?? v.data?.is_listening ?? false)
         }
-      }
-
-      ws.onclose = () => {
-        setWsConnected(false)
-        if (!mounted) return
-        console.log('[Voice] WebSocket disconnected, reconnecting in 2s...')
-        reconnectTimer = setTimeout(connect, 2000)
-      }
-
-      ws.onerror = () => {
-        ws?.close()
-      }
+      } catch { /* backend unavailable */ }
     }
-
-    connect()
-
-    return () => {
-      mounted = false
-      if (ws) {
-        ws.onclose = null  // prevent reconnect logic on unmount
-        ws.close()
-      }
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-    }
+    fetchVoiceStatus()
+    const interval = setInterval(fetchVoiceStatus, 2000)
+    return () => clearInterval(interval)
   }, [])
 
   // Recent (last 2) get highlight
@@ -911,25 +856,15 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div className="h-full w-full bg-black text-zinc-200 overflow-hidden relative font-mono">
-      {/* ── Grid floor background ────────────────────────────────── */}
+      {/* ── Subtle grid background ─────────────────────────────────── */}
       <div
-        className="absolute inset-0 pointer-events-none"
+        className="absolute inset-0 opacity-[0.02] pointer-events-none"
         style={{
           backgroundImage: `
-            linear-gradient(rgba(var(--a500-rgb), 0.12) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(var(--a500-rgb), 0.12) 1px, transparent 1px)
+            linear-gradient(rgba(var(--a500-rgb), 0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(var(--a500-rgb), 0.06) 1px, transparent 1px)
           `,
-          backgroundSize: '48px 48px',
-          maskImage: 'linear-gradient(to top, black 10%, transparent 75%)',
-          WebkitMaskImage: 'linear-gradient(to top, black 10%, transparent 75%)',
-        }}
-      />
-
-      {/* ── Grid floor bottom highlight ───────────────────────────── */}
-      <div
-        className="absolute bottom-0 left-0 right-0 h-1/3 pointer-events-none"
-        style={{
-          background: `linear-gradient(to top, rgba(var(--a500-rgb), 0.03) 0%, transparent 100%)`,
+          backgroundSize: '64px 64px',
         }}
       />
 
@@ -950,27 +885,21 @@ export function DashboardPage(): JSX.Element {
               <h1 className="text-[12px] font-orbitron font-bold tracking-[0.25em] uppercase" style={{ color: 'var(--a200)', filter: 'drop-shadow(0 0 6px rgba(var(--a400-rgb), 0.12))' }}>
                 B.A.R.Q AI v2.0
               </h1>
-              <p className="text-[9px] font-mono text-zinc-300 tracking-[0.15em]">
+              <p className="text-[9px] font-mono text-zinc-500 tracking-[0.15em]">
                 Neural Command Center
               </p>
             </div>
           </div>
 
-          {/* ── Voice Activity Indicator (click to mute/unmute) ── */}
-          <button
-            onClick={toggleDetector}
-            className="flex items-center gap-2 px-3 py-1 rounded-lg bg-zinc-950/60 border border-zinc-800 hover:border-zinc-600 transition-colors cursor-pointer"
-            title={detectorRunning ? 'Click to mute microphone' : 'Click to unmute microphone'}
-          >
+          {/* ── Voice Activity Indicator ── */}
+          <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-zinc-950/60 border border-zinc-800">
             <div className="relative flex items-center gap-1.5">
               <div className={`relative w-2 h-2 rounded-full transition-all duration-300 ${
-                !detectorRunning
-                  ? 'bg-red-500/60'
-                  : voiceListening
-                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]'
-                    : 'bg-zinc-500'
+                voiceListening
+                  ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]'
+                  : 'bg-zinc-600'
               }`}>
-                {detectorRunning && voiceListening && (
+                {voiceListening && (
                   <motion.span
                     className="absolute inset-0 rounded-full bg-emerald-400"
                     animate={{ opacity: [0.4, 0.1, 0.4], scale: [1, 1.8, 1] }}
@@ -980,28 +909,12 @@ export function DashboardPage(): JSX.Element {
               </div>
               <div className="flex flex-col">
                 <span className={`text-[9px] font-mono tracking-wider uppercase transition-all duration-300 ${
-                  !detectorRunning
-                    ? 'text-red-400 font-bold'
-                    : voiceListening
-                      ? 'text-emerald-400 font-bold'
-                      : 'text-zinc-300'
+                  voiceListening ? 'text-emerald-400 font-bold' : 'text-zinc-500'
                 }`}>
-                  {!detectorRunning ? 'MUTED' : voiceListening ? 'ON AIR' : 'STANDBY'}
+                  {voiceListening ? 'ON AIR' : 'STANDBY'}
                 </span>
-                {/* Live interim STT transcript (while user is speaking) */}
-                {sttText && (
-                  <motion.span
-                    key="stt-interim"
-                    initial={{ opacity: 0, y: 2 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-[8px] font-mono text-cyan-300/90 truncate max-w-[160px] leading-tight mt-0.5"
-                    title={sttText}
-                  >
-                    &ldquo;{sttText}&rdquo;
-                  </motion.span>
-                )}
-                {/* Completed command transcript toast */}
-                {!sttText && displayTranscript && (
+                {/* Transient transcript toast */}
+                {displayTranscript && (
                   <motion.span
                     key="voice-transcript"
                     initial={{ opacity: 0, y: 4 }}
@@ -1014,17 +927,8 @@ export function DashboardPage(): JSX.Element {
                 )}
               </div>
             </div>
-            <VoiceWaveform isListening={voiceListening} amplitude={audioAmplitude} />
-            {/* WebSocket connection indicator */}
-            <span
-              className={`w-1 h-1 rounded-full transition-all duration-300 ${
-                wsConnected
-                  ? 'bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]'
-                  : 'bg-red-500/40'
-              }`}
-              title={wsConnected ? 'WebSocket connected' : 'WebSocket disconnected'}
-            />
-          </button>
+            <VoiceWaveform isListening={voiceListening} />
+          </div>
 
           <DigitalClock />
         </div>
@@ -1052,7 +956,7 @@ export function DashboardPage(): JSX.Element {
           <div className="col-span-2 flex flex-col items-center justify-center min-h-0 relative">
         {/* Ambient glow behind sphere — boosted for brighter core */}
         <div
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[540px] h-[540px] rounded-full pointer-events-none"
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] h-[420px] rounded-full pointer-events-none"
           style={{
             background: `radial-gradient(circle at center, rgba(var(--a500-rgb),0.07) 0%, rgba(var(--a500-rgb),0.035) 30%, transparent 70%)`,
             maskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
@@ -1063,7 +967,7 @@ export function DashboardPage(): JSX.Element {
             {/* 3D Sphere + Perspective Grid */}
             <div className="relative flex items-center justify-center">
               <motion.div
-                className="absolute w-[420px] h-[420px] rounded-full border-0"
+                className="absolute w-[340px] h-[340px] rounded-full border-0"
                 style={{
                   boxShadow: '0 0 0 0.5px rgba(var(--a500-rgb), 0.2)',
                 }}
@@ -1071,7 +975,7 @@ export function DashboardPage(): JSX.Element {
                 transition={{ duration: 60, repeat: Infinity, ease: 'linear' }}
               />
               <motion.div
-                className="absolute w-[400px] h-[400px] rounded-full border-0"
+                className="absolute w-[320px] h-[320px] rounded-full border-0"
                 style={{
                   boxShadow: '0 0 0 0.5px rgba(var(--a500-rgb), 0.12), 0 0 18px rgba(var(--a500-rgb), 0.04)',
                 }}
@@ -1080,35 +984,16 @@ export function DashboardPage(): JSX.Element {
               />
 
               <Suspense fallback={
-                <div className="w-[420px] h-[420px] flex items-center justify-center">
+                <div className="w-[340px] h-[340px] flex items-center justify-center">
                   <div className="w-8 h-8 border-2 border-purple-500/30 border-t-purple-400 rounded-full animate-spin" />
                 </div>
               }>
-                <ParticleSphere3D activeTheme={accent} aiState={aiState} audioAmplitude={audioAmplitude} micMuted={!detectorRunning} showGrid sttText={sttText} />
+                <ParticleSphere3D activeTheme={accent} isSpeaking={voiceListening} showGrid />
               </Suspense>
             </div>
 
-            {/* ── Live STT Transcript Caption (near the sphere) ──── */}
-            {sttText && (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="text-center mt-1.5 mb-1"
-              >
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/8 border border-cyan-500/15">
-                  <span className="relative flex w-1.5 h-1.5">
-                    <span className="animate-ping absolute inset-0 rounded-full bg-cyan-400 opacity-40" />
-                    <span className="relative rounded-full w-1.5 h-1.5 bg-cyan-400" />
-                  </span>
-                  <span className="text-[11px] font-mono text-cyan-300/80 italic max-w-[280px] truncate" title={sttText}>
-                    &ldquo;{sttText}&rdquo;
-                  </span>
-                </div>
-              </motion.div>
-            )}
-
             {/* ── Task Completion Readout ──────────────────────────── */}
-            <div className={`text-center ${sttText ? 'mt-0.5' : 'mt-2'}`}>
+            <div className="text-center mt-2">
               <div className="flex items-center justify-center gap-1.5 mb-1">
                 <CheckCircle2 className="w-3 h-3 text-purple-400/70" />
                 <span className="text-[10px] font-mono text-purple-400/50 uppercase tracking-[0.2em]">
@@ -1119,15 +1004,15 @@ export function DashboardPage(): JSX.Element {
                 Compiled local execution environment
               </p>
               <div className="flex items-center justify-center gap-3 mt-1.5">
-                <span className="text-[10px] font-mono text-zinc-300 tracking-[0.1em]">
+                <span className="text-[10px] font-mono text-zinc-500 tracking-[0.1em]">
                   EXECUTION TIME: <span className="text-purple-300/80">{displayExecTime}s</span>
                 </span>
-                <span className="text-zinc-500">|</span>
-                <span className="text-[10px] font-mono text-zinc-300 tracking-[0.1em]">
+                <span className="text-zinc-700">|</span>
+                <span className="text-[10px] font-mono text-zinc-500 tracking-[0.1em]">
                   MEM: <span className="text-purple-300/80">24MB</span>
                 </span>
-                <span className="text-zinc-500">|</span>
-                <span className="text-[10px] font-mono text-zinc-300 tracking-[0.1em]">
+                <span className="text-zinc-700">|</span>
+                <span className="text-[10px] font-mono text-zinc-500 tracking-[0.1em]">
                   EXIT: <span className="text-emerald-400/70">0x00</span>
                 </span>
               </div>
@@ -1145,7 +1030,7 @@ export function DashboardPage(): JSX.Element {
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${mod.active ? 'bg-purple-400/70 shadow-[0_0_5px_rgba(168,85,247,0.4)]' : 'bg-zinc-600'}`}
                   />
-                  <span className={`text-[8px] font-mono tracking-wider ${mod.active ? 'text-purple-400/50' : 'text-zinc-400'}`}>
+                  <span className={`text-[8px] font-mono tracking-wider ${mod.active ? 'text-purple-400/50' : 'text-zinc-600'}`}>
                     {mod.name}
                   </span>
                 </div>
@@ -1167,7 +1052,7 @@ export function DashboardPage(): JSX.Element {
                       className={`px-1.5 py-0.5 text-[7px] font-mono uppercase tracking-wider rounded transition-all duration-150 ${
                         activityFilter === f
                           ? 'bg-purple-500/15 text-purple-300 border border-purple-500/20'
-                          : 'text-zinc-300 hover:text-zinc-100 border border-transparent'
+                          : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
                       }`}
                     >
                       {f === 'all' ? 'All' : f}
@@ -1175,7 +1060,7 @@ export function DashboardPage(): JSX.Element {
                   ))}
                 </div>
               </div>
-              <span className="text-[8px] font-mono text-zinc-300 tabular-nums">{liveCount > 0 ? `${liveCount} new` : ''}</span>
+              <span className="text-[8px] font-mono text-zinc-500 tabular-nums">{liveCount > 0 ? `${liveCount} new` : ''}</span>
             </div>
 
             {/* ── Filtered Square Activity Blocks ── */}
@@ -1212,7 +1097,7 @@ export function DashboardPage(): JSX.Element {
                           className={`px-1.5 py-0.5 text-[7px] font-mono uppercase tracking-wider rounded transition-all ${
                             selectedCity === city
                               ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/20'
-                              : 'text-zinc-300 hover:text-zinc-100 border border-transparent'
+                              : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
                           }`}
                         >
                           {city}
@@ -1220,7 +1105,7 @@ export function DashboardPage(): JSX.Element {
                         {cities.length > 1 && (
                           <button
                             onClick={(e) => { e.stopPropagation(); removeCity(city) }}
-                            className="p-0.5 rounded text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                            className="p-0.5 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
                           >
                             <X className="w-2 h-2" />
                           </button>
@@ -1264,14 +1149,14 @@ export function DashboardPage(): JSX.Element {
                               <span className="text-2xl font-orbitron font-bold text-zinc-100 tabular-nums">
                                 {Math.round(w.temperature_c)}°
                               </span>
-                              <span className="text-[9px] font-mono text-zinc-300 uppercase">{w.city}</span>
+                              <span className="text-[9px] font-mono text-zinc-500 uppercase">{w.city}</span>
                             </div>
                             <p className="text-[10px] font-mono text-zinc-400 mt-0.5 capitalize">{w.description}</p>
-                            <div className="flex items-center gap-2 mt-1 text-[8px] font-mono text-zinc-300">
+                            <div className="flex items-center gap-2 mt-1 text-[8px] font-mono text-zinc-500">
                               <span>Humidity: {w.humidity}%</span>
-                              <span className="text-zinc-500">|</span>
+                              <span className="text-zinc-700">|</span>
                               <span>Feels {Math.round(w.feels_like_c)}°</span>
-                              <span className="text-zinc-500">|</span>
+                              <span className="text-zinc-700">|</span>
                               <span>Wind: {w.wind_speed}m/s</span>
                             </div>
                             {/* Expanded extras */}
@@ -1283,16 +1168,16 @@ export function DashboardPage(): JSX.Element {
                                 className="mt-1.5 pt-1.5 border-t border-zinc-800/60 space-y-0.5"
                               >
                                 <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[7px] font-mono">
-                                  <span className="text-zinc-400">Visibility</span>
+                                  <span className="text-zinc-600">Visibility</span>
                                   <span className="text-zinc-400 text-right">{w.visibility >= 1000 ? `${(w.visibility / 1000).toFixed(1)} km` : `${w.visibility} m`}</span>
-                                  <span className="text-zinc-400">Country</span>
+                                  <span className="text-zinc-600">Country</span>
                                   <span className="text-zinc-400 text-right">{w.country || '—'}</span>
-                                  <span className="text-zinc-400">Wind</span>
+                                  <span className="text-zinc-600">Wind</span>
                                   <span className="text-zinc-400 text-right">{w.wind_speed} m/s</span>
-                                  <span className="text-zinc-400">Feels like</span>
+                                  <span className="text-zinc-600">Feels like</span>
                                   <span className="text-zinc-400 text-right">{Math.round(w.feels_like_c)}°C</span>
                                 </div>
-                                <p className="text-[6px] text-zinc-500 text-center mt-1">Click to collapse</p>
+                                <p className="text-[6px] text-zinc-700 text-center mt-1">Click to collapse</p>
                               </motion.div>
                             )}
                           </>
@@ -1314,18 +1199,18 @@ export function DashboardPage(): JSX.Element {
                               <span className="text-2xl font-orbitron font-bold text-zinc-100 tabular-nums">
                                 {latestFeed.message.split(' — ')[0]}
                               </span>
-                              <span className="text-[9px] font-mono text-zinc-300 uppercase">{latestFeed.label}</span>
+                              <span className="text-[9px] font-mono text-zinc-500 uppercase">{latestFeed.label}</span>
                             </div>
                             <p className="text-[10px] font-mono text-zinc-400 mt-0.5 capitalize">
                               {latestFeed.message.includes('—') ? latestFeed.message.split('—')[1]?.trim() : latestFeed.message}
                             </p>
-                            <p className="text-[8px] font-mono text-zinc-300 mt-1 truncate">{latestFeed.detail}</p>
+                            <p className="text-[8px] font-mono text-zinc-500 mt-1 truncate">{latestFeed.detail}</p>
                           </>
                         )
                       }
                       return (
                         <div className="flex-1 flex items-center justify-center">
-                          <span className="text-[9px] text-zinc-400">No data</span>
+                          <span className="text-[9px] text-zinc-600">No data</span>
                         </div>
                       )
                     })()}
@@ -1353,25 +1238,25 @@ export function DashboardPage(): JSX.Element {
                       return items.map(entry => (
                         <div key={entry.id} className="text-[7px] font-mono leading-[1.3]">
                           <div className="flex items-center gap-1">
-                            <span className="text-zinc-400 shrink-0 tabular-nums">{entry.timestamp}</span>
+                            <span className="text-zinc-600 shrink-0 tabular-nums">{entry.timestamp}</span>
                             <span className="font-semibold text-zinc-400 truncate">{entry.label}</span>
                           </div>
-                          <p className={expandedBlock === 'chat' ? 'text-zinc-300' : 'text-zinc-300 truncate'}>{entry.message}</p>
-                          {entry.detail && <p className="text-zinc-400 truncate">{entry.detail}</p>}
+                          <p className={expandedBlock === 'chat' ? 'text-zinc-500' : 'text-zinc-500 truncate'}>{entry.message}</p>
+                          {entry.detail && <p className="text-zinc-600 truncate">{entry.detail}</p>}
                         </div>
                       ))
                     })()}
                     {activities.filter(a => a.type === 'chat').length === 0 && (
                       <div className="flex items-center justify-center h-full">
-                        <span className="text-[9px] text-zinc-400">No messages</span>
+                        <span className="text-[9px] text-zinc-600">No messages</span>
                       </div>
                     )}
                     {/* Expand indicator */}
                     {expandedBlock === 'chat' && activities.filter(a => a.type === 'chat').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-1">Click to collapse</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-1">Click to collapse</p>
                     )}
                     {expandedBlock !== 'chat' && activities.filter(a => a.type === 'chat').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-0.5">+{activities.filter(a => a.type === 'chat').length - 5} more &middot; Click to expand</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-0.5">+{activities.filter(a => a.type === 'chat').length - 5} more &middot; Click to expand</p>
                     )}
                   </div>
                 </motion.div>
@@ -1400,25 +1285,25 @@ export function DashboardPage(): JSX.Element {
                           <div key={entry.id} className={`text-[7px] font-mono leading-[1.3]`}>
                             <div className="flex items-center gap-1">
                               <span className={`w-1 h-1 rounded-full shrink-0 ${isLatest ? 'bg-pink-400/60 shadow-[0_0_4px_rgba(244,114,182,0.4)]' : 'bg-zinc-700'}`} />
-                              <span className="text-zinc-400 shrink-0 tabular-nums">{entry.timestamp}</span>
+                              <span className="text-zinc-600 shrink-0 tabular-nums">{entry.timestamp}</span>
                               <span className={`font-semibold truncate ${isLatest ? 'text-pink-300' : 'text-zinc-400'}`}>{entry.label}</span>
                             </div>
-                            <p className={expandedBlock === 'voice' && isLatest ? 'text-zinc-300' : expandedBlock === 'voice' ? 'text-zinc-300' : 'text-zinc-300 truncate'}>{entry.message}</p>
-                            {entry.detail && <p className="text-zinc-400 truncate">{entry.detail}</p>}
+                            <p className={expandedBlock === 'voice' && isLatest ? 'text-zinc-300' : expandedBlock === 'voice' ? 'text-zinc-500' : 'text-zinc-500 truncate'}>{entry.message}</p>
+                            {entry.detail && <p className="text-zinc-600 truncate">{entry.detail}</p>}
                           </div>
                         )
                       })
                     })()}
                     {activities.filter(a => a.type === 'voice').length === 0 && (
                       <div className="flex items-center justify-center h-full">
-                        <span className="text-[9px] text-zinc-400">No commands</span>
+                        <span className="text-[9px] text-zinc-600">No commands</span>
                       </div>
                     )}
                     {expandedBlock === 'voice' && activities.filter(a => a.type === 'voice').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-1">Click to collapse</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-1">Click to collapse</p>
                     )}
                     {expandedBlock !== 'voice' && activities.filter(a => a.type === 'voice').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-0.5">+{activities.filter(a => a.type === 'voice').length - 5} more &middot; Click to expand</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-0.5">+{activities.filter(a => a.type === 'voice').length - 5} more &middot; Click to expand</p>
                     )}
                   </div>
                 </motion.div>
@@ -1444,24 +1329,24 @@ export function DashboardPage(): JSX.Element {
                       return items.map(entry => (
                         <div key={entry.id} className="text-[7px] font-mono leading-[1.3]">
                           <div className="flex items-center gap-1">
-                            <span className="text-zinc-400 shrink-0 tabular-nums">{entry.timestamp}</span>
+                            <span className="text-zinc-600 shrink-0 tabular-nums">{entry.timestamp}</span>
                             <span className="font-semibold text-zinc-400 truncate">{entry.label}</span>
                           </div>
-                          <p className={expandedBlock === 'system' ? 'text-zinc-300' : 'text-zinc-300 truncate'}>{entry.message}</p>
-                          {entry.detail && <p className="text-zinc-400 truncate">{entry.detail}</p>}
+                          <p className={expandedBlock === 'system' ? 'text-zinc-500' : 'text-zinc-500 truncate'}>{entry.message}</p>
+                          {entry.detail && <p className="text-zinc-600 truncate">{entry.detail}</p>}
                         </div>
                       ))
                     })()}
                     {activities.filter(a => a.type === 'system').length === 0 && (
                       <div className="flex items-center justify-center h-full">
-                        <span className="text-[9px] text-zinc-400">No events</span>
+                        <span className="text-[9px] text-zinc-600">No events</span>
                       </div>
                     )}
                     {expandedBlock === 'system' && activities.filter(a => a.type === 'system').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-1">Click to collapse</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-1">Click to collapse</p>
                     )}
                     {expandedBlock !== 'system' && activities.filter(a => a.type === 'system').length > 5 && (
-                      <p className="text-[6px] text-zinc-500 text-center pt-0.5">+{activities.filter(a => a.type === 'system').length - 5} more &middot; Click to expand</p>
+                      <p className="text-[6px] text-zinc-700 text-center pt-0.5">+{activities.filter(a => a.type === 'system').length - 5} more &middot; Click to expand</p>
                     )}
                   </div>
                 </motion.div>
@@ -1488,7 +1373,7 @@ export function DashboardPage(): JSX.Element {
                           : 'bg-zinc-600'
                       }`}
                     />
-                    <span className="text-[7px] font-mono text-zinc-300 truncate group-hover:text-zinc-100 transition-colors">
+                    <span className="text-[7px] font-mono text-zinc-500 truncate group-hover:text-zinc-400 transition-colors">
                       {thread.name}
                     </span>
                   </div>
@@ -1496,44 +1381,6 @@ export function DashboardPage(): JSX.Element {
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* ── Mock AI State Control Panel ────────────────────────── */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-lg bg-zinc-950/80 border border-zinc-800 backdrop-blur-sm">
-        <div className="flex items-center gap-1">
-          {(['idle', 'listening', 'thinking', 'responding'] as const).map(s => (
-            <button
-              key={s}
-              onClick={() => setAiState(s)}
-              className={`px-2 py-1 text-[9px] font-mono uppercase tracking-wider rounded transition-all duration-150 ${
-                aiState === s
-                  ? s === 'idle' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                  : s === 'listening' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                  : s === 'thinking' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                : 'text-zinc-300 hover:text-zinc-100 border border-transparent'
-              }`}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-        <div className="w-px h-6 bg-zinc-800" />
-        <div className="flex items-center gap-2">
-          <span className="text-[8px] font-mono text-zinc-300 uppercase tracking-wider">Amp</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={audioAmplitude}
-            onChange={e => setAudioAmplitude(parseFloat(e.target.value))}
-            className="w-20 h-1 accent-cyan-400 cursor-pointer"
-          />
-          <span className="text-[9px] font-mono text-zinc-400 tabular-nums w-8 text-right">
-            {audioAmplitude.toFixed(2)}
-          </span>
         </div>
       </div>
     </div>

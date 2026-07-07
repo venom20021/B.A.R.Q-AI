@@ -31,15 +31,10 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; fallback?: Re
   }
 }
 
-// ─── AI State Types ────────────────────────────────────────────────────
-
-export type AIState = 'idle' | 'listening' | 'thinking' | 'responding'
-
 // ─── Voice Reactivity Config ───────────────────────────────────────────
 
 const IDLE_ROTATION_SPEED = 0.08
 const SPEAKING_ROTATION_SPEED = 0.25
-const THINKING_ROTATION_SPEED = 0.45
 const IDLE_WOBBLE_SPEED = 0.025
 const SPEAKING_WOBBLE_SPEED = 0.05
 const IDLE_WOBBLE_AMPLITUDE = 0.08
@@ -50,29 +45,6 @@ const IDLE_PULSE_FREQ = 0.5
 const SPEAKING_PULSE_FREQ = 1.2
 const RING_IDLE_SPEED = 0.04
 const RING_SPEAKING_SPEED = 0.12
-
-// ─── AI State Color Targets ─────────────────────────────────────────────
-
-const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = {
-  idle: [5, 1.5, 2],        // Purple/coral
-  listening: [0, 4, 12],     // Cyan/deep blue
-  thinking: [8, 6, 0],       // Amber/yellow
-  responding: [0, 10, 2],    // Neon green
-}
-
-const STATE_OUTER_BOOST: Record<AIState, [number, number, number]> = {
-  idle: [0.25, 0.0, 0.15],
-  listening: [0.0, 0.3, 0.3],
-  thinking: [0.15, 0.2, 0.0],
-  responding: [0.0, 0.35, 0.15],
-}
-
-const STATE_RING_OPACITY: Record<AIState, number> = {
-  idle: 0.2,
-  listening: 0.35,
-  thinking: 0.5,
-  responding: 0.4,
-}
 
 // ─── Mouse Tracking Config ─────────────────────────────────────────────
 
@@ -88,11 +60,6 @@ const PARALLAX_DEPTH_MAX = 1.0  // outermost particle radius fraction
 // ─── Color Transition Config ────────────────────────────────────────────
 
 const COLOR_LERP_RATE = 0.03    // per-frame lerp factor for theme color transitions (~2.5s to converge)
-
-// ─── Wake Animation Config (mount expansion) ────────────────────────────
-
-const WAKE_EASE_RATE = 0.035    // per-frame lerp toward 1.0 (~1.4s to converge)
-const WAKE_MIN_SCALE = 0.02     // starting scale (tiny bright point)
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -140,7 +107,7 @@ const THEMES: Record<ThemeColor, ThemePalette> = {
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const PARTICLE_COUNT = 30000
-const SPHERE_RADIUS = 2.8
+const SPHERE_RADIUS = 2.0
 
 // ─── Density Config ────────────────────────────────────────────────────
 
@@ -148,38 +115,17 @@ const DENSITY_POWER = 5.0         // power distribution: >1 clusters particles t
 
 // ─── Inner Particle Field ───────────────────────────────────────────────
 
-function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micMuted, sttText }: {
+function ParticleField({ activeTheme, isSpeaking, mouseTarget }: {
   activeTheme: ThemeColor
-  aiState: AIState
-  audioAmplitude: number
+  isSpeaking: boolean
   mouseTarget: MutableRefObject<{ x: number; y: number }>
-  micMuted: boolean
-  sttText?: string
 }): JSX.Element {
   const groupRef = useRef<Group>(null!)
   const pointsRef = useRef<Points>(null!)
 
   // Refs to avoid stale closure in useFrame
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const audioAmpRef = useRef(audioAmplitude)
-  audioAmpRef.current = audioAmplitude
-  const prevStateRef = useRef(aiState)
-
-  // Pulse timer for 'listening' transition flash
-  const pulseTimerRef = useRef(0)
-
-  // Detect state transition from non-listening to listening
-  if (prevStateRef.current !== aiState) {
-    if (aiState === 'listening') {
-      pulseTimerRef.current = 1.0
-    }
-    prevStateRef.current = aiState
-  }
-
-  // Wake animation on mount — particles expand from a tiny bright point
-  const wakeProgressRef = useRef(0)
-  const wakeDoneRef = useRef(false)
+  const speakingRef = useRef(isSpeaking)
+  speakingRef.current = isSpeaking
 
   // Spring-damped mouse offset — smoothly follows the mouse
   const mouseOffset = useRef({ x: 0, y: 0 })
@@ -252,6 +198,7 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
   if (!colorBufferRef.current) {
     colorBufferRef.current = new Float32Array(colors)
   }
+  targetColorsRef.current = colors
 
   // ─── Soft bokeh texture — generated once ─────────────────────
   // Canvas-based radial gradient creates a soft circle texture.
@@ -276,97 +223,17 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
     return tex
   }, [])
 
-  // ─── Per-state color targets (recomputed when state changes) ──
-  const stateColors = useMemo(() => {
-    // When mic is muted and idle, override with red to indicate muted state
-    const effectiveState = (aiState === 'idle' && micMuted) ? 'muted' : aiState
-    const [rBase, gBase, bBase] = effectiveState === 'muted'
-      ? [10, 0.5, 0.3]    // Red for muted idle
-      : STATE_PARTICLE_COLORS[aiState]
-    const [rBoost, gBoost, bBoost] = effectiveState === 'muted'
-      ? [0.3, 0.0, 0.0]    // Red outer boost for muted idle
-      : STATE_OUTER_BOOST[aiState]
-    const col = new Float32Array(PARTICLE_COUNT * 3)
-    const depths = depthFactorsRef.current
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const depth = depths[i]
-      col[i * 3] = rBase + (1 - depth) * rBoost
-      col[i * 3 + 1] = gBase + (1 - depth) * gBoost
-      col[i * 3 + 2] = bBase + (1 - depth) * bBoost
-    }
-    return col
-  }, [aiState, micMuted])
-
-  // Target colors ref — updated when state changes
-  targetColorsRef.current = stateColors
-
-  // Animation loop — AI-state-reactive + mouse-tracking + parallax depth
+  // Animation loop — voice-reactive + mouse-tracking + parallax depth + line reactivity
   useFrame((state) => {
     const t = state.clock.elapsedTime
-    const curState = aiStateRef.current
-    const amp = audioAmpRef.current
-    const isActive = curState !== 'idle'
+    const isSpoke = speakingRef.current
 
-    // ── Wake animation (one-time expansion on mount) ────────────────
-    if (!wakeDoneRef.current) {
-      wakeProgressRef.current += (1 - wakeProgressRef.current) * WAKE_EASE_RATE
-      if (wakeProgressRef.current > 0.999) {
-        wakeProgressRef.current = 1
-        wakeDoneRef.current = true
-      }
-    }
-    const wakeScale = WAKE_MIN_SCALE + wakeProgressRef.current * (1 - WAKE_MIN_SCALE)
-    const wakeBrightness = 1 + (1 - wakeProgressRef.current) * 0.5
-
-    // ── Speed & motion params per state ────────────────────────
-    let rotSpeed = IDLE_ROTATION_SPEED
-    let wobbleSpeed = IDLE_WOBBLE_SPEED
-    let wobbleAmp = IDLE_WOBBLE_AMPLITUDE
-    let pulseAmp = IDLE_PULSE_AMPLITUDE
-    let pulseFreq = IDLE_PULSE_FREQ
-
-    // Scale factor for particle positions (thinking = tighter)
-    let scaleFactor = 1.0
-
-    // Breathing pulse for 'responding' state
-    let breatheScale = 1.0
-
-    // Wave displacement for 'listening' state
-    let waveStrength = 0
-
-    // Boost when streaming STT is active (user speaking, text flowing)
-    const hasStt = sttText !== undefined && sttText.length > 0
-
-    switch (curState) {
-      case 'listening':
-        rotSpeed = SPEAKING_ROTATION_SPEED
-        wobbleSpeed = SPEAKING_WOBBLE_SPEED
-        wobbleAmp = SPEAKING_WOBBLE_AMPLITUDE
-        pulseAmp = SPEAKING_PULSE_AMPLITUDE
-        pulseFreq = SPEAKING_PULSE_FREQ
-        // Clean waveform ripples — amplitude-driven displacement, steady frequency
-        // Boost wave strength when STT text is actively flowing (user speaking)
-        waveStrength = amp * (hasStt ? 0.55 : 0.30)
-        break
-      case 'thinking':
-        // Tighter spin: faster rotation, more collapsed
-        rotSpeed = THINKING_ROTATION_SPEED * 1.35
-        pulseAmp = IDLE_PULSE_AMPLITUDE * 0.5
-        pulseFreq = IDLE_PULSE_FREQ * 2
-        scaleFactor = 0.82
-        break
-      case 'responding':
-        rotSpeed = SPEAKING_ROTATION_SPEED * 0.7
-        wobbleSpeed = SPEAKING_WOBBLE_SPEED * 0.5
-        wobbleAmp = SPEAKING_WOBBLE_AMPLITUDE * 0.6
-        pulseAmp = SPEAKING_PULSE_AMPLITUDE
-        pulseFreq = SPEAKING_PULSE_FREQ
-        // Moderate breathing — ±5% group pulse
-        breatheScale = 1 + Math.sin(t * 2.0) * 0.05
-        break
-      default: // idle
-        break
-    }
+    // Speed multipliers — 3× faster when speaking
+    const rotSpeed = isSpoke ? SPEAKING_ROTATION_SPEED : IDLE_ROTATION_SPEED
+    const wobbleSpeed = isSpoke ? SPEAKING_WOBBLE_SPEED : IDLE_WOBBLE_SPEED
+    const wobbleAmp = isSpoke ? SPEAKING_WOBBLE_AMPLITUDE : IDLE_WOBBLE_AMPLITUDE
+    const pulseAmp = isSpoke ? SPEAKING_PULSE_AMPLITUDE : IDLE_PULSE_AMPLITUDE
+    const pulseFreq = isSpoke ? SPEAKING_PULSE_FREQ : IDLE_PULSE_FREQ
 
     // Spring-damped mouse tracking
     const target = mouseTarget.current
@@ -375,18 +242,16 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
     offset.y += (target.y - offset.y) * MOUSE_SPRING
 
     if (groupRef.current) {
-      // Base rotation
+      // Base rotation: auto-rotation + voice reactivity
       const baseY = t * rotSpeed
       const baseX = Math.sin(t * wobbleSpeed) * wobbleAmp
 
+      // Mouse offset adds on top with spring damping
       groupRef.current.rotation.y = baseY + offset.x * MOUSE_MAX_ANGLE
       groupRef.current.rotation.x = baseX + offset.y * MOUSE_MAX_ANGLE
-
-      // Breathing scale for 'responding'
-      groupRef.current.scale.setScalar(breatheScale)
     }
 
-    // ── Particle position displacement ──────────────────────────
+    // Parallax depth displacement — surface particles shift more than deep ones
     if (pointsRef.current && restPositionsRef.current && depthFactorsRef.current) {
       const geometry = pointsRef.current.geometry
       const posAttr = geometry.attributes.position
@@ -396,68 +261,20 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
         const depths = depthFactorsRef.current
         const depthRange = PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN
 
-        // Pulse flash on transition to 'listening'
-        const pulse = pulseTimerRef.current
-        const flashExpand = pulse > 0 ? 1 + pulse * 0.12 : 1
-
         for (let i = 0; i < PARTICLE_COUNT; i++) {
+          // Normalize depth to 0 (inner) → 1 (surface)
           const depthFactor = (depths[i] - PARALLAX_DEPTH_MIN) / depthRange
           const i3 = i * 3
-
-          // Start from rest position (scaled by wake animation on mount)
-          let px = rest[i3] * wakeScale
-          let py = rest[i3 + 1] * wakeScale
-          let pz = rest[i3 + 2] * wakeScale
-
-          // Mouse parallax: surface shifts more
-          px += offset.x * depthFactor * PARALLAX_STRENGTH
-          py += offset.y * depthFactor * PARALLAX_STRENGTH
-
-          // Apply state-based behaviors
-          if (curState === 'listening' && waveStrength > 0) {
-            // Dual counter-propagating waves — creates an interference pattern
-            const theta = Math.atan2(py, px)
-            const phi = Math.acos(pz / (Math.sqrt(px*px + py*py + pz*pz) || 1))
-            const wave = Math.sin(t * 2.5 + theta * 4 + phi * 3) * waveStrength * 0.65
-            const counterWave = Math.sin(t * 2.5 - theta * 4 - phi * 3) * waveStrength * 0.45
-            const combined = wave + counterWave
-            px *= (1 + combined)
-            py *= (1 + combined)
-            pz *= (1 + combined)
-          } else if (curState === 'thinking') {
-            // Tighter sphere — collapse toward center
-            px *= scaleFactor
-            py *= scaleFactor
-            pz *= scaleFactor
-          } else if (curState === 'responding') {
-            // Subtle breathing wave — gentle surface ripple
-            const theta = Math.atan2(py, px)
-            const breathe = 1 + Math.sin(t * 1.5 + theta) * 0.01
-            px *= breathe
-            py *= breathe
-            pz *= breathe
-          }
-
-          // Apply listening flash expansion
-          px *= flashExpand
-          py *= flashExpand
-          pz *= flashExpand
-
-          posArray[i3] = px
-          posArray[i3 + 1] = py
-          posArray[i3 + 2] = pz
+          // Shift X/Y: surface = full offset, deep = nearly static
+          posArray[i3] = rest[i3] + offset.x * depthFactor * PARALLAX_STRENGTH
+          posArray[i3 + 1] = rest[i3 + 1] + offset.y * depthFactor * PARALLAX_STRENGTH
+          posArray[i3 + 2] = rest[i3 + 2]
         }
         posAttr.needsUpdate = true
       }
     }
 
-    // Decay pulse timer
-    if (pulseTimerRef.current > 0) {
-      pulseTimerRef.current -= 0.035
-      if (pulseTimerRef.current < 0) pulseTimerRef.current = 0
-    }
-
-    // Pulse particle size
+    // Pulse particle size — larger amplitude and faster frequency when speaking
     if (pointsRef.current) {
       const geometry = pointsRef.current.geometry
       const sizeAttr = geometry.attributes.size
@@ -467,16 +284,12 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
           const depthFraction = (depthFactorsRef.current[i] - PARALLAX_DEPTH_MIN) / (PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN)
           const base = (0.30 - depthFraction * 0.23) + (i % 3) * 0.04
           array[i] = base + Math.sin(t * pulseFreq + i * 0.1) * pulseAmp
-          // Boost size during listening flash
-          if (pulseTimerRef.current > 0) {
-            array[i] += pulseTimerRef.current * 0.08
-          }
         }
         sizeAttr.needsUpdate = true
       }
     }
 
-    // Smooth color transition — lerp toward target state color
+    // Smooth color transition — lerp toward target on theme change
     if (colorBufferRef.current && targetColorsRef.current && pointsRef.current) {
       const cur = colorBufferRef.current
       const tgt = targetColorsRef.current
@@ -489,13 +302,6 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
             cur[i] += diff * COLOR_LERP_RATE
             dirty = true
           }
-        }
-        // Boost colors during wake animation (bright ignition flash)
-        if (!wakeDoneRef.current && wakeProgressRef.current < 1) {
-          for (let i = 0; i < cur.length; i++) {
-            cur[i] = Math.min(cur[i] * wakeBrightness, 15)
-          }
-          dirty = true
         }
         if (dirty) colorAttr.needsUpdate = true
       }
@@ -546,20 +352,14 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
 const RING_BOOST_MULTIPLIER = 6    // peak speed multiplier on theme switch
 const RING_BOOST_DECAY = 0.04       // per-frame decay toward 1.0 (~1.5s to settle)
 
-function Rings({ activeTheme, aiState, micMuted }: { activeTheme: ThemeColor; aiState: AIState; micMuted?: boolean }): JSX.Element {
+function Rings({ activeTheme, isSpeaking }: { activeTheme: ThemeColor; isSpeaking: boolean }): JSX.Element {
   const ring1Ref = useRef<Mesh>(null!)
   const ring2Ref = useRef<Mesh>(null!)
 
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const micMutedRef = useRef(micMuted ?? false)
-  micMutedRef.current = micMuted ?? false
+  const speakingRef = useRef(isSpeaking)
+  speakingRef.current = isSpeaking
 
   const theme = THEMES[activeTheme]
-
-  // Wake animation on mount — rings fade in and expand
-  const wakeProgressRef = useRef(0)
-  const wakeDoneRef = useRef(false)
 
   // Speed boost on theme change
   const prevThemeRef = useRef(activeTheme)
@@ -587,21 +387,7 @@ function Rings({ activeTheme, aiState, micMuted }: { activeTheme: ThemeColor; ai
   targetRgbRef.current = { r: tgtR, g: tgtG, b: tgtB }
 
   useFrame((_state, delta) => {
-    const curState = aiStateRef.current
-    let baseSpeed = RING_IDLE_SPEED
-    if (curState === 'listening') baseSpeed = RING_SPEAKING_SPEED
-    else if (curState === 'thinking') baseSpeed = RING_SPEAKING_SPEED * 1.5
-    else if (curState === 'responding') baseSpeed = RING_SPEAKING_SPEED
-
-    // ── Wake animation (one-time fade-in + scale-up on mount)
-    if (!wakeDoneRef.current) {
-      wakeProgressRef.current += (1 - wakeProgressRef.current) * WAKE_EASE_RATE
-      if (wakeProgressRef.current > 0.999) {
-        wakeProgressRef.current = 1
-        wakeDoneRef.current = true
-      }
-    }
-    const wakeScale = WAKE_MIN_SCALE + wakeProgressRef.current * (1 - WAKE_MIN_SCALE)
+    const baseSpeed = speakingRef.current ? RING_SPEAKING_SPEED : RING_IDLE_SPEED
 
     // Decay speed boost toward 1.0
     if (speedBoostRef.current > 1.001) {
@@ -616,32 +402,8 @@ function Rings({ activeTheme, aiState, micMuted }: { activeTheme: ThemeColor; ai
     ringRotationRef.current.z += delta * speed
     ringRotationRef.current.x += delta * speed * 0.75
 
-    if (ring1Ref.current) {
-      ring1Ref.current.rotation.z = ringRotationRef.current.z
-      // Scale rings up during wake animation
-      ring1Ref.current.scale.setScalar(wakeScale)
-    }
-    if (ring2Ref.current) {
-      ring2Ref.current.rotation.x = ringRotationRef.current.x
-      ring2Ref.current.scale.setScalar(wakeScale)
-    }
-
-    // Update ring opacity per state
-    const isMutedIdle = curState === 'idle' && micMutedRef.current
-    const targetOpacity = isMutedIdle ? 0.45 : STATE_RING_OPACITY[curState]
-    if (ring1Ref.current) {
-      const mat = ring1Ref.current.material as MeshBasicMaterial
-      mat.opacity += (targetOpacity - mat.opacity) * 0.05
-    }
-    if (ring2Ref.current) {
-      const mat = ring2Ref.current.material as MeshBasicMaterial
-      mat.opacity += (targetOpacity * 0.7 - mat.opacity) * 0.05
-    }
-
-    // Override target color for muted idle → red
-    if (isMutedIdle) {
-      targetRgbRef.current = { r: 1, g: 0.1, b: 0.1 }
-    }
+    if (ring1Ref.current) ring1Ref.current.rotation.z = ringRotationRef.current.z
+    if (ring2Ref.current) ring2Ref.current.rotation.x = ringRotationRef.current.x
 
     // Lerp ring color toward target
     if (currentRgbRef.current) {
@@ -692,12 +454,10 @@ function Rings({ activeTheme, aiState, micMuted }: { activeTheme: ThemeColor; ai
 
 // ─── CSS Glow Effect (replaces WebGL bloom — avoids WebGL context loss) ─
 
-function useCSSGlow(containerRef: React.RefObject<HTMLDivElement | null>, aiState: AIState, themeColor: string, micMuted?: boolean) {
+function useCSSGlow(containerRef: React.RefObject<HTMLDivElement | null>, isSpeaking: boolean, themeColor: string) {
   const currentIntensity = useRef(0.3)
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const micMutedRef = useRef(micMuted ?? false)
-  micMutedRef.current = micMuted ?? false
+  const speakingRef = useRef(isSpeaking)
+  speakingRef.current = isSpeaking
 
   // Animated glow color — lerps toward target
   const currentRgbRef = useRef<{ r: number; g: number; b: number } | null>(null)
@@ -723,20 +483,14 @@ function useCSSGlow(containerRef: React.RefObject<HTMLDivElement | null>, aiStat
 
     const animate = (now: number) => {
       const t = (now - startTime) / 1000
-      const curState = aiStateRef.current
-      const isActive = curState !== 'idle'
+      const speaking = speakingRef.current
 
       // Idle breathing: ~0.35–0.45 (boosted for brighter core)
       const idleTarget = 0.4 + Math.sin(t * 0.5) * 0.05
-      const isMutedIdle = curState === 'idle' && micMutedRef.current
-      // Muted idle: steady higher red glow
-      const mutedTarget = 0.9 + Math.sin(t * 1.5) * 0.1
-      // Active state glow: varies by state
-      const target = isMutedIdle
-        ? mutedTarget
-        : isActive
-          ? 0.8 + Math.sin(t * 2.0) * 0.15
-          : idleTarget
+      // Speaking pulse: ~0.65–0.95
+      const target = speaking
+        ? 0.8 + Math.sin(t * 2.0) * 0.15
+        : idleTarget
 
       // Spring-damped interpolation
       const curInt = currentIntensity.current
@@ -753,11 +507,6 @@ function useCSSGlow(containerRef: React.RefObject<HTMLDivElement | null>, aiStat
         if (Math.abs(dr) > 0.001) cur.r += dr * COLOR_LERP_RATE
         if (Math.abs(dg) > 0.001) cur.g += dg * COLOR_LERP_RATE
         if (Math.abs(db) > 0.001) cur.b += db * COLOR_LERP_RATE
-      }
-
-      // Override target color for muted idle → red
-      if (isMutedIdle) {
-        targetRgbRef.current = { r: 1, g: 0.15, b: 0.1 }
       }
 
       // Apply as CSS filter — drop-shadow creates a bloom-like glow
@@ -780,15 +529,15 @@ function PerspectiveGrid({ activeTheme }: { activeTheme: ThemeColor }): JSX.Elem
   const theme = THEMES[activeTheme]
   return (
     <Grid
-      position={[0, -2.85, 0]}
-      args={[20, 20]}
-      cellSize={0.8}
+      position={[0, -1.85, 0]}
+      args={[10, 10]}
+      cellSize={0.4}
       cellThickness={0.6}
       cellColor="#6b21a8"
-      sectionSize={4}
+      sectionSize={2}
       sectionThickness={1}
       sectionColor={theme.primary}
-      fadeDistance={10}
+      fadeDistance={6}
       fadeStrength={1.5}
       infiniteGrid
       followCamera={false}
@@ -798,7 +547,7 @@ function PerspectiveGrid({ activeTheme }: { activeTheme: ThemeColor }): JSX.Elem
 
 // ─── Main Export ────────────────────────────────────────────────────────
 
-export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audioAmplitude = 0, showGrid = false, micMuted = false, sttText = '' }: { activeTheme?: ThemeColor; aiState?: AIState; audioAmplitude?: number; showGrid?: boolean; micMuted?: boolean; sttText?: string }): JSX.Element {
+export function ParticleSphere3D({ activeTheme = 'cyan', isSpeaking = false, showGrid = false }: { activeTheme?: ThemeColor; isSpeaking?: boolean; showGrid?: boolean }): JSX.Element {
   // Track mouse position normalized to [-1, 1] relative to canvas center
   const mouseTarget = useRef({ x: 0, y: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
@@ -818,7 +567,7 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
 
   // CSS glow animation — replaces WebGL Bloom which causes context loss on Electron/macOS
   const theme = THEMES[activeTheme]
-  useCSSGlow(containerRef, aiState, theme.primary, micMuted)
+  useCSSGlow(containerRef, isSpeaking, theme.primary)
 
   // Safety net for WebGL context loss (Electron/macOS GPU edge cases)
   const handleCanvasCreated = useCallback((state: any) => {
@@ -836,7 +585,7 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
   return (
     <div
       ref={containerRef}
-      className="w-[420px] h-[420px] rounded-full"
+      className="w-[340px] h-[340px] rounded-full"
       style={{
         maskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
         WebkitMaskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
@@ -846,7 +595,7 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
     >
       <CanvasErrorBoundary>
         <Canvas
-          camera={{ position: [0, 0, 6.0], fov: 50 }}
+          camera={{ position: [0, 0, 4.5], fov: 50 }}
           dpr={[1, 1.5]}
           gl={{
             antialias: true,
@@ -857,8 +606,8 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
           onCreated={handleCanvasCreated}
           style={{ width: '100%', height: '100%' }}
         >
-          <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} />
-          <Rings activeTheme={activeTheme} aiState={aiState} micMuted={micMuted} />
+          <ParticleField activeTheme={activeTheme} isSpeaking={isSpeaking} mouseTarget={mouseTarget} />
+          <Rings activeTheme={activeTheme} isSpeaking={isSpeaking} />
           {showGrid && <PerspectiveGrid activeTheme={activeTheme} />}
         </Canvas>
       </CanvasErrorBoundary>

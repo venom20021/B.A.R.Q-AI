@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { OverlayClock } from './OverlayClock'
 import { OverlayWeather } from './OverlayWeather'
 import { OverlayStats } from './OverlayStats'
@@ -63,20 +63,73 @@ export function OverlayApp(): JSX.Element {
     }
   }, [handleUpdate])
 
+  const overlayApi = (window as unknown as {
+    overlay?: {
+      hide: () => void
+      openMain: () => void
+      moveBy: (deltaX: number, deltaY: number) => void
+    }
+  }).overlay
+
+  // ─── Custom drag support ────────────────────────────────────────────────
+  const dragState = useRef<{ lastScreenX: number; lastScreenY: number } | null>(null)
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only left button, not on close button
+    if (e.button !== 0 || (e.target as HTMLElement).closest('.overlay-close-btn')) return
+
+    e.preventDefault()
+
+    // Track the last screen position for incremental delta calculation
+    dragState.current = {
+      lastScreenX: e.screenX,
+      lastScreenY: e.screenY,
+    }
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!dragState.current) return
+      // Calculate delta from last mouse position (incremental)
+      const deltaX = moveEvent.screenX - dragState.current.lastScreenX
+      const deltaY = moveEvent.screenY - dragState.current.lastScreenY
+      dragState.current.lastScreenX = moveEvent.screenX
+      dragState.current.lastScreenY = moveEvent.screenY
+
+      // Send incremental delta to main process which adds it to window position
+      if (overlayApi?.moveBy) {
+        overlayApi.moveBy(deltaX, deltaY)
+      }
+    }
+
+    const handleMouseUp = () => {
+      dragState.current = null
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [overlayApi])
+
   const handleClose = useCallback(() => {
-    const overlayApi = (window as unknown as { overlay?: { hide: () => void } }).overlay
     overlayApi?.hide()
-  }, [])
+  }, [overlayApi])
 
   const handleDoubleClick = useCallback(() => {
-    const overlayApi = (window as unknown as { overlay?: { openMain: () => void } }).overlay
     overlayApi?.openMain()
-  }, [])
+  }, [overlayApi])
 
   return (
-    <div className="overlay-container" onDoubleClick={handleDoubleClick}>
+    <div
+      className="overlay-container"
+      onMouseDown={handleMouseDown}
+      onDoubleClick={handleDoubleClick}
+    >
       {/* Drag handle area */}
-      <div className="overlay-drag-handle" />
+      <div className="overlay-drag-handle">
+        <div className="drag-handle-dots">
+          <span /><span /><span />
+        </div>
+      </div>
 
       {/* Close button */}
       <button className="overlay-close-btn" onClick={handleClose} title="Hide overlay">

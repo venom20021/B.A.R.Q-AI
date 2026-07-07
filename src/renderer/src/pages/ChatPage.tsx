@@ -33,44 +33,29 @@ export function ChatPage(): JSX.Element {
     setSending(true)
 
     try {
-      const resp = await window.barq?.python.request('/voice/command', {
+      // Try AI chat first for natural conversation
+      const resp = await window.barq?.python.request('/voice/chat/text', {
         method: 'POST',
-        body: JSON.stringify({ command: text }),
+        body: JSON.stringify({ message: text, language: 'en' }),
         headers: { 'Content-Type': 'application/json' },
       })
       if (resp && typeof resp === 'object') {
-        const data = resp as { action?: string; target?: string; status?: string }
+        const data = resp as { text?: string; action?: string }
+        const responseText = data.text || 'Command processed.'
 
-        // Dispatch custom event for global listeners (TransientDiagnostics, etc.)
-        if (data.action) {
+        // Dispatch custom event for known command actions
+        if (data.action && data.action !== 'conversation') {
           window.dispatchEvent(
             new CustomEvent('barq:voice-command', { detail: { action: data.action } })
           )
         }
 
-        const response = data.action === 'navigate'
-          ? `Navigating to ${data.target || '/dashboard'}`
-          : data.action === 'scan_jobs'
-            ? 'Triggered job scan'
-            : data.action === 'check_trends'
-              ? 'Checking social trends'
-              : data.action === 'show_diagnostics'
-                ? 'Showing system diagnostics'
-              : data.action === 'overlay_show'
-                ? 'Showing desktop overlay'
-              : data.action === 'overlay_hide'
-                ? 'Hiding desktop overlay'
-              : data.action === 'overlay_toggle'
-                ? 'Toggled desktop overlay'
-              : data.status === 'triggered'
-                ? `Action "${data.action}" triggered`
-                : `Command processed: ${data.action || data.status || 'ok'}`
-        setMessages((prev) => [...prev, { role: 'barq', text: response }])
+        setMessages((prev) => [...prev, { role: 'barq', text: responseText }])
       } else {
-        setMessages((prev) => [...prev, { role: 'barq', text: 'Command processed' }])
+        setMessages((prev) => [...prev, { role: 'barq', text: 'Command processed.' }])
       }
     } catch {
-      setMessages((prev) => [...prev, { role: 'barq', text: 'Failed to process command' }])
+      setMessages((prev) => [...prev, { role: 'barq', text: 'Failed to process command.' }])
     }
     setSending(false)
   }, [input])

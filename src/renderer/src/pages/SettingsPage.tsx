@@ -55,6 +55,8 @@ export function SettingsPage(): JSX.Element {
   const [soundSettingsLoading, setSoundSettingsLoading] = useState(false)
   const [wakeGreetingEnabled, setWakeGreetingEnabled] = useState(true)
   const [weatherCity, setWeatherCity] = useState('Lucknow')
+  const [vadSilenceTimeout, setVadSilenceTimeout] = useState(0.4)
+  const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
 
   // Notification settings
   const [notifSettings, setNotifSettings] = useState({
@@ -137,6 +139,32 @@ export function SettingsPage(): JSX.Element {
       await window.barq?.python.request('/voice/weather-city', {
         method: 'POST',
         body: JSON.stringify({ city }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch { /* ignore */ }
+  }, [])
+
+  const fetchVadSettings = useCallback(async () => {
+    setVadSettingsLoading(true)
+    try {
+      const resp = await window.barq?.python.request('/voice/vad-settings')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (typeof data.silence_timeout === 'number') {
+          setVadSilenceTimeout(data.silence_timeout)
+        }
+      }
+    } catch { /* ignore */ }
+    setVadSettingsLoading(false)
+  }, [])
+
+  const handleVadTimeoutChange = useCallback(async (value: number) => {
+    const clamped = Math.round(Math.max(0.1, Math.min(3.0, value)) * 100) / 100
+    setVadSilenceTimeout(clamped)
+    try {
+      await window.barq?.python.request('/voice/vad-settings', {
+        method: 'POST',
+        body: JSON.stringify({ silence_timeout: clamped }),
         headers: { 'Content-Type': 'application/json' },
       })
     } catch { /* ignore */ }
@@ -339,7 +367,8 @@ export function SettingsPage(): JSX.Element {
     void fetchSettings()
     void fetchSoundSettings()
     void fetchWhitelistRules()
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules])
+    void fetchVadSettings()
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -475,6 +504,39 @@ export function SettingsPage(): JSX.Element {
                           ? 'bg-red-500/20 text-red-300'
                           : 'text-dim-500'
                       }`}>High</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div className="flex-1">
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">VAD Endpoint Sensitivity</p>
+                    <p className="text-xs font-exo text-dim-400 mt-1">
+                      {vadSilenceTimeout < 0.3 && 'Aggressive — cuts quickly (best for fast responses, may clip)'}
+                      {vadSilenceTimeout >= 0.3 && vadSilenceTimeout < 0.6 && 'Balanced — recommended (300-500ms range)'}
+                      {vadSilenceTimeout >= 0.6 && 'Lax — waits longer before ending utterance (catches trailing words)'}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 w-48">
+                    <div className="flex items-center gap-3 w-full">
+                      <span className="text-[10px] font-exo text-dim-500 w-auto">Fast</span>
+                      <input
+                        type="range"
+                        min="10"
+                        max="300"
+                        value={Math.round(vadSilenceTimeout * 100)}
+                        onChange={(e) => handleVadTimeoutChange(Number(e.target.value) / 100)}
+                        disabled={vadSettingsLoading}
+                        className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-40"
+                        style={{
+                          background: `linear-gradient(to right, #06b6d4 0%, #06b6d4 ${((vadSilenceTimeout - 0.1) / 2.9) * 100}%, #1e293b ${((vadSilenceTimeout - 0.1) / 2.9) * 100}%)`,
+                        }}
+                      />
+                      <span className="text-[10px] font-exo text-dim-500 w-auto">Lax</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] font-exo">
+                      <span className="text-dim-500">{vadSilenceTimeout.toFixed(2)}s silence</span>
+                      {vadSettingsLoading && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
                     </div>
                   </div>
                 </div>

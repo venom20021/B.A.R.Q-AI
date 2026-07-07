@@ -6,11 +6,13 @@ Supports bilingual English + Hindi wake words.
 """
 
 import array
+import io
 import json
 import math
 import re
 import struct
 import threading
+import wave
 from typing import Callable, Optional
 import urllib.request
 import urllib.error
@@ -133,18 +135,19 @@ def _play_wav(wav_bytes: bytes, label: str = "sound"):
     """Play WAV bytes through speakers in a daemon thread."""
     def _play():
         try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            stream = p.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=_REPLY_SOUND_SAMPLE_RATE,
-                output=True,
-            )
-            stream.write(wav_bytes[44:])
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
+            import sounddevice as sd
+            import numpy as np
+
+            from .audio_device import resolve_output_device
+            from config import get_settings as _cfg
+            output_device = resolve_output_device(_cfg().audio_output_device)
+
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+                rate = wf.getframerate()
+
+            sd.play(data, rate, device=output_device)
+            sd.wait()
             print(f"[Audio] {label} played")
         except Exception as e:
             if "No default output device" not in str(e):
@@ -464,23 +467,28 @@ class WakeWordDetector:
 
     def _listen_loop(self):
         """Continuously listen to microphone and detect wake words in the active language."""
-        import pyaudio
+        import sounddevice as sd
+        import numpy as np
         import vosk
 
-        p = pyaudio.PyAudio()
+        # Resolve input device from config
+        from .audio_device import resolve_input_device
+        device = resolve_input_device(self.settings.audio_input_device)
+
+        stream = sd.InputStream(
+            device=device,
+            samplerate=16000,
+            channels=1,
+            dtype='int16',
+            blocksize=4000,
+        )
         try:
-            stream = p.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=16000,
-                input=True,
-                frames_per_buffer=4000,
-            )
-            print("[WakeWord] Audio stream opened")
+            stream.start()
+            dev_info = f" (device: {device})" if device is not None else ""
+            print(f"[WakeWord] Audio stream opened{dev_info}")
         except Exception as e:
             print(f"[WakeWord] Failed to open audio stream: {e}")
             self._running = False
-            p.terminate()
             return
 
         rec = vosk.KaldiRecognizer(self.model, 16000)
@@ -488,7 +496,8 @@ class WakeWordDetector:
 
         while self._running:
             try:
-                data = stream.read(4000, exception_on_overflow=False)
+                data, overflowed = stream.read(4000)
+                data_bytes = data.tobytes()
 
                 # Check if recognizer needs to be rebuilt (language switch)
                 if self._rec_needs_rebuild:
@@ -497,17 +506,14 @@ class WakeWordDetector:
                     self._rec_needs_rebuild = False
                     print(f"[WakeWord] Recognizer rebuilt for {self._language}")
 
-                # Compute RMS mic level
+                # Compute RMS mic level using numpy
                 try:
-                    raw = array.array('h', data)
-                    if len(raw) > 0:
-                        sum_sq = sum(s * s for s in raw)
-                        rms = math.sqrt(sum_sq / len(raw))
-                        self._last_mic_level = min(1.0, rms / 10000.0)
+                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    self._last_mic_level = min(1.0, rms / 10000.0)
                 except Exception:
                     self._last_mic_level = 0.0
 
-                if rec.AcceptWaveform(data):
+                if rec.AcceptWaveform(data_bytes):
                     result = json.loads(rec.Result())
                     text = result.get("text", "").lower().strip()
 
@@ -538,13 +544,12 @@ class WakeWordDetector:
 
                                 break
             except OSError as e:
-                if "Input overflowed" in str(e):
+                if "Input overflowed" in str(e) or str(e).startswith("Buffer") or str(e).startswith("Overflow"):
                     continue
                 print(f"[WakeWord] Stream error: {e}")
                 continue
             except Exception as e:
                 print(f"[WakeWord] Error: {e}")
 
-        stream.stop_stream()
+        stream.stop()
         stream.close()
-        p.terminate()

@@ -99,11 +99,10 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
         headers: { 'Content-Type': 'application/json' },
       })
       if (resp && typeof resp === 'object') {
-        const result = resp as { success: boolean; data?: { text?: string; audio_base64?: string } }
-        const data = result.data || {}
+        const result = resp as { text?: string; audio_base64?: string }
         return {
-          text: data.text || 'Command processed.',
-          audio_base64: data.audio_base64,
+          text: result.text || 'Command processed.',
+          audio_base64: result.audio_base64,
         }
       }
       return { text: 'Command processed.' }
