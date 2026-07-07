@@ -47,6 +47,7 @@ class BARQResponder:
         self.is_processing = False
         self._interrupt_requested = False  # set True to abort an active stream
         self.stt_text: str = ""  # latest interim STT transcript (for live display via WebSocket)
+        self.stt_confidence: float = 0.0  # confidence score of current/interim STT (0.0-1.0)
 
     # ── Non-streaming (legacy) respond ───────────────────────────────
 

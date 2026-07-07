@@ -266,57 +266,91 @@ async def compare_stocks(tickers: str):
 
 # ─── Weather ──────────────────────────────────────────────────────────────────
 
+# WMO weather code → human-readable description
+WMO_CODES: dict[int, str] = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
+}
+
+
 @router.get("/weather")
 async def get_weather(city: str):
-    """Get current weather for a city using OpenWeatherMap."""
+    """Get current weather for a city using Open-Meteo (free, no API key required)."""
     try:
         import httpx
 
-        from config import get_settings
-        settings = get_settings()
-        api_key = os_getenv("OPENWEATHER_API_KEY", "")
-
-        if not api_key:
-            return {"status": "unconfigured", "message": "OpenWeatherMap API key not set. Add OPENWEATHER_API_KEY to .env"}
-
         async with httpx.AsyncClient() as client:
-            # Get coordinates
+            # 1. Geocode the city name → lat/lon
             geo_resp = await client.get(
-                "https://api.openweathermap.org/geo/1.0/direct",
-                params={"q": city, "limit": 1, "appid": api_key},
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "en", "format": "json"},
+                timeout=10,
             )
             geo_data = geo_resp.json()
-            if not geo_data:
+            results = geo_data.get("results")
+            if not results:
                 raise HTTPException(status_code=404, detail=f"City not found: {city}")
 
-            lat, lon = geo_data[0]["lat"], geo_data[0]["lon"]
+            loc = results[0]
+            lat, lon = loc["latitude"], loc["longitude"]
+            city_name = loc.get("name", city)
+            country = loc.get("country", "")
 
-            # Get weather
+            # 2. Fetch current weather at those coordinates
             weather_resp = await client.get(
-                "https://api.openweathermap.org/data/2.5/weather",
-                params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,visibility",
+                },
+                timeout=10,
             )
             w = weather_resp.json()
+            current = w.get("current", {})
+
+            weather_code = current.get("weather_code", 0)
+            description = WMO_CODES.get(weather_code, f"Code {weather_code}")
 
             await analytics_dao.log_activity(
-                "web", "weather", f"Checked weather for {city}"
+                "web", "weather", f"Checked weather for {city_name}"
             )
             return {
-                "city": geo_data[0].get("name", city),
-                "country": geo_data[0].get("country", ""),
-                "temperature_c": w["main"]["temp"],
-                "feels_like_c": w["main"]["feels_like"],
-                "humidity": w["main"]["humidity"],
-                "pressure": w["main"]["pressure"],
-                "description": w["weather"][0]["description"],
-                "icon": w["weather"][0]["icon"],
-                "wind_speed": w["wind"]["speed"],
-                "visibility": w.get("visibility", 0),
-                "sunrise": w["sys"]["sunrise"],
-                "sunset": w["sys"]["sunset"],
+                "city": city_name,
+                "country": country,
+                "temperature_c": current.get("temperature_2m", 0),
+                "feels_like_c": current.get("apparent_temperature", 0),
+                "humidity": current.get("relative_humidity_2m", 0),
+                "description": description,
+                "wind_speed": current.get("wind_speed_10m", 0),
+                "visibility": current.get("visibility", 0),
             }
-    except ImportError:
-        return {"status": "unavailable", "message": "httpx not installed"}
     except HTTPException:
         raise
     except Exception as e:

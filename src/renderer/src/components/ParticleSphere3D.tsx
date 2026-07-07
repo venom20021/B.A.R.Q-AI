@@ -1,5 +1,6 @@
-import { useRef, useMemo, useCallback, useEffect, Component, type MutableRefObject } from 'react'
+import { useRef, useMemo, useCallback, useEffect, useState, Component, type MutableRefObject } from 'react'
 import type { ReactNode } from 'react'
+import { motion } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
 import type { Group, Mesh, Points, MeshBasicMaterial } from 'three'
 // Import specific Three.js values instead of namespace import to avoid bundling issues
@@ -37,42 +38,53 @@ export type AIState = 'idle' | 'listening' | 'thinking' | 'responding'
 
 // ─── Voice Reactivity Config ───────────────────────────────────────────
 
-const IDLE_ROTATION_SPEED = 0.08
-const SPEAKING_ROTATION_SPEED = 0.25
-const THINKING_ROTATION_SPEED = 0.45
-const IDLE_WOBBLE_SPEED = 0.025
-const SPEAKING_WOBBLE_SPEED = 0.05
-const IDLE_WOBBLE_AMPLITUDE = 0.08
-const SPEAKING_WOBBLE_AMPLITUDE = 0.18
-const IDLE_PULSE_AMPLITUDE = 0.01
-const SPEAKING_PULSE_AMPLITUDE = 0.035
-const IDLE_PULSE_FREQ = 0.5
-const SPEAKING_PULSE_FREQ = 1.2
-const RING_IDLE_SPEED = 0.04
-const RING_SPEAKING_SPEED = 0.12
+// ─── Exported constants for testing — state behavior values ──────────
+// These are exported so unit tests can verify the exact numeric values
+// that govern each AI state's visual behavior (rotation speed, scale,
+// particle colors, ring opacity, pulse amplitude, etc.)
 
-// ─── AI State Color Targets ─────────────────────────────────────────────
+export const IDLE_ROTATION_SPEED = 0.08
+export const SPEAKING_ROTATION_SPEED = 0.25
+export const THINKING_ROTATION_SPEED = 0.6
+/** Scale factor for thinking state — sphere collapses to 82% of normal size */
+export const THINKING_SCALE_FACTOR = 0.82
+export const IDLE_WOBBLE_SPEED = 0.025
+export const SPEAKING_WOBBLE_SPEED = 0.05
+export const IDLE_WOBBLE_AMPLITUDE = 0.08
+export const SPEAKING_WOBBLE_AMPLITUDE = 0.18
+export const IDLE_PULSE_AMPLITUDE = 0.01
+export const SPEAKING_PULSE_AMPLITUDE = 0.035
+export const IDLE_PULSE_FREQ = 0.5
+export const SPEAKING_PULSE_FREQ = 1.2
+export const RING_IDLE_SPEED = 0.04
+export const RING_SPEAKING_SPEED = 0.12
 
-const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = {
+// Per-state color targets — used by the particle field to lerp between
+export const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = {
   idle: [5, 1.5, 2],        // Purple/coral
   listening: [0, 4, 12],     // Cyan/deep blue
   thinking: [8, 6, 0],       // Amber/yellow
   responding: [0, 10, 2],    // Neon green
 }
 
-const STATE_OUTER_BOOST: Record<AIState, [number, number, number]> = {
+// Per-state ring opacity
+export const STATE_RING_OPACITY: Record<AIState, number> = {
+  idle: 0.2,
+  listening: 0.35,
+  thinking: 0.5,
+  responding: 0.4,
+}
+
+export const COLOR_LERP_RATE = 0.03
+
+// Per-state outer particle color boost
+export const STATE_OUTER_BOOST: Record<AIState, [number, number, number]> = {
   idle: [0.25, 0.0, 0.15],
   listening: [0.0, 0.3, 0.3],
   thinking: [0.15, 0.2, 0.0],
   responding: [0.0, 0.35, 0.15],
 }
 
-const STATE_RING_OPACITY: Record<AIState, number> = {
-  idle: 0.2,
-  listening: 0.35,
-  thinking: 0.5,
-  responding: 0.4,
-}
 
 // ─── Mouse Tracking Config ─────────────────────────────────────────────
 
@@ -85,9 +97,7 @@ const PARALLAX_STRENGTH = 0.25  // max X/Y shift for surface particles (units)
 const PARALLAX_DEPTH_MIN = 0.75 // innermost particle radius fraction
 const PARALLAX_DEPTH_MAX = 1.0  // outermost particle radius fraction
 
-// ─── Color Transition Config ────────────────────────────────────────────
-
-const COLOR_LERP_RATE = 0.03    // per-frame lerp factor for theme color transitions (~2.5s to converge)
+    // per-frame lerp factor for theme color transitions (~2.5s to converge)
 
 // ─── Wake Animation Config (mount expansion) ────────────────────────────
 
@@ -350,10 +360,10 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
         break
       case 'thinking':
         // Tighter spin: faster rotation, more collapsed
-        rotSpeed = THINKING_ROTATION_SPEED * 1.35
+        rotSpeed = THINKING_ROTATION_SPEED
         pulseAmp = IDLE_PULSE_AMPLITUDE * 0.5
         pulseFreq = IDLE_PULSE_FREQ * 2
-        scaleFactor = 0.82
+        scaleFactor = THINKING_SCALE_FACTOR
         break
       case 'responding':
         rotSpeed = SPEAKING_ROTATION_SPEED * 0.7
@@ -796,12 +806,48 @@ function PerspectiveGrid({ activeTheme }: { activeTheme: ThemeColor }): JSX.Elem
   )
 }
 
+// ─── AI State Tooltip ─────────────────────────────────────────────────
+
+const STATE_LABELS: Record<string, string> = {
+  idle: 'Idle',
+  listening: 'Listening',
+  thinking: 'Thinking',
+  responding: 'Responding',
+  muted: 'Muted',
+}
+
+const STATE_BADGE_COLORS: Record<string, string> = {
+  idle: 'border-purple-500/40 text-purple-300 bg-purple-500/10',
+  listening: 'border-cyan-500/40 text-cyan-300 bg-cyan-500/10',
+  thinking: 'border-amber-500/40 text-amber-300 bg-amber-500/10',
+  responding: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10',
+  muted: 'border-red-500/40 text-red-300 bg-red-500/10',
+}
+
+const STATE_DOT_COLORS: Record<string, string> = {
+  idle: 'bg-purple-400',
+  listening: 'bg-cyan-400',
+  thinking: 'bg-amber-400',
+  responding: 'bg-emerald-400',
+  muted: 'bg-red-400',
+}
+
+const STATE_DESCRIPTIONS: Record<string, string> = {
+  idle: 'Awaiting input',
+  listening: 'Listening for speech',
+  thinking: 'Processing response',
+  responding: 'Speaking response',
+  muted: 'Microphone muted',
+}
+
 // ─── Main Export ────────────────────────────────────────────────────────
 
 export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audioAmplitude = 0, showGrid = false, micMuted = false, sttText = '' }: { activeTheme?: ThemeColor; aiState?: AIState; audioAmplitude?: number; showGrid?: boolean; micMuted?: boolean; sttText?: string }): JSX.Element {
   // Track mouse position normalized to [-1, 1] relative to canvas center
   const mouseTarget = useRef({ x: 0, y: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
+  const [isHovered, setIsHovered] = useState(false)
+
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -810,11 +856,23 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
     mouseTarget.current.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
   }, [])
 
+  const handleMouseEnter = useCallback(() => {
+    setIsHovered(true)
+  }, [])
+
   const handleMouseLeave = useCallback(() => {
     // Slowly spring back to center
     mouseTarget.current.x = 0
     mouseTarget.current.y = 0
+    setIsHovered(false)
   }, [])
+
+  // Derive effective state for display (muted/idle → muted)
+  const effectiveState = aiState === 'idle' && micMuted ? 'muted' : aiState
+  const stateLabel = STATE_LABELS[effectiveState] ?? 'Idle'
+  const stateBadgeColor = STATE_BADGE_COLORS[effectiveState] ?? STATE_BADGE_COLORS.idle
+  const stateDotColor = STATE_DOT_COLORS[effectiveState] ?? STATE_DOT_COLORS.idle
+  const stateDescription = STATE_DESCRIPTIONS[effectiveState] ?? STATE_DESCRIPTIONS.idle
 
   // CSS glow animation — replaces WebGL Bloom which causes context loss on Electron/macOS
   const theme = THEMES[activeTheme]
@@ -834,34 +892,56 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
   }, [])
 
   return (
-    <div
-      ref={containerRef}
-      className="w-[420px] h-[420px] rounded-full"
-      style={{
-        maskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
-        WebkitMaskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
-      }}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-    >
-      <CanvasErrorBoundary>
-        <Canvas
-          camera={{ position: [0, 0, 6.0], fov: 50 }}
-          dpr={[1, 1.5]}
-          gl={{
-            antialias: true,
-            alpha: false,
-            powerPreference: 'high-performance',
-            failIfMajorPerformanceCaveat: false,
-          }}
-          onCreated={handleCanvasCreated}
-          style={{ width: '100%', height: '100%' }}
-        >
-          <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} />
-          <Rings activeTheme={activeTheme} aiState={aiState} micMuted={micMuted} />
-          {showGrid && <PerspectiveGrid activeTheme={activeTheme} />}
-        </Canvas>
-      </CanvasErrorBoundary>
+    <div className="relative flex items-center justify-center">
+      {/* Hover tooltip — appears above the sphere */}
+      <motion.div
+        initial={{ opacity: 0, y: 4, scale: 0.92 }}
+        animate={isHovered ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 4, scale: 0.92 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className={`absolute -top-8 left-1/2 -translate-x-1/2 z-50 pointer-events-none
+          flex items-center gap-2 px-3 py-1.5 rounded-lg border backdrop-blur-sm
+          ${stateBadgeColor}`}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${stateDotColor} shadow-[0_0_6px_currentColor]`} />
+        <span className="text-[10px] font-mono font-bold uppercase tracking-[0.15em]">
+          {stateLabel}
+        </span>
+        <span className="text-[8px] font-mono opacity-60">
+          {stateDescription}
+        </span>
+      </motion.div>
+
+      <div
+        ref={containerRef}
+        data-testid="sphere-container"
+        className="w-[420px] h-[420px] rounded-full"
+        style={{
+          maskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
+          WebkitMaskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
+        }}
+        onMouseMove={handleMouseMove}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <CanvasErrorBoundary>
+          <Canvas
+            camera={{ position: [0, 0, 6.0], fov: 50 }}
+            dpr={[1, 1.5]}
+            gl={{
+              antialias: true,
+              alpha: false,
+              powerPreference: 'high-performance',
+              failIfMajorPerformanceCaveat: false,
+            }}
+            onCreated={handleCanvasCreated}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} />
+            <Rings activeTheme={activeTheme} aiState={aiState} micMuted={micMuted} />
+            {showGrid && <PerspectiveGrid activeTheme={activeTheme} />}
+          </Canvas>
+        </CanvasErrorBoundary>
+      </div>
     </div>
   )
 }

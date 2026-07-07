@@ -17,7 +17,7 @@ This provides a Gemini/Alexa-like experience:
 import asyncio
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from ai.responder import BARQResponder
 from voice.speech import SpeechProcessor
@@ -38,13 +38,16 @@ class ConversationListener:
         self,
         stt: SpeechProcessor,
         responder: BARQResponder,
+        on_stop: Optional[Callable] = None,
     ):
         self.stt = stt
         self.responder = responder
         self.interrupt_handler = InterruptHandler()
+        self.on_stop = on_stop  # callback invoked when conversation stops (e.g. to resume wake detector)
         self._conversation_active = False
         self._loop_task: Optional[asyncio.Task] = None
         self.vad_silence_timeout: float = VAD_SILENCE_TIMEOUT  # overridable per-instance
+        self._managed_loop: Optional[asyncio.AbstractEventLoop] = None  # event loop to stop on conversation end
         self._exit_phrases = [
             "goodbye", "bye bye", "that's all", "we're done",
             "end conversation", "stop conversation", "never mind",
@@ -65,7 +68,14 @@ class ConversationListener:
         self._loop_task = asyncio.create_task(self._conversation_loop())
 
     async def stop_conversation(self):
-        """End the conversation loop and return to wake-word standby."""
+        """End the conversation loop and return to wake-word standby.
+
+        Calls ``self.on_stop`` (if set) so the wake word detector can resume
+        listening after the conversation ends.
+
+        Also stops the running asyncio event loop so that ``loop.run_forever()``
+        (used in the wake word callback) can exit cleanly.
+        """
         self._conversation_active = False
         if self._loop_task:
             self._loop_task.cancel()
@@ -75,6 +85,25 @@ class ConversationListener:
                 pass
             self._loop_task = None
         self.responder.conversation.end_session()
+
+        # Stop the managed event loop (set by the wake word callback) so that
+        # loop.run_forever() in the callback thread can exit cleanly.
+        # This must happen BEFORE on_stop so the event loop is fully stopped
+        # before the wake detector reopens its mic stream.
+        if self._managed_loop is not None and self._managed_loop.is_running():
+            try:
+                self._managed_loop.stop()
+                print("[Conversation] Managed event loop stopped")
+            except RuntimeError:
+                pass
+
+        # Notify caller that conversation has stopped (e.g. resume wake detector)
+        if self.on_stop:
+            try:
+                self.on_stop()
+            except Exception as e:
+                print(f"[Conversation] on_stop callback error: {e}")
+
         print("[Conversation] Conversation mode ended — back to wake word standby")
 
     async def trigger_conversation_turn(self, text: str) -> dict:
@@ -117,7 +146,8 @@ class ConversationListener:
                     ):
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]
-                            print(f"[Conversation] STT interim: '{result['text']}'")
+                            self.responder.stt_confidence = result.get("confidence", 0.0)
+                            print(f"[Conversation] STT interim: '{result['text']}' (conf: {result.get('confidence', 0.0):.2%})")
                         elif result["type"] == "final":
                             text = result["text"] if result["text"].strip() else None
                             self.responder.stt_text = ""  # clear after final
@@ -125,6 +155,7 @@ class ConversationListener:
                     print(f"[Conversation] STT streaming error: {e}")
                     text = None
                     self.responder.stt_text = ""
+                    self.responder.stt_confidence = 0.0
 
                 if not self._conversation_active:
                     break
@@ -183,6 +214,10 @@ class ConversationListener:
 
                     if interrupted:
                         print("[Conversation] Barge-in — flushing LLM & restarting listen")
+                        # Small delay to let PortAudio release the barge-in stream handle
+                        # before the STT stream opens on the next iteration.
+                        # Prevents "Device busy" / resource contention on Windows.
+                        await asyncio.sleep(0.5)
                         continue
 
                 except Exception as e:

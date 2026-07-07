@@ -25,6 +25,7 @@ wake_word_detector: WakeWordDetector | None = None
 speech_processor = SpeechProcessor()
 responder = BARQResponder()
 conversation_listener = ConversationListener(stt=speech_processor, responder=responder)
+# on_stop is set after _on_conversation_stopped is defined (below)
 
 # Auto-start flag — set to True after first start
 _auto_started = False
@@ -404,16 +405,48 @@ async def _speak_wake_greeting():
     await conversation_listener.start_conversation()
 
 
+def _on_conversation_stopped():
+    """Callback invoked when the conversation loop ends.
+
+    Resumes the wake word detector so the user can trigger a new conversation
+    by saying the wake word again.
+    """
+    global wake_word_detector
+    if wake_word_detector is not None:
+        wake_word_detector.resume()
+        print("[Voice] Wake word detector resumed after conversation end")
+    else:
+        print("[Voice] No wake word detector to resume")
+
+# Wire up the callback now that the function is defined
+conversation_listener.on_stop = _on_conversation_stopped
+
 def _on_wake_word_callback():
     """Callback fired when wake word is detected by the background listener.
-    If wake greeting is enabled, speaks a greeting with system/job/weather/stocks/news info,
-    then starts conversation mode (if hands-free is also enabled).
-    If greeting is disabled, falls through to conversation mode directly."""
+
+    Immediately pauses the wake word detector to release the microphone stream,
+    then speaks a greeting with system/job/weather/stocks/news info (if enabled),
+    and starts conversation mode (if hands-free is also enabled).
+
+    When the conversation ends, ``_on_conversation_stopped`` is called which
+    resumes the wake word detector so the user can trigger a new conversation.
+    """
     global _hands_free_mode
     global _wake_greeting_enabled
+
+    # ── Step 1: Immediately pause the wake word detector to free the mic ──
+    global wake_word_detector
+    if wake_word_detector is not None:
+        wake_word_detector.pause()
+        print("[Voice] Wake word detector paused — microphone released")
+    else:
+        print("[Voice] No wake word detector to pause")
+
     if not _wake_greeting_enabled:
         if not _hands_free_mode:
             print("[Voice] Hands-free mode disabled — skipping wake greeting")
+            # We still need to resume the detector since we paused it
+            _on_conversation_stopped()
             return
         print("[Voice] Wake greeting disabled — skipping greeting, starting conversation")
         try:
@@ -421,12 +454,19 @@ def _on_wake_word_callback():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(conversation_listener.start_conversation())
+            # Keep the loop alive for conversation mode
+            if conversation_listener.is_active:
+                conversation_listener._managed_loop = loop
+                loop.run_forever()
+                conversation_listener._managed_loop = None
             loop.close()
         except Exception as e:
             print(f"[Voice] Conversation start error: {e}")
         return
     if not _hands_free_mode:
         print("[Voice] Hands-free mode disabled — skipping wake greeting")
+        # Resume the detector since we paused it but aren't starting conversation
+        _on_conversation_stopped()
         return
     print("[Voice] Wake word detected — speaking greeting and starting conversation")
     try:
@@ -434,6 +474,11 @@ def _on_wake_word_callback():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_speak_wake_greeting())
+        # Keep the loop alive so the conversation loop task can continue
+        if conversation_listener.is_active:
+            conversation_listener._managed_loop = loop
+            loop.run_forever()
+            conversation_listener._managed_loop = None
         loop.close()
     except Exception as e:
         print(f"[Voice] Wake greeting error: {e}")
@@ -1638,6 +1683,7 @@ async def voice_status_ws(websocket: WebSocket):
                 "conversation_turns": responder.conversation.turn_count,
                 "mic_level": round(mic_level, 4),
                 "stt_text": getattr(responder, 'stt_text', ''),
+                "stt_confidence": getattr(responder, 'stt_confidence', 0.0),
             })
             await asyncio.sleep(0.1)
     except WebSocketDisconnect:

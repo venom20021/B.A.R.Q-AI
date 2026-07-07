@@ -4,8 +4,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('barq', {
   // Python sidecar communication
   python: {
-    request: (endpoint: string, data?: unknown) =>
-      ipcRenderer.invoke('python:request', endpoint, data),
+    request: async (endpoint: string, data?: unknown) => {
+      const result = await ipcRenderer.invoke('python:request', endpoint, data) as { success?: boolean; data?: unknown; error?: string }
+      // Unwrap the { success, data, error } envelope from the IPC handler
+      if (result && typeof result === 'object' && 'success' in result) {
+        if (result.success) return result.data
+        throw new Error(result.error || 'Python request failed')
+      }
+      return result
+    },
     health: () => ipcRenderer.invoke('python:health')
   },
 

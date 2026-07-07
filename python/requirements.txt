@@ -73,6 +73,9 @@ weasyprint>=62.3
 reportlab>=4.2.0
 markdown>=3.7.0
 
+# System Monitoring
+psutil>=7.0.0
+
 # Utilities
 python-dotenv>=1.0.1
 rich>=13.8.0

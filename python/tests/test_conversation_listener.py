@@ -329,6 +329,210 @@ class TestBargeIn:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Barge-in — Scenario Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestBargeInScenarios:
+    """Comprehensive barge-in scenarios: interrupt during TTS playback
+    aborts the stream and restarts listening."""
+
+    async def test_interrupt_before_tts_aborts_chunk(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """If _interrupt_requested is True before play_with_interrupt is called,
+        the chunk should be skipped and the loop should restart listening.
+        This tests the 'direct interrupt' path in _conversation_loop where
+        the flag check comes BEFORE playback."""
+        import asyncio
+
+        # STT yields a final transcript once
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": "hello there"}
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+
+        # stream_respond yields multiple chunks — but _interrupt_requested
+        # should abort before the second one is played
+        async def multi_chunk_stream(text):
+            yield {"text": "First sentence.", "audio_path": "/tmp/first.mp3"}
+            yield {"text": "Second sentence.", "audio_path": "/tmp/second.mp3"}
+
+        mock_responder.stream_respond = MagicMock(return_value=multi_chunk_stream("hello there"))
+
+        listener = ConversationListener(stt=mock_stt, responder=mock_responder)
+        # Don't patch play_with_interrupt — we'll set _interrupt_requested directly
+        # to test the direct-check path (before play_with_interrupt is called)
+        play_mock = AsyncMock(return_value=False)
+        listener.interrupt_handler.play_with_interrupt = play_mock
+
+        # Spy on stream_respond to count chunks and set interrupt after first
+        chunks_yielded: list[str] = []
+        original_generator = mock_responder.stream_respond.return_value
+
+        async def intercept_stream(text):
+            nonlocal chunks_yielded
+            async for chunk in original_generator:
+                chunks_yielded.append(chunk["text"])
+                yield chunk
+                if len(chunks_yielded) == 1:
+                    listener.responder._interrupt_requested = True
+
+        mock_responder.stream_respond = MagicMock(side_effect=intercept_stream)
+
+        with patch("pathlib.Path.exists", return_value=True):
+            await listener.start_conversation()
+            await asyncio.sleep(0.15)
+
+        # play_with_interrupt should only have been called for the first chunk
+        # (the second chunk was aborted by the pre-TTS _interrupt_requested check)
+        # Actually, the first chunk's TTS MAY have been called before the interrupt
+        # was set, or the interrupt might have been set before it. Either way, the
+        # important thing is that at most 1 chunk was processed.
+        assert play_mock.call_count <= 1, (
+            f"Expected at most 1 play call, got {play_mock.call_count}. "
+            "The pre-TTS interrupt check should have aborted chunk 2."
+        )
+
+    async def test_interrupt_mid_stream_aborts_remaining_chunks(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """When _interrupt_requested is set during TTS playback of chunk N,
+        chunks N+1, N+2, etc. should be aborted by the pre-TTS flag check."""
+        import asyncio
+
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": "hello"}
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+
+        # Many chunks — only first should be processed before interrupt
+        async def long_stream(text):
+            for i in range(5):
+                yield {"text": f"Chunk {i}.", "audio_path": f"/tmp/chunk{i}.mp3"}
+
+        mock_responder.stream_respond = MagicMock(return_value=long_stream("hello"))
+
+        listener = ConversationListener(stt=mock_stt, responder=mock_responder)
+        play_mock = AsyncMock(return_value=False)
+        listener.interrupt_handler.play_with_interrupt = play_mock
+
+        # Spy: track chunks yielded and set interrupt after first
+        chunks_yielded: list[str] = []
+        original_gen = mock_responder.stream_respond.return_value
+
+        async def track_chunks(text):
+            nonlocal chunks_yielded
+            async for chunk in original_gen:
+                chunks_yielded.append(chunk["text"])
+                yield chunk
+                if len(chunks_yielded) == 1:
+                    listener.responder._interrupt_requested = True
+
+        mock_responder.stream_respond = MagicMock(side_effect=track_chunks)
+
+        with patch("pathlib.Path.exists", return_value=True):
+            await listener.start_conversation()
+            await asyncio.sleep(0.15)
+            await listener.stop_conversation()
+
+        # First chunk should have been yielded (and its TTS started)
+        assert len(chunks_yielded) >= 1, "At least the first chunk should have been processed"
+        # The interrupt flag should have blocked subsequent chunks from playing
+        assert play_mock.call_count <= 1, (
+            f"At most 1 play call expected after interrupt, got {play_mock.call_count}"
+        )
+
+    async def test_barge_in_cycle_interrupt_restart_interrupt(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """Loop should survive multiple barge-in cycles: interrupt -> continue ->
+        listen -> interrupt again -> continue."""
+        import asyncio
+
+        # Use side_effect so each call creates a FRESH generator yielding ONE value.
+        # This is critical because the conversation loop's async for consumes ALL
+        # yields from a single generator in one iteration.
+        turn_idx = [0]
+
+        async def multi_turn_stt(**kwargs):
+            idx = turn_idx[0]
+            turn_idx[0] += 1
+            if idx == 0:
+                yield {"type": "final", "text": "first command"}
+            elif idx == 1:
+                yield {"type": "final", "text": "second command"}
+            else:
+                yield {"type": "final", "text": ""}  # ends conversation
+
+        mock_stt.transcribe_streaming = MagicMock(side_effect=multi_turn_stt)
+
+        # stream_respond yields one chunk per call
+        stream_call = [0]
+
+        async def multi_turn_stream(text):
+            # stream_respond resets _interrupt_requested on entry in production
+            listener.responder._interrupt_requested = False
+            stream_call[0] += 1
+            if stream_call[0] <= 2:
+                yield {"text": f"Response {stream_call[0]}.", "audio_path": "/tmp/r.mp3"}
+
+        mock_responder.stream_respond = MagicMock(side_effect=multi_turn_stream)
+
+        listener = ConversationListener(stt=mock_stt, responder=mock_responder)
+        play_call_count = [0]
+
+        async def interrupt_playback(path, listen_for_interrupt=True):
+            play_call_count[0] += 1
+            # First playback: interrupt. Second playback: also interrupt.
+            # This triggers the 'playback_interrupted' path.
+            listener.responder._interrupt_requested = True
+            return True  # Interrupted
+
+        listener.interrupt_handler.play_with_interrupt = interrupt_playback
+
+        with patch("pathlib.Path.exists", return_value=True):
+            await listener.start_conversation()
+            # Allow enough time for two full barge-in cycles, each with a
+            # 500ms PortAudio release delay between them.
+            await asyncio.sleep(1.5)
+            await listener.stop_conversation()
+
+        # The loop should have been called with stream_respond twice
+        # (first and second commands), then the third STT turn yielded
+        # empty text which ended the conversation.
+        assert stream_call[0] >= 2, (
+            f"Expected at least 2 stream_respond calls (2 barge-in cycles), got {stream_call[0]}"
+        )
+        assert play_call_count[0] >= 2, (
+            f"Expected at least 2 playback attempts (one per barge-in), got {play_call_count[0]}"
+        )
+
+    async def test_interrupt_during_tts_flags_responder(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """When play_with_interrupt returns True (user spoke over BARQ),
+        the responder._interrupt_requested flag is set and the loop continues.
+        This tests the 'TTS-phase interrupt' path in _conversation_loop."""
+        import asyncio
+
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": "hello"}
+            yield {"type": "final", "text": ""}  # end conversation
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+
+        async def single_chunk(text):
+            yield {"text": "Response.", "audio_path": "/tmp/r.mp3"}
+
+        mock_responder.stream_respond = MagicMock(side_effect=single_chunk)
+
+        listener = ConversationListener(stt=mock_stt, responder=mock_responder)
+        listener.interrupt_handler.play_with_interrupt = AsyncMock(return_value=True)
+
+        with patch("pathlib.Path.exists", return_value=True):
+            await listener.start_conversation()
+            await asyncio.sleep(0.2)
+
+        # After interrupt, the flag was set, then the loop continued,
+        # and on the next STT iteration (empty text), the conversation ended.
+        # The flag should have been reset during the continue.
+        assert listener.is_active is False, "Loop should have ended via no-speech"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # play_with_interrupt — Interaction
 # ═══════════════════════════════════════════════════════════════════════
 

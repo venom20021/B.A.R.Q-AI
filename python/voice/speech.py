@@ -278,9 +278,9 @@ class SpeechProcessor:
                     and (chunk_count - last_interim_at) >= interim_chunks
                     and len(frames) > 1):
                     last_interim_at = chunk_count
-                    interim_text = await self._transcribe_frames(list(frames))
-                    if interim_text:
-                        yield {"type": "interim", "text": interim_text}
+                    result = await self._transcribe_frames(list(frames))
+                    if result["text"]:
+                        yield {"type": "interim", "text": result["text"], "confidence": result["confidence"]}
 
                 # Check for end-of-speech (VAD silence timeout)
                 if has_speech and silence_chunks >= silence_limit:
@@ -290,18 +290,24 @@ class SpeechProcessor:
 
             # ── Final transcription ───────────────────────────────
             if has_speech and frames:
-                final_text = await self._transcribe_frames(frames)
-                if final_text:
-                    yield {"type": "final", "text": final_text}
+                result = await self._transcribe_frames(frames)
+                if result["text"]:
+                    yield {"type": "final", "text": result["text"], "confidence": result["confidence"]}
                 else:
-                    yield {"type": "final", "text": ""}
+                    yield {"type": "final", "text": "", "confidence": 0.0}
 
         finally:
             stream.stop()
             stream.close()
 
-    async def _transcribe_frames(self, frames: list) -> str:
-        """Helper: save audio frames to a temp WAV and return Whisper transcription."""
+    async def _transcribe_frames(self, frames: list) -> dict:
+        """Helper: save audio frames to a temp WAV and return transcription + confidence.
+
+        Returns a dict with:
+            {"text": "...", "confidence": 0.0-1.0}
+
+        Confidence is derived from Whisper's avg_logprob per segment.
+        """
         import numpy as np
 
         audio_data = np.concatenate(frames) if len(frames) > 1 else frames[0]
@@ -315,7 +321,45 @@ class SpeechProcessor:
             temp_path = f.name
 
         try:
-            text = self.transcribe(temp_path)
-            return text
+            model = self._get_model()
+            result = model.transcribe(str(temp_path), language="en")
+            text = result["text"].strip()
+            confidence = self._compute_confidence(result.get("segments", []))
+            return {"text": text, "confidence": confidence}
         finally:
             Path(temp_path).unlink(missing_ok=True)
+
+    def _compute_confidence(self, segments: list[dict]) -> float:
+        """Compute a 0.0–1.0 confidence score from Whisper segments.
+
+        Uses avg_logprob (converted via exp() to average token probability)
+        and no_speech_prob as a penalty.  This gives a clean percentage-like
+        score where higher is more confident.
+        """
+        if not segments:
+            return 0.0
+
+        total_weight = 0.0
+        weighted_sum = 0.0
+
+        for seg in segments:
+            # avg_logprob is negative, exp() gives average token probability in [0, 1]
+            token_prob = float(seg.get("avg_logprob", -5.0))
+            token_prob = max(0.0, min(1.0, 2.71828 ** token_prob))  # clamp to [0,1]
+
+            # no_speech_prob: higher → more likely not speech → penalise
+            no_speech = float(seg.get("no_speech_prob", 0.0))
+
+            # Duration available in (start, end) — use as weight
+            duration = float(seg.get("end", 1.0)) - float(seg.get("start", 0.0))
+            if duration <= 0:
+                duration = 1.0
+
+            score = token_prob * (1.0 - no_speech)
+            weighted_sum += score * duration
+            total_weight += duration
+
+        if total_weight <= 0:
+            return 0.0
+
+        return round(min(1.0, weighted_sum / total_weight), 4)

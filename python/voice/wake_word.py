@@ -237,6 +237,9 @@ class WakeWordDetector:
         self._last_vosk_confidence = 0.0
         self._rec_needs_rebuild = False  # Signal to recreate recognizer in listen loop
 
+        # Pause/resume — used to release the mic stream before STT opens its own
+        self._paused = False
+
         # Build sensitivity phrases from the configured wake word
         self._sensitivity_phrases = self._build_sensitivity_phrases(self.settings.wake_word)
         self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
@@ -457,16 +460,45 @@ class WakeWordDetector:
         lang_label = "Hindi" if self._language == "hi" else "English"
         print(f"[WakeWord] Always-on listening started ({lang_label})")
 
+    def pause(self):
+        """Pause wake word detection and release the microphone stream.
+
+        The background thread stays alive but idle — no audio data is consumed.
+        Call ``resume()`` to reopen the stream and continue detection.
+
+        This is used by the wake word callback to free the microphone so the
+        STT engine (Whisper) can open its own stream without resource contention.
+        """
+        self._paused = True
+        print("[WakeWord] Pause requested — stream will be released on next loop iteration")
+
+    def resume(self):
+        """Resume wake word detection and reopen the microphone stream.
+
+        Reopens the ``sounddevice.InputStream`` that was closed during ``pause()``.
+        The recognizer is rebuilt to ensure a clean state.
+        """
+        self._paused = False
+        print("[WakeWord] Resume requested — stream will be reopened on next loop iteration")
+
     def stop(self):
         """Stop wake word detection."""
         self._running = False
+        self._paused = False  # unblock any idle spin loop
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
         print("[WakeWord] Stopped")
 
     def _listen_loop(self):
-        """Continuously listen to microphone and detect wake words in the active language."""
+        """Continuously listen to microphone and detect wake words in the active language.
+
+        Supports pause/resume: when ``pause()`` is called the underlying
+        ``sounddevice.InputStream`` is closed so other components (e.g. Whisper STT)
+        can open the microphone without resource contention.  When ``resume()`` is
+        called the stream is reopened and detection continues seamlessly.
+        """
+        import time as _time
         import sounddevice as sd
         import numpy as np
         import vosk
@@ -475,26 +507,49 @@ class WakeWordDetector:
         from .audio_device import resolve_input_device
         device = resolve_input_device(self.settings.audio_input_device)
 
-        stream = sd.InputStream(
-            device=device,
-            samplerate=16000,
-            channels=1,
-            dtype='int16',
-            blocksize=4000,
-        )
-        try:
-            stream.start()
-            dev_info = f" (device: {device})" if device is not None else ""
-            print(f"[WakeWord] Audio stream opened{dev_info}")
-        except Exception as e:
-            print(f"[WakeWord] Failed to open audio stream: {e}")
-            self._running = False
-            return
-
-        rec = vosk.KaldiRecognizer(self.model, 16000)
-        rec.SetWords(True)
+        stream: Optional[sd.InputStream] = None
+        rec: Optional[vosk.KaldiRecognizer] = None
 
         while self._running:
+            # ── Pause: release mic and idle-spin ────────────────────────
+            if self._paused:
+                if stream is not None:
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception:
+                        pass
+                    stream = None
+                    rec = None
+                    print("[WakeWord] Paused — microphone released")
+                while self._paused and self._running:
+                    _time.sleep(0.1)
+                if not self._running:
+                    break
+                print("[WakeWord] Resuming — will reopen stream")
+                continue
+
+            # ── Open stream on first run or after resume ────────────────
+            if stream is None:
+                stream = sd.InputStream(
+                    device=device,
+                    samplerate=16000,
+                    channels=1,
+                    dtype='int16',
+                    blocksize=4000,
+                )
+                try:
+                    stream.start()
+                    dev_info = f" (device: {device})" if device is not None else ""
+                    print(f"[WakeWord] Audio stream opened{dev_info}")
+                except Exception as e:
+                    print(f"[WakeWord] Failed to open audio stream: {e}")
+                    self._running = False
+                    break
+                rec = vosk.KaldiRecognizer(self.model, 16000)
+                rec.SetWords(True)
+
+            # ── Read and process audio chunk ────────────────────────────
             try:
                 data, overflowed = stream.read(4000)
                 data_bytes = data.tobytes()
@@ -551,5 +606,10 @@ class WakeWordDetector:
             except Exception as e:
                 print(f"[WakeWord] Error: {e}")
 
-        stream.stop()
-        stream.close()
+        # Cleanup stream on shutdown
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass

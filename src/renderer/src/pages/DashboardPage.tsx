@@ -347,8 +347,9 @@ function useWeatherData(): WeatherData | null {
         const resp = await window.barq?.python.request(`/web/weather?city=${encodeURIComponent(city)}`)
         if (!mounted) return
 
-        if (resp && typeof resp === 'object') {            const w = (resp as { success: boolean; data?: WeatherData & { status?: string } }).data
-            if (w && w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
+        if (resp && typeof resp === 'object') {
+            const w = resp as WeatherData & { status?: string }
+            if (w.temperature_c != null && w.status !== 'unconfigured' && w.status !== 'unavailable') {
               setData({
               city: w.city ?? city,
               country: w.country ?? '',
@@ -427,9 +428,8 @@ function useMultiCityWeather(): {
         cities.map(async (city) => {
           const resp = await window.barq?.python.request(`/web/weather?city=${encodeURIComponent(city)}`)
           if (resp && typeof resp === 'object') {
-            const result = resp as { success: boolean; data?: CityWeather & { status?: string } }
-            const w = result.data
-          if (w && w.status !== 'unconfigured' && w.status !== 'unavailable' && w.temperature_c != null) {
+            const w = resp as CityWeather & { status?: string }
+            if (w.temperature_c != null && w.status !== 'unconfigured' && w.status !== 'unavailable') {
             return { city, data: w }
             }
           }
@@ -782,6 +782,7 @@ export function DashboardPage(): JSX.Element {
   const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
   const [audioAmplitude, setAudioAmplitude] = useState(0)
   const [sttText, setSttText] = useState('')  // live interim transcription from STT
+  const [sttConfidence, setSttConfidence] = useState(0)  // confidence score 0.0-1.0 from STT
   const [activityFilter, setActivityFilter] = useState<'all' | 'weather' | 'chat' | 'voice' | 'system'>('all')
 
   const weather = useWeatherData()
@@ -803,15 +804,23 @@ export function DashboardPage(): JSX.Element {
   const { accent } = useTheme()
 
   // Toggle wake word detector on/off (mute/unmute)
+  // Optimistically toggles local state so the UI responds immediately,
+  // regardless of WebSocket timing. The next WS message will reconcile
+  // if the backend state doesn't match.
   const toggleDetector = useCallback(async () => {
+    const wasRunning = detectorRunning
+    // Optimistic toggle — instant UI response
+    setDetectorRunning(!detectorRunning)
     try {
-      if (detectorRunning) {
+      if (wasRunning) {
         await window.barq?.python.request('/voice/stop', { method: 'POST' })
       } else {
         await window.barq?.python.request('/voice/start', { method: 'POST' })
       }
     } catch (err) {
       console.error('[Voice] Failed to toggle detector:', err)
+      // Revert on failure
+      setDetectorRunning(wasRunning)
     }
   }, [detectorRunning])
 
@@ -865,6 +874,7 @@ export function DashboardPage(): JSX.Element {
             setDetectorRunning(data.is_listening ?? false)
             setAudioAmplitude(data.mic_level ?? 0)
             setSttText(data.stt_text ?? '')
+            setSttConfidence(data.stt_confidence ?? 0)
 
             // Derive AI state from backend status (order matters: most specific first)
             if (data.is_speaking) {
@@ -1100,8 +1110,21 @@ export function DashboardPage(): JSX.Element {
                     <span className="animate-ping absolute inset-0 rounded-full bg-cyan-400 opacity-40" />
                     <span className="relative rounded-full w-1.5 h-1.5 bg-cyan-400" />
                   </span>
-                  <span className="text-[11px] font-mono text-cyan-300/80 italic max-w-[280px] truncate" title={sttText}>
+                  <span className="text-[11px] font-mono text-cyan-300/80 italic max-w-[240px] truncate" title={sttText}>
                     &ldquo;{sttText}&rdquo;
+                  </span>
+                  {/* Confidence badge */}
+                  <span
+                    className={`text-[9px] font-mono font-bold tabular-nums ${
+                      sttConfidence >= 0.8
+                        ? 'text-emerald-400'
+                        : sttConfidence >= 0.5
+                        ? 'text-amber-400'
+                        : 'text-red-400'
+                    }`}
+                    title={`STT confidence: ${(sttConfidence * 100).toFixed(0)}%`}
+                  >
+                    {(sttConfidence * 100).toFixed(0)}%
                   </span>
                 </div>
               </motion.div>
