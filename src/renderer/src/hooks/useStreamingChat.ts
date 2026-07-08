@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 
 interface StreamingChatOptions {
   onToken?: (token: string) => void
+  onAudio?: (audioBase64: string) => void
   onComplete?: (fullText: string) => void
   onError?: (error: string) => void
 }
@@ -76,6 +77,8 @@ export function useStreamingChat(options: StreamingChatOptions = {}): StreamingC
                 accumulatedText += token
                 setFullText(accumulatedText)
                 options.onToken?.(token)
+              } else if (parsed.type === 'audio') {
+                options.onAudio?.(parsed.audio_base64 || '')
               } else if (parsed.type === 'error') {
                 options.onError?.(parsed.message || 'Stream error')
               }

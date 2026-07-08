@@ -36,7 +36,10 @@ class Settings(BaseSettings):
 
     # Job Search
     job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))
+    auto_match_interval_hours: int = int(os.getenv("AUTO_MATCH_INTERVAL_HOURS", "1"))
     match_threshold: float = float(os.getenv("MATCH_THRESHOLD", "0.7"))
+    match_threshold_high: float = float(os.getenv("MATCH_THRESHOLD_HIGH", "80"))
+    match_threshold_medium: float = float(os.getenv("MATCH_THRESHOLD_MEDIUM", "60"))
 
     # Social Media
     trend_check_interval_hours: int = int(os.getenv("TREND_CHECK_INTERVAL_HOURS", "6"))
@@ -51,26 +54,6 @@ class Settings(BaseSettings):
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    # SMTP / Email
-    smtp_host: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user: str = os.getenv("SMTP_USER", "")
-    smtp_pass: str = os.getenv("SMTP_PASS", "")
-    notification_email: str = os.getenv("NOTIFICATION_EMAIL", "")
-
-    # Career / Jobs
-    career_ops_path: str = os.getenv("CAREER_OPS_PATH", os.path.join(os.path.expanduser("~"), "career-ops"))
-    resume_path: str = os.getenv("RESUME_PATH", "")
-    barq_port: int = int(os.getenv("BARQ_PORT", "8111"))
-
-    # Scheduler
-    job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))
-    auto_match_interval_hours: int = int(os.getenv("AUTO_MATCH_INTERVAL_HOURS", "1"))
-
-    # Matching thresholds
-    match_threshold_high: float = float(os.getenv("MATCH_THRESHOLD_HIGH", "80"))
-    match_threshold_medium: float = float(os.getenv("MATCH_THRESHOLD_MEDIUM", "60"))
-
     # Email / SMTP
     smtp_host: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
@@ -78,6 +61,11 @@ class Settings(BaseSettings):
     smtp_pass: str = os.getenv("SMTP_PASS", "")
     notification_email: str = os.getenv("NOTIFICATION_EMAIL", "")
     sender_name: str = os.getenv("SENDER_NAME", "")
+
+    # Career / Jobs
+    career_ops_path: str = os.getenv("CAREER_OPS_PATH", os.path.join(os.path.expanduser("~"), "career-ops"))
+    resume_path: str = os.getenv("RESUME_PATH", "")
+    barq_port: int = int(os.getenv("BARQ_PORT", "8111"))
 
     # API Authentication
     barq_api_key: str = os.getenv("BARQ_API_KEY", "")

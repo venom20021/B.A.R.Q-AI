@@ -6,7 +6,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Sidebar } from './components/Sidebar'
 import { QuickOverlay} from './components/QuickOverlay'
 import { StartupSequence } from './components/StartupSequence'
-import { FloatingActionLog } from './components/FloatingActionLog'
 import { ApprovalModal } from './components/ApprovalModal'
 import { TransientDiagnostics } from './components/TransientDiagnostics'
 import { Navbar } from './components/Navbar'
@@ -140,6 +139,8 @@ function AppContent(): JSX.Element {
   const [isConnected, setIsConnected] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
+  const [isConversationActive, setIsConversationActive] = useState(false)
+  const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
 
   const activeTab = routeToTab(location.pathname)
 
@@ -177,6 +178,33 @@ function AppContent(): JSX.Element {
     check()
     const interval = setInterval(check, 10000)
     return () => clearInterval(interval)
+  }, [])
+
+  // Listen for voice status from DashboardPage's WebSocket
+  useEffect(() => {
+    const handler = (e: CustomEvent<{
+      conversation_active: boolean
+      is_listening: boolean
+      is_speaking: boolean
+      is_processing: boolean
+    }>): void => {
+      const detail = e.detail
+      setIsConversationActive(detail.conversation_active)
+      setIsSpeaking(detail.is_speaking)
+
+      // Derive AI state from backend status (same logic as DashboardPage)
+      if (detail.is_speaking) {
+        setAiState('responding')
+      } else if (detail.is_processing) {
+        setAiState('thinking')
+      } else if (detail.conversation_active) {
+        setAiState('listening')
+      } else {
+        setAiState('idle')
+      }
+    }
+    window.addEventListener('barq:voice-status', handler as EventListener)
+    return () => window.removeEventListener('barq:voice-status', handler as EventListener)
   }, [])
 
   // Listen for barq:voice-command events from ChatPage and voice pipeline
@@ -273,7 +301,9 @@ function AppContent(): JSX.Element {
           isConnected={isConnected}
           isSpeaking={isSpeaking}
           isMuted={isMuted}
+          isConversationActive={isConversationActive}
           onMicToggle={handleMicToggle}
+          aiState={aiState}
         />
 
         {/* Content area: Sidebar + Main */}
@@ -346,9 +376,6 @@ function AppContent(): JSX.Element {
         position={quickOverlay.position}
         recentCommands={recentCommands}
       />
-
-      {/* Floating Action Log — shows AI-executed commands in bottom-right */}
-      <FloatingActionLog />
 
       {/* Approval Modal — triggered by dangerous voice commands */}
       <ApprovalModal />

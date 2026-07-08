@@ -16,6 +16,11 @@ import wave
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
+from config import get_settings as _cfg
+from .audio_device import resolve_output_device, resolve_input_device
+
 
 class InterruptHandler:
     """Detects when the user speaks over BARQ's audio response."""
@@ -26,10 +31,12 @@ class InterruptHandler:
         self._pending_interrupt_task: Optional[asyncio.Task] = None
         self.energy_threshold = energy_threshold  # RMS threshold for speech detection
 
+    # ── File-based playback (legacy) ────────────────────────────────
+
     async def play_with_interrupt(
         self, audio_path: str, listen_for_interrupt: bool = True
     ) -> bool:
-        """Play audio but stop if user starts speaking.
+        """Play audio from a file but stop if user starts speaking.
 
         Args:
             audio_path: Path to the audio file to play (WAV or MP3).
@@ -45,8 +52,42 @@ class InterruptHandler:
         self.is_playing = True
         self.should_stop = False
 
-        play_task = asyncio.create_task(self._play(audio_path))
+        play_task = asyncio.create_task(self._play_file(audio_path))
+        interrupted = await self._wait_with_interrupt(play_task, listen_for_interrupt)
+        self.is_playing = False
+        return interrupted
 
+    # ── In-memory PCM playback ───────────────────────────────────────
+
+    async def play_pcm_with_interrupt(
+        self, audio_data: np.ndarray, sample_rate: int, listen_for_interrupt: bool = True
+    ) -> bool:
+        """Play raw PCM audio directly (no file I/O) but stop if user starts speaking.
+
+        Args:
+            audio_data: Float32 PCM array normalized to [-1.0, 1.0].
+            sample_rate: Sample rate of the PCM data (typically 24000).
+            listen_for_interrupt: Whether to monitor mic for interruption.
+
+        Returns:
+            True if playback was interrupted, False if it completed naturally.
+        """
+        # Cancel any lingering interrupt task from a previous call
+        if self._pending_interrupt_task and not self._pending_interrupt_task.done():
+            self._pending_interrupt_task.cancel()
+
+        self.is_playing = True
+        self.should_stop = False
+
+        play_task = asyncio.create_task(self._play_pcm(audio_data, sample_rate))
+        interrupted = await self._wait_with_interrupt(play_task, listen_for_interrupt)
+        self.is_playing = False
+        return interrupted
+
+    # ── Shared interrupt orchestration ───────────────────────────────
+
+    async def _wait_with_interrupt(self, play_task: asyncio.Task, listen_for_interrupt: bool) -> bool:
+        """Run play_task + optional interrupt detection, return True if interrupted."""
         if listen_for_interrupt:
             interrupt_task = asyncio.create_task(self._detect_speech())
             self._pending_interrupt_task = interrupt_task
@@ -56,7 +97,6 @@ class InterruptHandler:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # Cancel whichever task is still pending
             for task in pending:
                 task.cancel()
 
@@ -64,25 +104,22 @@ class InterruptHandler:
                 self.should_stop = True
                 play_task.cancel()
                 print("[Interrupt] User spoke over BARQ — playback stopped")
-                self.is_playing = False
-                return True  # Interrupted
+                return True
         else:
             await play_task
 
-        self.is_playing = False
-        return False  # Completed naturally
+        return False
 
-    async def _play(self, audio_path: str):
+    # ── Playback methods ────────────────────────────────────────────
+
+    async def _play_file(self, audio_path: str):
         """Play audio file through speakers. Supports WAV and MP3.
 
         MP3 files are decoded to WAV via ffplay/ffmpeg before playback.
         """
         try:
             import sounddevice as sd
-            import numpy as np
 
-            from config import get_settings as _cfg
-            from .audio_device import resolve_output_device
             output_device = resolve_output_device(_cfg().audio_output_device)
 
             audio_path_obj = Path(audio_path)
@@ -135,6 +172,22 @@ class InterruptHandler:
         except Exception as e:
             if "No default output device" not in str(e):
                 print(f"[Interrupt] Playback error: {e}")
+        finally:
+            self.is_playing = False
+
+    async def _play_pcm(self, audio_data: np.ndarray, sample_rate: int):
+        """Play raw PCM audio data directly via sounddevice — no file I/O."""
+        try:
+            import sounddevice as sd
+
+            output_device = resolve_output_device(_cfg().audio_output_device)
+            sd.play(audio_data, sample_rate, device=output_device)
+            sd.wait()
+        except asyncio.CancelledError:
+            sd.stop()
+        except Exception as e:
+            if "No default output device" not in str(e):
+                print(f"[Interrupt] PCM playback error: {e}")
         finally:
             self.is_playing = False
 

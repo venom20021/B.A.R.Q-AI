@@ -73,7 +73,7 @@ def _play_mp3_via_sounddevice(mp3_path: str):
     try:
         result = subprocess.run(
             [ffmpeg_path, "-y", "-i", mp3_path,
-             "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", wav_path],
+             "-acodec", "pcm_s16le", "-ar", "24000", "-ac", "1", wav_path],
             capture_output=True,
             timeout=60,
         )
@@ -1458,17 +1458,20 @@ async def action_log_recent(limit: int = Query(default=10, ge=1, le=100)):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Stream a chat response token-by-token via Server-Sent Events.
-    Each token is sent as an SSE event and can be played via incremental TTS.
+    Each token is sent as an SSE event for immediate display.
+    After all tokens are streamed, an 'audio' event with base64-encoded
+    TTS audio is sent before the [DONE] signal — eliminating the need
+    for a separate blocking audio fetch on the frontend.
     """
     from fastapi.responses import StreamingResponse
 
     async def event_generator():
         import asyncio as _asyncio
         import json as _json
+        import base64 as _base64
 
         try:
             # Stream from Ollama's native streaming API token-by-token
-            # This uses the responder's Ollama client with stream=True
             from utils.ollama_client import OllamaClient
 
             cm = responder.conversation
@@ -1478,7 +1481,7 @@ async def chat_stream(request: ChatRequest):
             llm = OllamaClient()
             full_text = ""
 
-            # Use the streaming chat method
+            # ── 1. Stream text tokens ───────────────────────────────
             async for token in llm.stream_chat(context):
                 full_text += token
                 yield f"data: {_json.dumps({'type': 'token', 'text': token})}\n\n"
@@ -1493,6 +1496,17 @@ async def chat_stream(request: ChatRequest):
                 severity=INFO,
                 metadata={"message": request.message[:100], "response_length": len(full_text)},
             )
+
+            # ── 2. Generate & stream TTS audio for the full response ─
+            if full_text.strip():
+                try:
+                    audio_bytes = await speech_processor.synthesize(
+                        full_text, voice=_tts_voice
+                    )
+                    audio_b64 = _base64.b64encode(audio_bytes).decode("utf-8")
+                    yield f"data: {_json.dumps({'type': 'audio', 'audio_base64': audio_b64})}\n\n"
+                except Exception as e:
+                    print(f"[ChatStream] TTS synthesis error: {e}")
 
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -1672,7 +1686,13 @@ async def voice_status_ws(websocket: WebSocket):
         while True:
             detector = get_wake_word_detector()
             is_running = detector._running if detector else False
-            mic_level = detector.get_mic_level() if detector else 0.0
+
+            # During active conversations the wake detector is paused,
+            # so read the live mic level from the speech processor's STT stream instead.
+            if responder.conversation.is_active:
+                mic_level = speech_processor.get_mic_level()
+            else:
+                mic_level = detector.get_mic_level() if detector else 0.0
 
             await websocket.send_json({
                 "type": "voice_status",

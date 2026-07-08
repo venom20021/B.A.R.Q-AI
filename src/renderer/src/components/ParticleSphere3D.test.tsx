@@ -106,16 +106,16 @@ describe('rotation speed constants', () => {
 })
 
 describe('particle color constants', () => {
-  it('idle color is purple/coral [5, 1.5, 2]', () => {
-    expect(STATE_PARTICLE_COLORS.idle).toEqual([5, 1.5, 2])
+  it('idle color is deep purple [8, 1, 10]', () => {
+    expect(STATE_PARTICLE_COLORS.idle).toEqual([8, 1, 10])
   })
 
-  it('listening color is cyan/deep blue [0, 4, 12]', () => {
-    expect(STATE_PARTICLE_COLORS.listening).toEqual([0, 4, 12])
+  it('listening color is amber [12, 6, 0]', () => {
+    expect(STATE_PARTICLE_COLORS.listening).toEqual([12, 6, 0])
   })
 
-  it('thinking color is amber/yellow [8, 6, 0]', () => {
-    expect(STATE_PARTICLE_COLORS.thinking).toEqual([8, 6, 0])
+  it('thinking color is cool white [10, 10, 12]', () => {
+    expect(STATE_PARTICLE_COLORS.thinking).toEqual([10, 10, 12])
   })
 
   it('responding color is neon green [0, 10, 2]', () => {
@@ -132,8 +132,8 @@ describe('ring opacity constants', () => {
     expect(STATE_RING_OPACITY.listening).toBe(0.35)
   })
 
-  it('thinking ring opacity is 0.5', () => {
-    expect(STATE_RING_OPACITY.thinking).toBe(0.5)
+  it('thinking ring opacity is 0.35', () => {
+    expect(STATE_RING_OPACITY.thinking).toBe(0.35)
   })
 
   it('responding ring opacity is 0.4', () => {
@@ -142,8 +142,8 @@ describe('ring opacity constants', () => {
 })
 
 describe('other numeric constants', () => {
-  it('color lerp rate is 0.03 per frame', () => {
-    expect(COLOR_LERP_RATE).toBe(0.03)
+  it('color lerp rate is 0.06 per frame (doubled for faster reactivity)', () => {
+    expect(COLOR_LERP_RATE).toBe(0.06)
   })
 
   it('idle wobble amplitude is 0.08', () => {

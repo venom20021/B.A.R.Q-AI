@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, Send, Loader2, MessageSquare, X, Volume2, VolumeX } from 'lucide-react'
+import { Mic, Send, MessageSquare, X, Volume2, VolumeX } from 'lucide-react'
 import { AudioWaveform } from './AudioWaveform'
 import { useMicrophoneAnalyser } from '../hooks/useMicrophoneAnalyser'
+import { useStreamingChat } from '../hooks/useStreamingChat'
 
 interface Message {
   id: string
@@ -72,6 +73,47 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     }
   }, [isMuted])
 
+  // ── Streaming chat hook for low-latency text display ─────────
+  const streamingAccRef = useRef('')
+  const [streamingDisplay, setStreamingDisplay] = useState('')
+
+  // Refs for safe access inside callbacks/effects without stale closures
+  const speakAudioRef = useRef(speakAudio)
+  speakAudioRef.current = speakAudio
+
+  const stream = useStreamingChat({
+    onToken: (token: string) => {
+      streamingAccRef.current += token
+      setStreamingDisplay(streamingAccRef.current)
+    },
+    onAudio: (audioBase64: string) => {
+      // Play audio as soon as it arrives in the stream
+      speakAudioRef.current(audioBase64)
+    },
+    onComplete: (fullText: string) => {
+      setStreamingDisplay('')
+      // Finalize the AI message
+      const aiMsg: Message = { id: `ai-${Date.now()}`, role: 'ai', text: fullText, timestamp: Date.now() }
+      setMessages((prev) => [...prev, aiMsg])
+      setIsProcessing(false)
+    },
+    onError: (error: string) => {
+      setStreamingDisplay('')
+      setMessages((prev) => [...prev, {
+        id: `ai-err-${Date.now()}`, role: 'ai', text: `Error: ${error}`, timestamp: Date.now(),
+      }])
+      setIsProcessing(false)
+    },
+  })
+
+  const sendRef = useRef<(text: string) => void>()
+  sendRef.current = stream.send
+
+  // Cancel streaming on unmount (stream.cancel is stable — memoized with [])
+  useEffect(() => {
+    return () => { stream.cancel() }
+  }, [stream.cancel])
+
   // Cancel audio when muted
   useEffect(() => {
     if (isMuted && audioRef.current) {
@@ -87,27 +129,6 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
         audioRef.current.pause()
         audioRef.current = null
       }
-    }
-  }, [])
-
-  // Send message to AI backend and get text + audio
-  const sendToAI = useCallback(async (text: string): Promise<{ text: string; audio_base64?: string }> => {
-    try {
-      const resp = await window.barq?.python.request('/voice/chat', {
-        method: 'POST',
-        body: JSON.stringify({ message: text, language: 'en' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const result = resp as { text?: string; audio_base64?: string }
-        return {
-          text: result.text || 'Command processed.',
-          audio_base64: result.audio_base64,
-        }
-      }
-      return { text: 'Command processed.' }
-    } catch {
-      return { text: 'Error connecting to AI backend.' }
     }
   }, [])
 
@@ -152,11 +173,8 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
             const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', text: trimmed, timestamp: Date.now() }
             setMessages((prev) => [...prev, userMsg])
             setIsProcessing(true)
-            sendToAI(trimmed).then((res) => {
-              setMessages((prev) => [...prev, { id: `ai-${Date.now()}`, role: 'ai', text: res.text, timestamp: Date.now() }])
-              setIsProcessing(false)
-              if (res.audio_base64) speakAudio(res.audio_base64)
-            })
+            streamingAccRef.current = ''
+            sendRef.current?.(trimmed)
           }
         }
       }
@@ -185,19 +203,16 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const handleSend = useCallback(async (): Promise<void> => {
+  const handleSend = useCallback((): void => {
     const text = input.trim()
-    if (!text || isProcessing) return
+    if (!text || isProcessing || stream.isStreaming) return
     const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', text, timestamp: Date.now() }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setIsProcessing(true)
-    const res = await sendToAI(text)
-    const aiMsg: Message = { id: `ai-${Date.now()}`, role: 'ai', text: res.text, timestamp: Date.now() }
-    setMessages((prev) => [...prev, aiMsg])
-    setIsProcessing(false)
-    if (res.audio_base64) speakAudio(res.audio_base64)
-  }, [input, isProcessing, sendToAI, speakAudio])
+    streamingAccRef.current = ''
+    stream.send(text)
+  }, [input, isProcessing, stream.isStreaming, stream.send])
 
   return (
     <>
@@ -286,11 +301,45 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   </motion.div>
                 ))}
               </AnimatePresence>
-              {isProcessing && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-                  <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#0D0D15]/60 border border-[#DC2626]/8">
-                    <Loader2 className="w-3 h-3 text-[#00E5FF]/60 animate-spin" />
-                    <span className="text-[10px] font-rajdhani text-[#E2E8F0]/40">Processing...</span>
+
+              {/* Streaming text — appears token-by-token while LLM generates */}
+              {streamingDisplay && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  className="flex justify-start"
+                >
+                  <div className="max-w-[85%] px-3 py-2 rounded-xl bg-[#0D0D15]/60 text-[#E2E8F0]/70 border border-[#00E5FF]/8">
+                    <span className="text-xs font-rajdhani leading-relaxed">{streamingDisplay}</span>
+                    <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-[#00E5FF]/60 animate-pulse align-text-bottom" />
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Typing indicator — animated bouncing dots while waiting for first token */}
+              {isProcessing && !streamingDisplay && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex justify-start"
+                >
+                  <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[#0D0D15]/60 border border-[#00E5FF]/12">
+                    {[0, 1, 2].map((i) => (
+                      <motion.span
+                        key={i}
+                        className="w-1.5 h-1.5 rounded-full bg-[#00E5FF]/60"
+                        animate={{
+                          y: [0, -4, 0],
+                          opacity: [0.4, 1, 0.4],
+                        }}
+                        transition={{
+                          duration: 0.8,
+                          repeat: Infinity,
+                          delay: i * 0.15,
+                          ease: 'easeInOut',
+                        }}
+                      />
+                    ))}
                   </div>
                 </motion.div>
               )}

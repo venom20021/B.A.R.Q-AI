@@ -61,9 +61,9 @@ export const RING_SPEAKING_SPEED = 0.12
 
 // Per-state color targets — used by the particle field to lerp between
 export const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = {
-  idle: [5, 1.5, 2],        // Purple/coral
-  listening: [0, 4, 12],     // Cyan/deep blue
-  thinking: [8, 6, 0],       // Amber/yellow
+  idle: [8, 1, 10],          // Deep purple
+  listening: [12, 6, 0],     // Amber
+  thinking: [10, 10, 12],    // Cool white
   responding: [0, 10, 2],    // Neon green
 }
 
@@ -71,24 +71,24 @@ export const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = 
 export const STATE_RING_OPACITY: Record<AIState, number> = {
   idle: 0.2,
   listening: 0.35,
-  thinking: 0.5,
+  thinking: 0.35,
   responding: 0.4,
 }
 
-export const COLOR_LERP_RATE = 0.03
+export const COLOR_LERP_RATE = 0.06
 
 // Per-state outer particle color boost
 export const STATE_OUTER_BOOST: Record<AIState, [number, number, number]> = {
-  idle: [0.25, 0.0, 0.15],
-  listening: [0.0, 0.3, 0.3],
-  thinking: [0.15, 0.2, 0.0],
+  idle: [0.3, 0.0, 0.25],
+  listening: [0.25, 0.15, 0.0],
+  thinking: [0.1, 0.1, 0.1],
   responding: [0.0, 0.35, 0.15],
 }
 
 
 // ─── Mouse Tracking Config ─────────────────────────────────────────────
 
-const MOUSE_SPRING = 0.06       // lerp factor per frame — lower = smoother
+const MOUSE_SPRING = 0.10       // lerp factor per frame — faster mouse response
 const MOUSE_MAX_ANGLE = 0.35    // max rotation offset in radians (~20°)
 
 // ─── Parallax Depth Config ────────────────────────────────────────────
@@ -158,13 +158,14 @@ const DENSITY_POWER = 5.0         // power distribution: >1 clusters particles t
 
 // ─── Inner Particle Field ───────────────────────────────────────────────
 
-function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micMuted, sttText }: {
+function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micMuted, sttText, tokenBurst }: {
   activeTheme: ThemeColor
   aiState: AIState
   audioAmplitude: number
   mouseTarget: MutableRefObject<{ x: number; y: number }>
   micMuted: boolean
   sttText?: string
+  tokenBurst?: number
 }): JSX.Element {
   const groupRef = useRef<Group>(null!)
   const pointsRef = useRef<Points>(null!)
@@ -175,9 +176,13 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
   const audioAmpRef = useRef(audioAmplitude)
   audioAmpRef.current = audioAmplitude
   const prevStateRef = useRef(aiState)
+  const prevTokenBurstRef = useRef(tokenBurst)
 
   // Pulse timer for 'listening' transition flash
   const pulseTimerRef = useRef(0)
+
+  // Token burst timer — brief flash when LLM tokens arrive during responding
+  const tokenBurstTimerRef = useRef(0)
 
   // Detect state transition from non-listening to listening
   if (prevStateRef.current !== aiState) {
@@ -185,6 +190,12 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
       pulseTimerRef.current = 1.0
     }
     prevStateRef.current = aiState
+  }
+
+  // Detect tokenBurst increment — triggers a brief particle flash
+  if (tokenBurst !== prevTokenBurstRef.current) {
+    prevTokenBurstRef.current = tokenBurst
+    tokenBurstTimerRef.current = 1.0
   }
 
   // Wake animation on mount — particles expand from a tiny bright point
@@ -356,7 +367,7 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
         pulseFreq = SPEAKING_PULSE_FREQ
         // Clean waveform ripples — amplitude-driven displacement, steady frequency
         // Boost wave strength when STT text is actively flowing (user speaking)
-        waveStrength = amp * (hasStt ? 0.55 : 0.30)
+        waveStrength = amp * (hasStt ? 0.80 : 0.50)
         break
       case 'thinking':
         // Tighter spin: faster rotation, more collapsed
@@ -371,8 +382,8 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
         wobbleAmp = SPEAKING_WOBBLE_AMPLITUDE * 0.6
         pulseAmp = SPEAKING_PULSE_AMPLITUDE
         pulseFreq = SPEAKING_PULSE_FREQ
-        // Moderate breathing — ±5% group pulse
-        breatheScale = 1 + Math.sin(t * 2.0) * 0.05
+        // Moderate breathing — audio-driven amplitude, ±3-18% group pulse
+        breatheScale = 1 + Math.sin(t * 2.0) * (0.03 + amp * 0.15)
         break
       default: // idle
         break
@@ -406,9 +417,14 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
         const depths = depthFactorsRef.current
         const depthRange = PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN
 
-        // Pulse flash on transition to 'listening'
+        // Pulse flash on transition to 'listening' — boosted with audio amplitude
         const pulse = pulseTimerRef.current
-        const flashExpand = pulse > 0 ? 1 + pulse * 0.12 : 1
+        const flashExpand = pulse > 0 ? 1 + pulse * (0.12 + amp * 0.08) : 1
+
+        // Token burst flash — brief ripple when LLM tokens arrive
+        const tokenBurstGlow = tokenBurstTimerRef.current > 0
+          ? 1 + tokenBurstTimerRef.current * 0.15
+          : 1
 
         for (let i = 0; i < PARTICLE_COUNT; i++) {
           const depthFactor = (depths[i] - PARALLAX_DEPTH_MIN) / depthRange
@@ -453,6 +469,11 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
           py *= flashExpand
           pz *= flashExpand
 
+          // Apply token burst glow (brief pulse when LLM tokens arrive)
+          px *= tokenBurstGlow
+          py *= tokenBurstGlow
+          pz *= tokenBurstGlow
+
           posArray[i3] = px
           posArray[i3 + 1] = py
           posArray[i3 + 2] = pz
@@ -467,6 +488,12 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
       if (pulseTimerRef.current < 0) pulseTimerRef.current = 0
     }
 
+    // Decay token burst timer (slower decay for visible flash)
+    if (tokenBurstTimerRef.current > 0) {
+      tokenBurstTimerRef.current -= 0.02
+      if (tokenBurstTimerRef.current < 0) tokenBurstTimerRef.current = 0
+    }
+
     // Pulse particle size
     if (pointsRef.current) {
       const geometry = pointsRef.current.geometry
@@ -477,9 +504,13 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
           const depthFraction = (depthFactorsRef.current[i] - PARALLAX_DEPTH_MIN) / (PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN)
           const base = (0.30 - depthFraction * 0.23) + (i % 3) * 0.04
           array[i] = base + Math.sin(t * pulseFreq + i * 0.1) * pulseAmp
-          // Boost size during listening flash
+          // Boost size during listening flash — amplitude-enhanced
           if (pulseTimerRef.current > 0) {
-            array[i] += pulseTimerRef.current * 0.08
+            array[i] += pulseTimerRef.current * (0.08 + amp * 0.06)
+          }
+          // Token burst size boost — brief glow when LLM tokens arrive
+          if (tokenBurstTimerRef.current > 0) {
+            array[i] += tokenBurstTimerRef.current * 0.05
           }
         }
         sizeAttr.needsUpdate = true
@@ -818,16 +849,16 @@ const STATE_LABELS: Record<string, string> = {
 
 const STATE_BADGE_COLORS: Record<string, string> = {
   idle: 'border-purple-500/40 text-purple-300 bg-purple-500/10',
-  listening: 'border-cyan-500/40 text-cyan-300 bg-cyan-500/10',
-  thinking: 'border-amber-500/40 text-amber-300 bg-amber-500/10',
+  listening: 'border-amber-500/40 text-amber-300 bg-amber-500/10',
+  thinking: 'border-slate-400/40 text-slate-200 bg-slate-400/10',
   responding: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10',
   muted: 'border-red-500/40 text-red-300 bg-red-500/10',
 }
 
 const STATE_DOT_COLORS: Record<string, string> = {
   idle: 'bg-purple-400',
-  listening: 'bg-cyan-400',
-  thinking: 'bg-amber-400',
+  listening: 'bg-amber-400',
+  thinking: 'bg-slate-200',
   responding: 'bg-emerald-400',
   muted: 'bg-red-400',
 }
@@ -842,7 +873,7 @@ const STATE_DESCRIPTIONS: Record<string, string> = {
 
 // ─── Main Export ────────────────────────────────────────────────────────
 
-export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audioAmplitude = 0, showGrid = false, micMuted = false, sttText = '' }: { activeTheme?: ThemeColor; aiState?: AIState; audioAmplitude?: number; showGrid?: boolean; micMuted?: boolean; sttText?: string }): JSX.Element {
+export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audioAmplitude = 0, showGrid = false, micMuted = false, sttText = '', tokenBurst = 0 }: { activeTheme?: ThemeColor; aiState?: AIState; audioAmplitude?: number; showGrid?: boolean; micMuted?: boolean; sttText?: string; tokenBurst?: number }): JSX.Element {
   // Track mouse position normalized to [-1, 1] relative to canvas center
   const mouseTarget = useRef({ x: 0, y: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
@@ -936,7 +967,7 @@ export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audio
             onCreated={handleCanvasCreated}
             style={{ width: '100%', height: '100%' }}
           >
-            <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} />
+            <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} tokenBurst={tokenBurst} />
             <Rings activeTheme={activeTheme} aiState={aiState} micMuted={micMuted} />
             {showGrid && <PerspectiveGrid activeTheme={activeTheme} />}
           </Canvas>

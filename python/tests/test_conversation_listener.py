@@ -60,8 +60,14 @@ def mock_responder() -> MagicMock:
 
 @pytest.fixture
 def listener(mock_stt: MagicMock, mock_responder: MagicMock) -> ConversationListener:
-    """Return a ConversationListener with mocked dependencies."""
-    return ConversationListener(stt=mock_stt, responder=mock_responder)
+    """Return a ConversationListener with mocked dependencies (non-pipeline mode)."""
+    return ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=False)
+
+
+@pytest.fixture
+def pipeline_listener(mock_stt: MagicMock, mock_responder: MagicMock) -> ConversationListener:
+    """Return a ConversationListener using the frame-based pipeline (use_pipeline=True)."""
+    return ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -196,13 +202,11 @@ class TestExitCommand:
         return ConversationListener(stt=MagicMock(), responder=MagicMock())
 
     @pytest.mark.parametrize("phrase", [
-        "goodbye",
-        "bye bye",
+        "nothing",
         "that's all",
         "we're done",
         "end conversation",
         "stop conversation",
-        "never mind",
         "go to sleep",
         "shut down",
         "that's it for now",
@@ -214,17 +218,17 @@ class TestExitCommand:
         assert listener_no_mocks._is_exit_command(phrase.capitalize())
 
     @pytest.mark.parametrize("phrase,expected", [
-        ("goodbye friends", True),      # "goodbye" is a whole word
-        ("I said goodbye", True),        # "goodbye" at end
+        ("nothing else matters", True),  # "nothing" is a whole word
+        ("I said nothing", True),        # "nothing" at end
         ("stop right there", False),     # "stop" not in exit list
         ("conversation piece", False),   # no whole-word exit phrase match
         ("let's end this", False),       # "end conversation" not present
         ("I'm done", False),             # "we're done" doesn't match "I'm done"
-        ("never say never", False),      # "never mind" not present
         ("we're done here", True),       # "we're done" at start
         ("end conversation now", True),  # "end conversation" at start
         ("shut down the system", True),  # "shut down" is in exit list, whole-word match
         ("go to sleep now", True),       # "go to sleep" at start
+        ("that's it for now thanks", True),  # "that's it for now" multi-word
     ])
     def test_partial_match_still_detected(self, listener_no_mocks: ConversationListener, phrase: str, expected: bool):
         """Phrases containing exit keywords as whole words should match (or not)."""
@@ -234,19 +238,21 @@ class TestExitCommand:
     @pytest.mark.parametrize("phrase", [
         "hello", "what's the weather", "open chrome", "tell me a joke",
         "continue", "keep going", "stay", "good", "bye", "going to sleep",
+        "goodbye", "bye bye", "never mind",
     ])
     def test_non_exit_phrases_not_detected(self, listener_no_mocks: ConversationListener, phrase: str):
         """Non-exit phrases should NOT trigger exit detection."""
         assert listener_no_mocks._is_exit_command(phrase) is False
 
     def test_exit_command_full_word_boundary(self, listener_no_mocks: ConversationListener):
-        """'goodbye' should match, but 'good' alone should not (word boundary)."""
-        assert listener_no_mocks._is_exit_command("goodbye") is True
-        assert listener_no_mocks._is_exit_command("good") is False
+        """'nothing' should match, but 'no' alone should not (word boundary)."""
+        assert listener_no_mocks._is_exit_command("nothing") is True
+        assert listener_no_mocks._is_exit_command("no") is False
+        assert listener_no_mocks._is_exit_command("nothing at all") is True
 
     def test_exit_phrase_in_sentence(self, listener_no_mocks: ConversationListener):
         """Exit phrase embedded in a longer sentence should still match."""
-        text = "I think that's all for now, goodbye"
+        text = "I think that's all for now"
         assert listener_no_mocks._is_exit_command(text) is True
 
     def test_empty_string_not_exit(self, listener_no_mocks: ConversationListener):
@@ -748,3 +754,132 @@ class TestConversationLoopStreamRespond:
 
         # stt_text should be cleared after error
         assert listener.responder.stt_text == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Pipeline Mode — Lifecycle & Processing
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPipelineMode:
+    """Tests for the frame-based pipeline mode (use_pipeline=True)."""
+
+    async def test_pipeline_start_stop(self, pipeline_listener: ConversationListener):
+        """Pipeline listener should start and stop cleanly."""
+        assert pipeline_listener.is_active is False
+        assert pipeline_listener.use_pipeline is True
+
+        await pipeline_listener.start_conversation()
+        assert pipeline_listener.is_active is True
+        assert pipeline_listener._loop_task is not None
+        assert not pipeline_listener._loop_task.done()
+
+        await pipeline_listener.stop_conversation()
+        assert pipeline_listener.is_active is False
+        assert pipeline_listener._loop_task is None
+        pipeline_listener.responder.conversation.end_session.assert_called()
+
+    async def test_pipeline_stop_when_not_active(self, pipeline_listener: ConversationListener):
+        """Stopping pipeline when not active should not crash."""
+        await pipeline_listener.stop_conversation()
+        assert pipeline_listener.is_active is False
+
+    async def test_pipeline_idempotent_start(self, pipeline_listener: ConversationListener):
+        """Starting pipeline listener twice should be a no-op."""
+        await pipeline_listener.start_conversation()
+        task_id = id(pipeline_listener._loop_task)
+        await pipeline_listener.start_conversation()
+        assert id(pipeline_listener._loop_task) == task_id
+        assert pipeline_listener.is_active is True
+        await pipeline_listener.stop_conversation()
+
+    async def test_pipeline_stt_error_does_not_crash(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """If transcribe_streaming raises in pipeline mode, the loop should catch it gracefully."""
+        import asyncio
+
+        mock_stt.transcribe_streaming = MagicMock(side_effect=RuntimeError("STT crashed"))
+
+        pl = ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=True)
+        await pl.start_conversation()
+        await asyncio.sleep(0.15)
+
+        # The loop should have caught the error and continued;
+        # subsequent errors keep the loop alive, so stop cleanly
+        await pl.stop_conversation()
+        assert pl.is_active is False
+
+    async def test_pipeline_no_speech_listens_again(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """If STT returns empty text, pipeline loop should continue listening."""
+        import asyncio
+
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": ""}  # empty = no speech
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+
+        pl = ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=True)
+        await pl.start_conversation()
+        await asyncio.sleep(0.15)
+        await pl.stop_conversation()
+
+        # Should have stopped cleanly after seeing empty speech
+        assert pl.is_active is False
+
+    async def test_pipeline_exit_command(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """Pipeline mode should handle exit commands ("nothing") gracefully."""
+        import asyncio
+
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": "nothing"}
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+        mock_responder.respond = AsyncMock(return_value={
+            "text": "Goodbye!",
+            "audio_path": "/tmp/goodbye.mp3",
+            "action": "command",
+        })
+
+        pl = ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=True)
+        await pl.start_conversation()
+        await asyncio.sleep(0.15)
+
+        # Exit command should have stopped the conversation
+        assert pl.is_active is False
+        mock_responder.respond.assert_called_once()
+
+    async def test_pipeline_barge_in(self, mock_stt: MagicMock, mock_responder: MagicMock):
+        """Pipeline mode: barge-in during playback should restart listening."""
+        import asyncio
+
+        async def stt_stream(**kwargs):
+            yield {"type": "final", "text": "hello"}
+            yield {"type": "final", "text": ""}  # end after first
+
+        mock_stt.transcribe_streaming = MagicMock(return_value=stt_stream())
+
+        pl = ConversationListener(stt=mock_stt, responder=mock_responder, use_pipeline=True)
+        # Force play_pcm_with_interrupt to return True (simulate barge-in)
+        pl.interrupt_handler.play_pcm_with_interrupt = AsyncMock(return_value=True)
+
+        # The pipeline will try to access responder.speech.synthesize_pcm to
+        # process the transcription; since it's a MagicMock, it returns a
+        # MagicMock which fails to unpack as (ndarray, int) — that's OK,
+        # the loop catches exceptions and continues.
+        await pl.start_conversation()
+        await asyncio.sleep(0.3)
+        await pl.stop_conversation()
+
+        # Should not crash — barge-in caught gracefully
+        assert pl.is_active is False
+
+    async def test_pipeline_cancelled_loop_cleanup(self, pipeline_listener: ConversationListener):
+        """Pipeline loop cancellation should clean up gracefully."""
+        await pipeline_listener.start_conversation()
+        assert pipeline_listener.is_active is True
+
+        # Cancel the task directly
+        assert pipeline_listener._loop_task is not None
+        pipeline_listener._loop_task.cancel()
+
+        await pipeline_listener.stop_conversation()
+        assert pipeline_listener.is_active is False

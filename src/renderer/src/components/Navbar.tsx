@@ -4,13 +4,38 @@ import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 
 export type NavTab = 'DASHBOARD' | 'NOTES' | 'GALLERY' | 'PHONE' | 'SETTINGS'
 
+export type AIState = 'idle' | 'listening' | 'thinking' | 'responding'
+
+const AI_STATE_LABELS: Record<AIState, string> = {
+  idle: 'Idle',
+  listening: 'Listening',
+  thinking: 'Thinking',
+  responding: 'Responding',
+}
+
+const AI_STATE_DOT_COLORS: Record<AIState, string> = {
+  idle: 'bg-purple-400 shadow-[0_0_6px_rgba(168,85,247,0.5)]',
+  listening: 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]',
+  thinking: 'bg-slate-200 shadow-[0_0_6px_rgba(226,232,240,0.3)]',
+  responding: 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]',
+}
+
+const AI_STATE_BORDER_COLORS: Record<AIState, string> = {
+  idle: 'border-purple-500/20',
+  listening: 'border-amber-500/20',
+  thinking: 'border-slate-400/20',
+  responding: 'border-emerald-500/20',
+}
+
 interface NavbarProps {
   activeTab: NavTab
   onTabChange: (tab: NavTab) => void
   isConnected: boolean
   isSpeaking: boolean
   isMuted: boolean
+  isConversationActive?: boolean
   onMicToggle: () => void
+  aiState?: AIState
 }
 
 const tabs: { id: NavTab; label: string; icon: typeof LayoutDashboard }[] = [
@@ -21,7 +46,7 @@ const tabs: { id: NavTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'SETTINGS', label: 'Settings', icon: Settings },
 ]
 
-export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMuted, onMicToggle }: NavbarProps): JSX.Element {
+export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMuted, onMicToggle, aiState = 'idle' }: NavbarProps): JSX.Element {
   const { accent, setAccent } = useTheme()
 
   const themeColors: { key: AccentColor; label: string; className: string }[] = [
@@ -87,6 +112,19 @@ export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMute
               </span>
             </button>
           ))}
+        </div>
+
+        {/* ── AI State Indicator ── */}
+        <div
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all duration-300 ${AI_STATE_BORDER_COLORS[aiState]} bg-zinc-950/40`}
+          title={`AI State: ${AI_STATE_LABELS[aiState]}`}
+        >
+          <span className={`relative w-2 h-2 rounded-full ${AI_STATE_DOT_COLORS[aiState]}`}>
+            <span className="absolute inset-0 rounded-full animate-ping opacity-30" style={{ backgroundColor: 'inherit' }} />
+          </span>
+          <span className="text-[8px] font-mono tracking-wider uppercase text-zinc-400">
+            {AI_STATE_LABELS[aiState]}
+          </span>
         </div>
 
         {/* ── Mic Status ── */}

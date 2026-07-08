@@ -4,6 +4,7 @@ Maintains chat history, loads the BARQ personality, and formats context for Olla
 """
 
 import json
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,68 @@ You can help with: jobs, coding, system control, research, social media, web bro
 When unsure, say so honestly rather than guessing.
 If the user speaks in Hindi, you may respond in Hindi.
 If the user switches to English, you switch back to English."""
+
+
+# ── Small talk handler ────────────────────────────────────────────────
+# Quick canned responses for common phrases — avoids hitting the LLM
+# for trivial greetings / thanks / goodbyes, saving latency and tokens.
+
+SMALL_TALK: dict[str, list[str]] = {
+    "how are you": [
+        "I'm doing great, thanks for asking! How about you?",
+        "Pretty good! Ready to help. What's on your mind?",
+        "All good here! What can I do for you?",
+    ],
+    "what is your name": [
+        "I'm BARQ, your voice assistant. Nice to meet you!",
+        "Call me BARQ! What can I help with?",
+        "BARQ here! What's up?",
+    ],
+    "thank you": [
+        "Anytime! Let me know if you need anything else.",
+        "You're welcome! Happy to help.",
+        "No problem at all!",
+    ],
+    "goodbye": [
+        "See you later! Take care.",
+        "Bye! Come back anytime.",
+        "Catch you later!",
+    ],
+    "good morning": [
+        "Good morning! Hope you're having a great start to your day.",
+        "Morning! What can I help you with today?",
+    ],
+    "good night": [
+        "Good night! Sleep well.",
+        "Night! Talk to you tomorrow.",
+    ],
+    "what can you do": [
+        "I can help with jobs, coding, system control, research, social media, and more! Just ask.",
+        "I'm your AI desktop assistant — I can help with almost anything. Try asking me to open an app, search for jobs, or check the weather!",
+    ],
+    "i love you": [
+        "Aw, thanks! I'm here to help, always.",
+        "That's sweet of you to say! Let me know what you need.",
+    ],
+    "nothing": [
+        "Okay! I'll be here if you need me. Just say 'computer' when you're ready.",
+        "Got it! Going to standby. Say the wake word when you need me.",
+        "Alright, signing off. Call my name when you want me back.",
+    ],
+}
+
+
+def get_small_talk(text: str) -> str | None:
+    """Check if the input matches a common small talk pattern.
+
+    Returns a canned response string, or None if no pattern matched
+    (in which case the caller should route to the LLM).
+    """
+    text_lower = text.lower().strip()
+    for phrase, responses in SMALL_TALK.items():
+        if phrase in text_lower:
+            return random.choice(responses)
+    return None
 
 
 class ConversationManager:

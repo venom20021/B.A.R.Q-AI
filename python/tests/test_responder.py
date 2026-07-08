@@ -11,11 +11,21 @@ from pathlib import Path
 from typing import AsyncIterable
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 # Module under test
 from ai.responder import _split_sentences, BARQResponder
 from ai.conversation import ConversationManager
+
+
+# Helper: create a fake return value for _text_to_speech_both
+_NP_ZERO = np.array([0.0], dtype=np.float32)
+
+
+def _fake_tts_both(path: str = "/tmp/test.mp3") -> tuple:
+    """Return a fake (Path, (pcm_array, sr)) for _text_to_speech_both mocks."""
+    return Path(path), (_NP_ZERO, 24000)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -160,10 +170,10 @@ def _set_stream(responder: BARQResponder, *tokens: str) -> None:
 class TestStreamRespondBasic:
     """stream_respond should yield TTS chunks per sentence."""
 
-    @patch.object(BARQResponder, "_text_to_speech")
+    @patch.object(BARQResponder, "_text_to_speech_both")
     async def test_conversation_returns_chunks(self, mock_tts: AsyncMock, responder: BARQResponder):
         """LLM yields tokens → chunks are flushed per-sentence."""
-        mock_tts.return_value = Path("/tmp/test_chunk.mp3")
+        mock_tts.return_value = _fake_tts_both("/tmp/test_chunk.mp3")
         _set_stream(responder,
             "Hello", " ", "there,", " ", "world", "! ", "How", " ", "are", " ", "you", "?"
         )
@@ -179,6 +189,7 @@ class TestStreamRespondBasic:
         assert chunks[1]["text"] == "world!"
         assert chunks[2]["text"] == "How are you?"
         assert all("audio_path" in c for c in chunks)
+        assert all("audio_pcm" in c for c in chunks)
         assert mock_tts.call_count == 3
 
     @patch.object(BARQResponder, "_text_to_speech")
@@ -335,18 +346,18 @@ class TestStreamRespondErrors:
         assert len(chunks) == 1
         assert "error" in chunks[0]["text"].lower() or "sorry" in chunks[0]["text"].lower()
 
-    @patch.object(BARQResponder, "_text_to_speech")
+    @patch.object(BARQResponder, "_text_to_speech_both")
     async def test_tts_error_handled_gracefully(self, mock_tts: AsyncMock, responder: BARQResponder):
         """When TTS fails mid-stream, the error is caught and flags reset.
         (The broad except Exception in stream_respond catches TTS errors.)"""
         call_count = 0
 
-        async def tts_side_effect(text: str) -> Path:
+        async def tts_side_effect(text: str) -> tuple:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("TTS failure")
-            return Path("/tmp/ok.mp3")
+            return _fake_tts_both("/tmp/ok.mp3")
 
         mock_tts.side_effect = tts_side_effect
         _set_stream(responder, "First chunk. ", "Second chunk.")

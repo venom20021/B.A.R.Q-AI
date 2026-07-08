@@ -1,13 +1,18 @@
 """
-Speech processing using Whisper for STT and Edge TTS for synthesis.
+Speech processing using faster-whisper for STT and Edge TTS for synthesis.
+
+Upgraded from OpenAI Whisper to faster-whisper for ~4x faster transcription
+with lower memory usage and near-identical accuracy.
 """
 
 import asyncio
+import io
 import tempfile
 import wave
 from pathlib import Path
 from typing import Any, AsyncIterable, Optional
 import edge_tts
+import numpy as np
 
 from config import get_settings
 
@@ -19,19 +24,33 @@ class SpeechProcessor:
         self.settings = get_settings()
         self._whisper_model: Any = None
         self.tts_voice: str = "en-US-JennyNeural"
+        # Live mic level tracking — updated by transcribe_streaming() every chunk
+        self._current_mic_level: float = 0.0
+
+    def get_mic_level(self) -> float:
+        """Get the current microphone audio level (0.0–1.0) from the active STT stream.
+
+        Returns 0.0 if no streaming transcription is currently running.
+        """
+        return self._current_mic_level
 
     def _get_model(self):
-        """Lazy-load the Whisper model."""
+        """Lazy-load the faster-whisper model (~4x faster than OpenAI Whisper)."""
         if self._whisper_model is None:
-            import whisper
-            print(f"[Speech] Loading Whisper model '{self.settings.whisper_model}'...")
-            self._whisper_model = whisper.load_model(self.settings.whisper_model)
-            print("[Speech] Whisper model loaded")
+            from faster_whisper import WhisperModel
+            model_size = self.settings.whisper_model
+            print(f"[Speech] Loading faster-whisper model '{model_size}' (CPU int8)...")
+            self._whisper_model = WhisperModel(
+                model_size,
+                device="cpu",
+                compute_type="int8",
+            )
+            print("[Speech] faster-whisper model loaded")
         return self._whisper_model
 
     def transcribe(self, audio_path: str | Path) -> str:
         """
-        Transcribe an audio file to text using Whisper.
+        Transcribe an audio file to text using faster-whisper.
 
         Args:
             audio_path: Path to the audio file (WAV/MP3/OGG)
@@ -40,8 +59,9 @@ class SpeechProcessor:
             Transcribed text
         """
         model = self._get_model()
-        result = model.transcribe(str(audio_path), language="en")
-        return result["text"].strip()
+        segments, info = model.transcribe(str(audio_path), language="en", beam_size=5, vad_filter=True)
+        text = " ".join(seg.text.strip() for seg in segments)
+        return text
 
     async def synthesize(self, text: str, voice: str = "en-US-JennyNeural") -> bytes:
         """
@@ -80,6 +100,39 @@ class SpeechProcessor:
         output_path.write_bytes(audio_bytes)
 
         return output_path
+
+    async def synthesize_pcm(self, text: str, voice: str = "") -> tuple[np.ndarray, int]:
+        """
+        Convert text to speech and return decoded PCM audio for in-memory playback.
+        Uses PyAV to decode MP3 bytes on-the-fly — no temp files needed.
+
+        Args:
+            text: The text to speak
+            voice: Edge TTS voice name (defaults to self.tts_voice)
+
+        Returns:
+            Tuple of (audio_float32 normalized to [-1.0, 1.0], sample_rate=24000)
+        """
+        import av
+
+        mp3_bytes = await self.synthesize(text, voice or self.tts_voice)
+
+        container = av.open(io.BytesIO(mp3_bytes), format="mp3")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
+
+        pcm_chunks: list[np.ndarray] = []
+        for frame in container.decode(audio=0):
+            resampled = resampler.resample(frame)
+            for r in resampled:
+                pcm_chunks.append(r.to_ndarray().flatten())
+
+        container.close()
+
+        if not pcm_chunks:
+            raise ValueError("No audio frames decoded from TTS output")
+
+        audio = np.concatenate(pcm_chunks).astype(np.float32) / 32768.0
+        return audio, 24000
 
     async def transcribe_microphone(self, duration: float = 5.0) -> str:
         """
@@ -265,6 +318,8 @@ class SpeechProcessor:
 
                 try:
                     rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    # Update live mic level (used by WebSocket for sphere reactivity)
+                    self._current_mic_level = min(1.0, rms / 10000.0)
                     if rms < energy_threshold:
                         silence_chunks += 1
                     else:
@@ -306,7 +361,7 @@ class SpeechProcessor:
         Returns a dict with:
             {"text": "...", "confidence": 0.0-1.0}
 
-        Confidence is derived from Whisper's avg_logprob per segment.
+        Confidence is derived from faster-whisper's avg_logprob per segment.
         """
         import numpy as np
 
@@ -322,19 +377,20 @@ class SpeechProcessor:
 
         try:
             model = self._get_model()
-            result = model.transcribe(str(temp_path), language="en")
-            text = result["text"].strip()
-            confidence = self._compute_confidence(result.get("segments", []))
+            segments, info = model.transcribe(str(temp_path), language="en", beam_size=5, vad_filter=True)
+            segments_list = list(segments)
+            text = " ".join(seg.text.strip() for seg in segments_list)
+            confidence = self._compute_confidence(segments_list)
             return {"text": text, "confidence": confidence}
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
-    def _compute_confidence(self, segments: list[dict]) -> float:
-        """Compute a 0.0–1.0 confidence score from Whisper segments.
+    def _compute_confidence(self, segments: list) -> float:
+        """Compute a 0.0–1.0 confidence score from faster-whisper segments.
 
         Uses avg_logprob (converted via exp() to average token probability)
-        and no_speech_prob as a penalty.  This gives a clean percentage-like
-        score where higher is more confident.
+        and no_speech_prob as a penalty.  Supports both dict-style and
+        attribute-style segment access (faster-whisper vs openai-whisper).
         """
         if not segments:
             return 0.0
@@ -343,18 +399,20 @@ class SpeechProcessor:
         weighted_sum = 0.0
 
         for seg in segments:
+            # Handle both dict-style (openai-whisper) and attribute-style (faster-whisper)
+            if isinstance(seg, dict):
+                token_prob = float(seg.get("avg_logprob", -5.0))
+                no_speech = float(seg.get("no_speech_prob", 0.0))
+                duration = float(seg.get("end", 1.0)) - float(seg.get("start", 0.0))
+            else:
+                token_prob = float(getattr(seg, "avg_logprob", -5.0))
+                no_speech = float(getattr(seg, "no_speech_prob", 0.0))
+                duration = float(getattr(seg, "end", 1.0)) - float(getattr(seg, "start", 0.0))
+
             # avg_logprob is negative, exp() gives average token probability in [0, 1]
-            token_prob = float(seg.get("avg_logprob", -5.0))
-            token_prob = max(0.0, min(1.0, 2.71828 ** token_prob))  # clamp to [0,1]
+            token_prob = max(0.0, min(1.0, 2.71828 ** token_prob))
 
             # no_speech_prob: higher → more likely not speech → penalise
-            no_speech = float(seg.get("no_speech_prob", 0.0))
-
-            # Duration available in (start, end) — use as weight
-            duration = float(seg.get("end", 1.0)) - float(seg.get("start", 0.0))
-            if duration <= 0:
-                duration = 1.0
-
             score = token_prob * (1.0 - no_speech)
             weighted_sum += score * duration
             total_weight += duration

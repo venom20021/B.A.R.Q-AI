@@ -5,6 +5,7 @@ import {
   Cloud, MessageCircle, Mic, Plus, X,
 } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
+import { useStreamingChat } from '../hooks/useStreamingChat'
 
 // ─── Glowing Digital Clock (purple) ────────────────────────────────────
 
@@ -785,6 +786,95 @@ export function DashboardPage(): JSX.Element {
   const [sttConfidence, setSttConfidence] = useState(0)  // confidence score 0.0-1.0 from STT
   const [activityFilter, setActivityFilter] = useState<'all' | 'weather' | 'chat' | 'voice' | 'system'>('all')
 
+  // ── Streaming response text (token-by-token for reduced latency) ──
+  const [streamingResponse, setStreamingResponse] = useState('')
+  const lastSttSentRef = useRef('')
+
+  // Audio element for TTS playback (same pattern as AiChatPanel)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const speakAudio = useCallback((audioBase64: string): void => {
+    if (!audioBase64) return
+    try {
+      // Stop any current playback and revoke old URL to prevent memory leak
+      if (audioRef.current) {
+        const oldSrc = audioRef.current.src
+        audioRef.current.pause()
+        if (oldSrc?.startsWith('blob:')) URL.revokeObjectURL(oldSrc)
+        audioRef.current = null
+      }
+      const binaryStr = atob(audioBase64)
+      const bytes = new Uint8Array(binaryStr.length)
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: 'audio/mpeg' })
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.onended = () => URL.revokeObjectURL(url)
+      audioRef.current = audio
+      void audio.play()
+    } catch {
+      // Audio playback unavailable — silently skip
+    }
+  }, [])
+
+  // Ref for stable callback access inside streaming handlers
+  const speakAudioRef = useRef(speakAudio)
+  speakAudioRef.current = speakAudio
+
+  const stream = useStreamingChat({
+    onToken: (token: string) => {
+      setStreamingResponse(prev => prev + token)
+    },
+    onAudio: (audioBase64: string) => {
+      // Play TTS audio as soon as it arrives in the stream
+      speakAudioRef.current(audioBase64)
+    },
+    onComplete: (fullText: string) => {
+      // Keep final text visible for a few seconds
+      setTimeout(() => setStreamingResponse(''), 6_000)
+    },
+    onError: () => {
+      setStreamingResponse('')
+    },
+  })
+
+  // Ref for stable access inside effect (avoids re-firing on every render)
+  const sendRef = useRef(stream.send)
+  sendRef.current = stream.send
+
+  // Cancel stream on unmount
+  useEffect(() => {
+    return () => { stream.cancel() }
+  }, [stream.cancel])
+
+  // Cleanup audio element on unmount (prevents memory leak from blob URLs)
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        const src = audioRef.current.src
+        audioRef.current.pause()
+        if (src?.startsWith('blob:')) URL.revokeObjectURL(src)
+        audioRef.current = null
+      }
+    }
+  }, [])
+
+  // Auto-trigger streaming when user finishes speaking and AI starts processing
+  useEffect(() => {
+    // When state transitions to 'thinking' and we have NEW STT text from the user
+    if (aiState === 'thinking' && sttText && sttText !== lastSttSentRef.current) {
+      lastSttSentRef.current = sttText
+      setStreamingResponse('')
+      sendRef.current(sttText)
+    }
+    // Clear response when idle
+    if (aiState === 'idle') {
+      setStreamingResponse('')
+    }
+  }, [aiState, sttText])
+
   const weather = useWeatherData()
   const { activities, liveCount, latestVoice } = useRealActivityFeed(weather)
   const {
@@ -1099,7 +1189,7 @@ export function DashboardPage(): JSX.Element {
             </div>
 
             {/* ── Live STT Transcript Caption (near the sphere) ──── */}
-            {sttText && (
+            {sttText && !streamingResponse && (
               <motion.div
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -1125,6 +1215,26 @@ export function DashboardPage(): JSX.Element {
                     title={`STT confidence: ${(sttConfidence * 100).toFixed(0)}%`}
                   >
                     {(sttConfidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </motion.div>
+            )}
+
+            {/* ── Streaming AI Response Text (token-by-token) ────── */}
+            {streamingResponse && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center mt-1.5 mb-1 max-w-md mx-auto"
+              >
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/8 border border-emerald-500/15">
+                  <span className="relative flex w-1.5 h-1.5">
+                    <span className="animate-ping absolute inset-0 rounded-full bg-emerald-400 opacity-40" />
+                    <span className="relative rounded-full w-1.5 h-1.5 bg-emerald-400" />
+                  </span>
+                  <span className="text-[11px] font-mono text-emerald-300/90 max-w-[320px] leading-relaxed">
+                    {streamingResponse}
+                    <span className="inline-block w-1 h-3.5 ml-0.5 bg-emerald-400/70 animate-pulse align-text-bottom" />
                   </span>
                 </div>
               </motion.div>
