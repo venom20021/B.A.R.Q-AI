@@ -25,7 +25,7 @@ from .audio_device import resolve_output_device, resolve_input_device
 class InterruptHandler:
     """Detects when the user speaks over BARQ's audio response."""
 
-    def __init__(self, energy_threshold: float = 500.0):
+    def __init__(self, energy_threshold: float = 300.0):
         self.is_playing = False
         self.should_stop = False
         self._pending_interrupt_task: Optional[asyncio.Task] = None

@@ -36,6 +36,8 @@ interface NavbarProps {
   isConversationActive?: boolean
   onMicToggle: () => void
   aiState?: AIState
+  language?: string         // 'en' or 'hi' — for language indicator badge
+  ttsVoice?: string         // e.g. 'en-US-JennyNeural', 'hi-IN-SwaraNeural'
 }
 
 const tabs: { id: NavTab; label: string; icon: typeof LayoutDashboard }[] = [
@@ -46,7 +48,30 @@ const tabs: { id: NavTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'SETTINGS', label: 'Settings', icon: Settings },
 ]
 
-export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMuted, onMicToggle, aiState = 'idle' }: NavbarProps): JSX.Element {
+// ── Language indicator helper ───────────────────────────────────────────
+
+const LANGUAGE_FLAGS: Record<string, string> = {
+  en: '🇬🇧',
+  hi: '🇮🇳',
+}
+
+function parseVoiceDisplayName(voiceId: string): string {
+  // Extract readable name from e.g. "hi-IN-SwaraNeural" → "Swara", "en-US-JennyNeural" → "Jenny"
+  const parts = voiceId.split('-')
+  const raw = parts.slice(2).join(' ')
+  return raw.replace(/Neural$/i, '').trim() || voiceId
+}
+
+function getLanguageLabel(lang: string, voice: string): { label: string; flag: string; voice: string } {
+  return {
+    label: lang.toUpperCase(),
+    flag: LANGUAGE_FLAGS[lang] ?? '🌐',
+    voice: parseVoiceDisplayName(voice),
+  }
+}
+
+
+export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMuted, onMicToggle, aiState = 'idle', language = 'en', ttsVoice = 'en-US-JennyNeural' }: NavbarProps): JSX.Element {
   const { accent, setAccent } = useTheme()
 
   const themeColors: { key: AccentColor; label: string; className: string }[] = [
@@ -93,6 +118,28 @@ export function Navbar({ activeTab, onTabChange, isConnected, isSpeaking, isMute
 
       {/* Right: Theme Selector + Connection + Mic Status */}
       <div className="flex items-center justify-end gap-3 w-72">
+        {/* ── Language Indicator Badge ── */}
+        <div
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all duration-300 ${
+            language === 'hi'
+              ? 'border-orange-500/25 bg-orange-500/8'
+              : 'border-cyan-500/20 bg-cyan-500/8'
+          }`}
+          title={`Language: ${language === 'hi' ? 'Hindi' : 'English'} — TTS: ${ttsVoice}`}
+        >
+          <span className="text-[10px] leading-none">
+            {getLanguageLabel(language, ttsVoice).flag}
+          </span>
+          <span className={`text-[8px] font-mono font-bold tracking-wider ${
+            language === 'hi' ? 'text-orange-300' : 'text-cyan-300'
+          }`}>
+            {getLanguageLabel(language, ttsVoice).label}
+          </span>
+          <span className="text-[7px] font-mono text-zinc-500 leading-none">
+            {getLanguageLabel(language, ttsVoice).voice}
+          </span>
+        </div>
+
         {/* ── Accent Color Buttons ── */}
         <div className="flex items-center gap-1 mr-1 px-2 py-1 rounded-lg bg-zinc-950/60 border border-zinc-800">
           {themeColors.map(t => (

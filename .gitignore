@@ -41,6 +41,7 @@ python/notes.json
 
 # Vosk speech models (~50MB each, downloaded per-user)
 python/models/
+models/
 
 # Python compiled artifacts
 python/*.egg-info/

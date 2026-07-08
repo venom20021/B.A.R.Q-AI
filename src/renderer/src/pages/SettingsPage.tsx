@@ -40,6 +40,11 @@ const TTS_VOICES = [
   { value: 'en-IN-NeerjaNeural', label: 'Neerja (Female - IN)' },
 ]
 
+const LANGUAGE_OPTIONS = [
+  { value: 'en', label: '🇬🇧 English' },
+  { value: 'hi', label: '🇮🇳 Hindi' },
+]
+
 const SENSITIVITY_LEVELS = ['low', 'medium', 'high']
 
 export function SettingsPage(): JSX.Element {
@@ -48,6 +53,11 @@ export function SettingsPage(): JSX.Element {
   const [voiceLoading, setVoiceLoading] = useState(false)
   const [togglingVoice, setTogglingVoice] = useState(false)
   const [selectedVoice, setSelectedVoice] = useState('en-US-JennyNeural')
+  const [selectedLanguage, setSelectedLanguage] = useState('en')  // 'en' or 'hi'
+  const [languageUpdating, setLanguageUpdating] = useState(false)
+  const [lastDetectedLanguage, setLastDetectedLanguage] = useState('')  // last auto-detected language
+  const [lastDetectedAt, setLastDetectedAt] = useState('')  // ISO timestamp of last auto-detection
+  const [tick, setTick] = useState(0)  // forces re-render for relative time display
   const [sensitivity, setSensitivity] = useState('medium')
   const [voiceUpdating, setVoiceUpdating] = useState(false)
   const [wakeSoundEnabled, setWakeSoundEnabled] = useState(true)
@@ -120,13 +130,25 @@ export function SettingsPage(): JSX.Element {
     try {
       const resp = await window.barq?.python.request('/voice/status')
       if (resp && typeof resp === 'object') {
-        const data = resp as unknown as VoiceStatus
+        const data = resp as unknown as VoiceStatus & { language?: string; tts_voice?: string; last_detected_language?: string; last_detected_at?: string }
         setVoiceStatus(data)
         if (data.wake_greeting_enabled !== undefined) {
           setWakeGreetingEnabled(data.wake_greeting_enabled)
         }
         if (data.weather_city) {
           setWeatherCity(data.weather_city)
+        }
+        if (data.language) {
+          setSelectedLanguage(data.language)
+        }
+        if (data.tts_voice) {
+          setSelectedVoice(data.tts_voice)
+        }
+        if (data.last_detected_language) {
+          setLastDetectedLanguage(data.last_detected_language)
+        }
+        if (data.last_detected_at) {
+          setLastDetectedAt(data.last_detected_at)
         }
       }
     } catch { /* ignore */ }
@@ -202,6 +224,21 @@ export function SettingsPage(): JSX.Element {
       await window.barq?.voice.setTtsVoice(voice)
     } catch { /* ignore */ }
     setVoiceUpdating(false)
+  }, [])
+
+  const handleLanguageChange = useCallback(async (lang: string) => {
+    setSelectedLanguage(lang)
+    setLanguageUpdating(true)
+    try {
+      await window.barq?.python.request('/voice/language', {
+        method: 'POST',
+        body: JSON.stringify({ language: lang }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch (err) {
+      console.error('[Settings] Language switch failed:', err)
+    }
+    setLanguageUpdating(false)
   }, [])
 
   const handleSensitivityChange = useCallback(async (level: string) => {
@@ -362,6 +399,12 @@ export function SettingsPage(): JSX.Element {
       setTimeout(() => setClearMsg(''), 3000) }
   }, [])
 
+  // Tick every 30s to keep the relative timestamp fresh
+  useEffect(() => {
+    const t = setInterval(() => setTick(v => v + 1), 1_000)
+    return () => clearInterval(t)
+  }, [])
+
   useEffect(() => {
     void fetchVoiceStatus()
     void fetchSettings()
@@ -444,6 +487,66 @@ export function SettingsPage(): JSX.Element {
                     <p className="text-xs font-exo text-dim-400">{voiceStatus?.stt_model || 'whisper'} (local)</p>
                   </div>
                   <span className="badge-cyan">Local</span>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Language</p>
+                    <p className="text-xs font-exo text-dim-400">Recognition & response language (auto-detected from speech unless locked)</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {renderSelect(selectedLanguage, LANGUAGE_OPTIONS, handleLanguageChange)}
+                    {languageUpdating && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
+                  </div>
+                </div>
+
+                {/* Auto-detection status indicator */}
+                <div className="flex items-center justify-between py-2 border-b border-cyan-500/5">
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-block w-2 h-2 rounded-full ${
+                      lastDetectedLanguage
+                        ? lastDetectedLanguage === 'hi'
+                          ? 'bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.5)]'
+                          : 'bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.5)]'
+                        : 'bg-dim-500/30'
+                    }`} />
+                    <div>
+                      <p className="text-xs font-rajdhani font-semibold text-ghost">
+                        Last Detected{" "}
+                        {lastDetectedLanguage ? (
+                          <span className={`font-bold ${
+                            lastDetectedLanguage === 'hi'
+                              ? 'text-orange-300'
+                              : 'text-cyan-300'
+                          }`}>
+                            {lastDetectedLanguage === 'hi' ? '🇮🇳 Hindi' : '🇬🇧 English'}
+                          </span>
+                        ) : (
+                          <span className="text-dim-400">—</span>
+                        )}
+                      </p>
+                      <p className="text-[10px] font-exo text-dim-500">
+                        {lastDetectedAt
+                          ? (() => {
+                              const diff = Date.now() - new Date(lastDetectedAt).getTime()
+                              const mins = Math.floor(diff / 60000)
+                              const secs = Math.floor((diff % 60000) / 1000)
+                              if (mins > 0) return `${mins}m ${secs}s ago`
+                              return `${secs}s ago`
+                            })()
+                          : 'Not yet detected — speak to auto-detect'}
+                      </p>
+                    </div>
+                  </div>
+                  {lastDetectedLanguage && (
+                    <span className={`text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded ${
+                      lastDetectedLanguage === 'hi'
+                        ? 'bg-orange-500/10 text-orange-300 border border-orange-500/15'
+                        : 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/15'
+                    }`}>
+                      AUTO
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">

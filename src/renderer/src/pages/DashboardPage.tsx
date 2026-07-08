@@ -784,6 +784,8 @@ export function DashboardPage(): JSX.Element {
   const [audioAmplitude, setAudioAmplitude] = useState(0)
   const [sttText, setSttText] = useState('')  // live interim transcription from STT
   const [sttConfidence, setSttConfidence] = useState(0)  // confidence score 0.0-1.0 from STT
+  const [dashboardLanguage, setDashboardLanguage] = useState('en')   // 'en' or 'hi'
+  const [dashboardTtsVoice, setDashboardTtsVoice] = useState('en-US-JennyNeural')
   const [activityFilter, setActivityFilter] = useState<'all' | 'weather' | 'chat' | 'voice' | 'system'>('all')
 
   // ── Streaming response text (token-by-token for reduced latency) ──
@@ -965,6 +967,8 @@ export function DashboardPage(): JSX.Element {
             setAudioAmplitude(data.mic_level ?? 0)
             setSttText(data.stt_text ?? '')
             setSttConfidence(data.stt_confidence ?? 0)
+            setDashboardLanguage(data.language ?? 'en')
+            setDashboardTtsVoice(data.tts_voice ?? 'en-US-JennyNeural')
 
             // Derive AI state from backend status (order matters: most specific first)
             if (data.is_speaking) {
@@ -976,6 +980,20 @@ export function DashboardPage(): JSX.Element {
             } else {
               setAiState('idle')
             }
+
+            // Dispatch language info to App.tsx for Navbar display
+            window.dispatchEvent(
+              new CustomEvent('barq:voice-status', {
+                detail: {
+                  conversation_active: data.conversation_active ?? false,
+                  is_listening: data.is_listening ?? false,
+                  is_speaking: data.is_speaking ?? false,
+                  is_processing: data.is_processing ?? false,
+                  language: data.language ?? 'en',
+                  tts_voice: data.tts_voice ?? 'en-US-JennyNeural',
+                },
+              })
+            )
           }
         } catch (err) {
           console.error('[Voice] WebSocket parse error:', err)
@@ -1115,6 +1133,18 @@ export function DashboardPage(): JSX.Element {
               </div>
             </div>
             <VoiceWaveform isListening={voiceListening} amplitude={audioAmplitude} />
+            {/* Language badge */}
+            <div
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[7px] font-mono font-bold tracking-wider leading-none ${
+                dashboardLanguage === 'hi'
+                  ? 'bg-orange-500/10 text-orange-300 border border-orange-500/15'
+                  : 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/15'
+              }`}
+              title={`Language: ${dashboardLanguage === 'hi' ? 'Hindi' : 'English'} — TTS: ${dashboardTtsVoice}`}
+            >
+              <span className="text-[8px]">{dashboardLanguage === 'hi' ? '🇮🇳' : '🇬🇧'}</span>
+              <span>{dashboardLanguage.toUpperCase()}</span>
+            </div>
             {/* WebSocket connection indicator */}
             <span
               className={`w-1 h-1 rounded-full transition-all duration-300 ${

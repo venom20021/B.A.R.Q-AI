@@ -421,6 +421,42 @@ def _on_conversation_stopped():
 # Wire up the callback now that the function is defined
 conversation_listener.on_stop = _on_conversation_stopped
 
+# ── Auto-language detection callback ──────────────────────────────────
+# Called by SpeechProcessor when faster-whisper auto-detects a different
+# language (e.g., English → Hindi).  Must be defined BEFORE wiring below.
+
+
+def _on_detected_language_change(language: str):
+    """Callback fired when SpeechProcessor auto-detects a language change.
+
+    Updates the global language state, TTS voice, and responder voice
+    so the entire voice pipeline switches seamlessly.
+    Also records the auto-detection timestamp for the Settings UI.
+    """
+    global _language, _last_detected_language, _last_detected_at
+    if language not in ("en", "hi"):
+        return
+    if language == _language:
+        return  # already set, no-op
+
+    _language = language
+    _last_detected_language = language
+    _last_detected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    speech_processor.stt_language = language
+
+    # Map detected language to matching TTS voice
+    if language == "hi":
+        _set_tts_voice_internal("hi-IN-SwaraNeural")
+    else:
+        _set_tts_voice_internal("en-US-JennyNeural")
+
+    print(f"[Voice] Auto-detected language change: {language} → TTS: {_tts_voice}")
+
+
+# Wire up auto-language detection from speech
+speech_processor.on_language_detected = _on_detected_language_change
+
+
 def _on_wake_word_callback():
     """Callback fired when wake word is detected by the background listener.
 
@@ -555,6 +591,8 @@ async def load_sound_settings():
 _tts_voice: str = "en-US-JennyNeural"
 _sensitivity: str = "medium"
 _language: str = "en"  # "en" or "hi"
+_last_detected_language: str = ""  # set by auto-detection callback (not manual switch)
+_last_detected_at: str = ""  # ISO timestamp of last auto-detection
 _hands_free_mode: bool = True  # Alexa/Gemini-style hands-free conversation mode
 _wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected (separate from hands-free)
 _vad_silence_timeout: float = 0.4  # VAD endpointing silence threshold in seconds (300-500ms range)
@@ -723,21 +761,30 @@ async def get_language():
 
 @router.post("/language")
 async def set_language(request: LanguageRequest):
-    """Switch wake word detection language between English and Hindi."""
-    global _language
+    """Switch wake word detection language between English and Hindi.
+    Also auto-switches the TTS voice to match the selected language."""
+    global _language, _tts_voice
     if request.language not in ("en", "hi"):
         raise HTTPException(status_code=400, detail="Language must be 'en' or 'hi'")
 
     _language = request.language
+    # Propagate STT language so faster-whisper transcribes in the correct language
+    speech_processor.stt_language = request.language
     detector = get_wake_word_detector()
     success = detector.set_language(request.language)
 
     if not success:
         raise HTTPException(status_code=400, detail=f"Hindi model not available. Download vosk-model-small-hi-0.22")
 
+    # Auto-switch TTS voice to match the language
+    if request.language == "hi":
+        _set_tts_voice_internal("hi-IN-SwaraNeural")
+    else:
+        _set_tts_voice_internal("en-US-JennyNeural")
+
     await settings_dao.set_setting("voice_language", request.language, "voice")
-    await analytics_dao.log_activity("voice", "language", f"Switched to {request.language}")
-    return {"status": "set", "language": request.language}
+    await analytics_dao.log_activity("voice", "language", f"Switched to {request.language}, TTS: {_tts_voice}")
+    return {"status": "set", "language": request.language, "tts_voice": _tts_voice}
 
 
 @router.post("/chat")
@@ -792,12 +839,18 @@ async def chat_text_only(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _set_tts_voice_internal(voice: str):
+    """Internal helper to set TTS voice across all components."""
+    global _tts_voice
+    _tts_voice = voice
+    speech_processor.tts_voice = voice
+    responder.tts_voice = voice
+
+
 @router.post("/set-tts-voice")
 async def set_tts_voice(request: TTSVoiceRequest):
     """Set the TTS voice for speech synthesis."""
-    global _tts_voice
-    _tts_voice = request.voice
-    speech_processor.tts_voice = request.voice
+    _set_tts_voice_internal(request.voice)
     await settings_dao.set_setting("tts_voice", request.voice, "voice")
     await analytics_dao.log_activity("voice", "tts_voice", f"TTS voice set to {request.voice}")
     return {"status": "set", "voice": request.voice}
@@ -807,12 +860,16 @@ async def set_tts_voice(request: TTSVoiceRequest):
 async def list_tts_voices():
     """List available TTS voices."""
     voices = [
+        # English
         {"id": "en-US-JennyNeural", "name": "Jenny", "gender": "Female", "locale": "en-US"},
         {"id": "en-US-GuyNeural", "name": "Guy", "gender": "Male", "locale": "en-US"},
         {"id": "en-GB-SoniaNeural", "name": "Sonia", "gender": "Female", "locale": "en-GB"},
         {"id": "en-GB-RyanNeural", "name": "Ryan", "gender": "Male", "locale": "en-GB"},
         {"id": "en-AU-NatashaNeural", "name": "Natasha", "gender": "Female", "locale": "en-AU"},
         {"id": "en-IN-NeerjaNeural", "name": "Neerja", "gender": "Female", "locale": "en-IN"},
+        # Hindi (India)
+        {"id": "hi-IN-SwaraNeural", "name": "Swara", "gender": "Female", "locale": "hi-IN"},
+        {"id": "hi-IN-MadhurNeural", "name": "Madhur", "gender": "Male", "locale": "hi-IN"},
     ]
     return {"voices": voices, "current": _tts_voice}
 
@@ -1704,6 +1761,10 @@ async def voice_status_ws(websocket: WebSocket):
                 "mic_level": round(mic_level, 4),
                 "stt_text": getattr(responder, 'stt_text', ''),
                 "stt_confidence": getattr(responder, 'stt_confidence', 0.0),
+                "language": _language,
+                "tts_voice": _tts_voice,
+                "last_detected_language": _last_detected_language,
+                "last_detected_at": _last_detected_at,
             })
             await asyncio.sleep(0.1)
     except WebSocketDisconnect:
@@ -1736,6 +1797,8 @@ async def voice_status():
         "stt_model": "whisper",
         "tts_model": "edge-tts",
         "tts_voice": _tts_voice,
+        "last_detected_language": _last_detected_language,
+        "last_detected_at": _last_detected_at,
         "sensitivity": _sensitivity,
         "last_confidence": round(last_confidence, 4),
         "conversation_active": responder.conversation.is_active,
