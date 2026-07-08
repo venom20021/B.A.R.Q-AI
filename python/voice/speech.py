@@ -24,6 +24,11 @@ class SpeechProcessor:
         self.settings = get_settings()
         self._whisper_model: Any = None
         self.tts_voice: str = "en-US-JennyNeural"
+        # STT language: "en" or "hi" — defaults to English, auto-detected from speech
+        self.stt_language: str = "en"
+        # Callback fired when language is auto-detected to differ from current
+        # signature: on_language_detected(detected_lang: str) -> None
+        self.on_language_detected: Optional[callable] = None
         # Live mic level tracking — updated by transcribe_streaming() every chunk
         self._current_mic_level: float = 0.0
 
@@ -52,6 +57,9 @@ class SpeechProcessor:
         """
         Transcribe an audio file to text using faster-whisper.
 
+        Auto-detects the spoken language from the audio (language=None)
+        and switches the system language + TTS voice accordingly.
+
         Args:
             audio_path: Path to the audio file (WAV/MP3/OGG)
 
@@ -59,8 +67,16 @@ class SpeechProcessor:
             Transcribed text
         """
         model = self._get_model()
-        segments, info = model.transcribe(str(audio_path), language="en", beam_size=5, vad_filter=True)
-        text = " ".join(seg.text.strip() for seg in segments)
+        # language=None → faster-whisper auto-detects the language
+        segments, info = model.transcribe(str(audio_path), language=None, beam_size=3, vad_filter=True)
+        # Build segments list once for both text and confidence
+        segments_list = list(segments)
+        text = " ".join(seg.text.strip() for seg in segments_list)
+        confidence = self._compute_confidence(segments_list)
+
+        # ── Auto-detect and switch language ────────────────────────
+        self._handle_detected_language(info, text, confidence)
+
         return text
 
     async def synthesize(self, text: str, voice: str = "en-US-JennyNeural") -> bytes:
@@ -358,8 +374,11 @@ class SpeechProcessor:
     async def _transcribe_frames(self, frames: list) -> dict:
         """Helper: save audio frames to a temp WAV and return transcription + confidence.
 
+        Auto-detects language from the audio (language=None) and switches
+        the system language + TTS voice if a different language is detected.
+
         Returns a dict with:
-            {"text": "...", "confidence": 0.0-1.0}
+            {"text": "...", "confidence": 0.0-1.0, "language": "en"|"hi"}
 
         Confidence is derived from faster-whisper's avg_logprob per segment.
         """
@@ -377,13 +396,59 @@ class SpeechProcessor:
 
         try:
             model = self._get_model()
-            segments, info = model.transcribe(str(temp_path), language="en", beam_size=5, vad_filter=True)
+            # language=None → faster-whisper auto-detects the language from audio
+            segments, info = model.transcribe(str(temp_path), language=None, beam_size=3, vad_filter=True)
             segments_list = list(segments)
             text = " ".join(seg.text.strip() for seg in segments_list)
             confidence = self._compute_confidence(segments_list)
-            return {"text": text, "confidence": confidence}
+
+            # ── Auto-detect and switch language ────────────────────
+            self._handle_detected_language(info, text, confidence)
+            detected_lang = getattr(info, "language", None) or "en"
+
+            return {
+                "text": text,
+                "confidence": confidence,
+                "language": detected_lang,
+            }
         finally:
             Path(temp_path).unlink(missing_ok=True)
+
+    def _handle_detected_language(self, info, text: str, confidence: float):
+        """Check the detected language and switch system language if needed.
+
+        Used by the file-based ``transcribe()`` path.
+
+        Args:
+            info: faster-whisper info object (has .language attribute).
+            text: Transcribed text (must be non-empty to avoid noise-triggered switches).
+            confidence: Confidence score (0.0–1.0) from ``_compute_confidence()``.
+        """
+        detected_lang = getattr(info, "language", None) or "en"
+        if self._should_switch_language(detected_lang, text, confidence):
+            self.stt_language = detected_lang
+            if self.on_language_detected:
+                try:
+                    self.on_language_detected(detected_lang)
+                except Exception as e:
+                    print(f"[Speech] Language change callback error: {e}")
+
+    def _should_switch_language(self, detected_lang: str, text: str, confidence: float | None) -> bool:
+        """Decide whether to switch the active language based on detection.
+
+        Only auto-switches between "en" and "hi".  Requires non-empty text
+        to avoid switching on noise.  If a confidence score is available,
+        also requires it to be >= 0.3 to avoid false positives from noisy audio.
+        """
+        if detected_lang not in ("en", "hi"):
+            return False
+        if detected_lang == self.stt_language:
+            return False
+        if not text or not text.strip():
+            return False
+        if confidence is not None and confidence < 0.3:
+            return False
+        return True
 
     def _compute_confidence(self, segments: list) -> float:
         """Compute a 0.0–1.0 confidence score from faster-whisper segments.

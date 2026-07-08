@@ -15,7 +15,12 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Conversation mode** — Natural back-and-forth like Alexa/Gemini; no need to say the wake word for every turn
 - **VAD endpointing** — Automatically detects when you stop speaking
 - **Barge-in** — Interrupt BARQ mid-response by speaking over it
-- **Multilingual** — English + Hindi wake word support
+- **Auto-language detection** — Detects English or Hindi from speech automatically and switches TTS voice (Jenny ↔ Swara) in real-time
+- **Language indicators** — 🇬🇧/🇮🇳 badges in both the Navbar and mic toggle area show the current language at a glance
+- **Manual language switch** — Dropdown in Settings to lock recognition to English or Hindi
+- **Auto-detection status** — Settings page shows which language was last auto-detected with a live timestamp
+- **Hindi Vosk model** — Wake word detection works in both English and Hindi
+- **Small talk handler** — Canned responses for greetings, thanks, goodbyes — no LLM latency for common phrases
 - **Configurable wake word** — Change it anytime via API
 
 ### 🧠 AI-Powered Conversation
@@ -58,6 +63,7 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Orbital rings** — Rotating rings with speed boost animation on theme switch
 - **Live system metrics** — Real-time CPU, memory, disk sparkline charts polling the backend every 2s
 - **Multi-city weather** — Track weather for multiple cities with live data from the backend
+- **Language badge** — 🇬🇧/🇮🇳 indicator in the Navbar and mic toggle button, updating in real-time via WebSocket
 
 ---
 
@@ -251,8 +257,10 @@ The Python backend exposes a REST API on `http://127.0.0.1:8956`. Full OpenAPI d
 | GET | `/voice/status` | Get voice system status |
 | GET | `/voice/mic-level` | Get current microphone level |
 | POST | `/voice/sensitivity` | Set detection sensitivity (low/medium/high) |
-| POST | `/voice/language` | Switch language (en/hi) |
 | POST | `/voice/set-tts-voice` | Change TTS voice |
+| GET | `/voice/language` | Get current language setting |
+| POST | `/voice/language` | Switch language (en/hi) — auto-changes TTS voice |
+| GET | `/ws/status` | WebSocket for real-time voice status (mic level, language, STT text) |
 
 ### System Endpoints
 

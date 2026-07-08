@@ -141,6 +141,8 @@ function AppContent(): JSX.Element {
   const [isMuted, setIsMuted] = useState(false)
   const [isConversationActive, setIsConversationActive] = useState(false)
   const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
+  const [language, setLanguage] = useState('en')           // 'en' or 'hi'
+  const [ttsVoice, setTtsVoice] = useState('en-US-JennyNeural')
 
   const activeTab = routeToTab(location.pathname)
 
@@ -187,10 +189,14 @@ function AppContent(): JSX.Element {
       is_listening: boolean
       is_speaking: boolean
       is_processing: boolean
+      language: string
+      tts_voice: string
     }>): void => {
       const detail = e.detail
       setIsConversationActive(detail.conversation_active)
       setIsSpeaking(detail.is_speaking)
+      setLanguage(detail.language ?? 'en')
+      setTtsVoice(detail.tts_voice ?? 'en-US-JennyNeural')
 
       // Derive AI state from backend status (same logic as DashboardPage)
       if (detail.is_speaking) {
@@ -304,6 +310,8 @@ function AppContent(): JSX.Element {
           isConversationActive={isConversationActive}
           onMicToggle={handleMicToggle}
           aiState={aiState}
+          language={language}
+          ttsVoice={ttsVoice}
         />
 
         {/* Content area: Sidebar + Main */}

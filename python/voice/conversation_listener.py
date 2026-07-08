@@ -31,7 +31,7 @@ from voice.pipeline import (
 
 # Aggressive silence endpointing defaults (overridable per-instance)
 # Use conversation_listener.vad_silence_timeout to customise at runtime
-VAD_SILENCE_TIMEOUT = 0.4        # seconds of silence before cutting
+VAD_SILENCE_TIMEOUT = 0.25       # seconds of silence before cutting (250ms for faster response)
 VAD_ENERGY_THRESHOLD = 300.0     # RMS floor
 VAD_MAX_DURATION = 15.0          # safety cap
 
@@ -248,10 +248,8 @@ class ConversationListener:
 
                     if interrupted:
                         print("[Conversation] Barge-in — flushing LLM & restarting listen")
-                        # Small delay to let PortAudio release the barge-in stream handle
-                        # before the STT stream opens on the next iteration.
-                        # Prevents "Device busy" / resource contention on Windows.
-                        await asyncio.sleep(0.5)
+                        # Brief delay to let PortAudio release resources before STT reopens.
+                        await asyncio.sleep(0.15)
                         continue
 
                 except Exception as e:
@@ -369,7 +367,7 @@ class ConversationListener:
 
                     if interrupted:
                         print("[Conversation·Pipeline] Barge-in — restarting listen")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.15)
                         continue
 
                 except Exception as e:
