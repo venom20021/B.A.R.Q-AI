@@ -1,5 +1,4 @@
 import { app, Menu, Tray, BrowserWindow, nativeImage } from 'electron'
-import { join } from 'path'
 import { toggleOverlay, isOverlayVisible } from './overlay-manager'
 
 let tray: Tray | null = null

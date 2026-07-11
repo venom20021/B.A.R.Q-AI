@@ -9,8 +9,9 @@ Provides:
 
 import secrets
 from typing import Optional
-from fastapi import Depends, HTTPException, Header, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config import get_settings
 

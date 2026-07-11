@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, act, cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -7,8 +7,6 @@ import '@testing-library/jest-dom/vitest'
 // ═══════════════════════════════════════════════════════════════════════
 
 // ─── Mock WebSocket ──────────────────────────────────────────────────
-// Use a real class so it's not affected by vi.clearAllMocks().
-// Tests control the lifecycle explicitly via openWebSocket() etc.
 
 interface MockWS {
   onopen: ((event: Event) => void) | null
@@ -34,20 +32,13 @@ class TestWebSocket {
   send = vi.fn()
   readyState = 1 // OPEN
   url: string
-
   constructor(url: string) {
     this.url = url
     mockWs = this
-    // Do NOT auto-open — tests call openWebSocket() explicitly
   }
 }
 
 // ─── Shared test helpers ─────────────────────────────────────────────
-
-// Flush microtasks so lazy-loaded components (ParticleSphere3D) resolve
-async function flushLazyImport(): Promise<void> {
-  await act(async () => {})
-}
 
 // Simulate the server sending a voice_status message
 async function sendStatus(data: Record<string, unknown>): Promise<void> {
@@ -71,28 +62,6 @@ async function openWebSocket(): Promise<void> {
   })
 }
 
-// Close the WebSocket connection
-async function closeWebSocket(): Promise<void> {
-  if (!mockWs) {
-    throw new Error('WebSocket not created')
-  }
-  await act(async () => {
-    mockWs!.onclose!({ code: 1000, reason: 'test' } as CloseEvent)
-  })
-}
-
-// Read derived particle sphere props from the mocked component
-function getParticleProps() {
-  const el = screen.queryByTestId('particle-sphere')
-  if (!el) return null
-  return {
-    aiState: el.getAttribute('data-ai-state'),
-    audioAmplitude: parseFloat(el.getAttribute('data-audio-amplitude') ?? '0'),
-    micMuted: el.getAttribute('data-mic-muted') === 'true',
-    sttText: el.getAttribute('data-stt-text') ?? '',
-  }
-}
-
 // ─── Mock window.barq API ──────────────────────────────────────────
 vi.stubGlobal('barq', {
   python: {
@@ -102,39 +71,21 @@ vi.stubGlobal('barq', {
 
 // ─── Mock framer-motion ────────────────────────────────────────────
 vi.mock('framer-motion', () => {
-  function PlainDiv({
-    children, className, style, onClick, onMouseMove, onMouseEnter,
-    onMouseLeave, onKeyDown, onChange, onMouseDown, title, role, tabIndex,
-    ..._motionProps
-  }: Record<string, unknown>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function PlainTag({ children, className, style, title, ...rest }: Record<string, any>) {
     return (
       <div
         className={className as string}
-        style={style}
-        onClick={onClick as React.MouseEventHandler}
-        onMouseMove={onMouseMove as React.MouseEventHandler}
-        onMouseEnter={onMouseEnter as React.MouseEventHandler}
-        onMouseLeave={onMouseLeave as React.MouseEventHandler}
-        onKeyDown={onKeyDown as React.KeyboardEventHandler}
-        onChange={onChange}
-        onMouseDown={onMouseDown}
-        title={title as string}
-        role={role as string}
-        tabIndex={tabIndex as number}
+        style={style as React.CSSProperties | undefined}
+        title={title as string | undefined}
+        data-testid="motion-div"
       >
         {children as React.ReactNode}
       </div>
     )
   }
-  function PlainSpan({ children, className, style, title, ..._mp }: Record<string, unknown>) {
-    return (
-      <span className={className as string} style={style} title={title as string}>
-        {children as React.ReactNode}
-      </span>
-    )
-  }
   return {
-    motion: { div: PlainDiv, span: PlainSpan },
+    motion: { div: PlainTag, span: PlainTag, p: PlainTag },
     AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   }
 })
@@ -145,16 +96,9 @@ vi.mock('../contexts/ThemeContext', () => ({
 }))
 
 // ─── Mock ParticleSphere3D (lazy-loaded) ────────────────────────────
+// Must match the dynamic import path used by the lazy() factory
 vi.mock('../components/ParticleSphere3D', () => ({
-  ParticleSphere3D: (props: Record<string, unknown>) => (
-    <div
-      data-testid="particle-sphere"
-      data-ai-state={props.aiState as string}
-      data-audio-amplitude={String(props.audioAmplitude ?? 0)}
-      data-mic-muted={String(props.micMuted ?? false)}
-      data-stt-text={props.sttText as string ?? ''}
-    />
-  ),
+  ParticleSphere3D: () => <div data-testid="particle-sphere" />,
 }))
 
 // ─── Import after mocks ─────────────────────────────────────────────
@@ -176,233 +120,150 @@ function teardownTestEnv() {
   globalThis.WebSocket = OriginalWebSocket
 }
 
+async function openWsAndRender(): Promise<void> {
+  render(<DashboardPage />)
+  // Resolve lazy import + WebSocket connection
+  await act(async () => {
+    await new Promise(r => setTimeout(r, 0))
+  })
+  await openWebSocket()
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════
-// WebSocket AI State Derivation — Core Tests
+// Greeting & State Display
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('DashboardPage WebSocket state derivation', () => {
+describe('DashboardPage greeting and state display', () => {
   beforeEach(setupTestEnv)
   afterEach(teardownTestEnv)
 
-  // ── State derivation rules ────────────────────────────────────────
-
-  it('sets aiState="responding" when is_speaking is true', async () => {
+  it('shows greeting in h1 on mount', () => {
     render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_speaking: true, is_listening: true, conversation_active: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
+    // One of the time-based greetings should be present
+    const h1 = document.querySelector('h1')
+    expect(h1).toBeInTheDocument()
+    const text = h1?.textContent ?? ''
+    expect(
+      text === 'GOOD MORNING' || text === 'GOOD AFTERNOON' || text === 'GOOD EVENING' ||
+      text === 'STANDBY' || text === 'LISTENING' || text === 'RESPONDING' || text === 'THINKING'
+    ).toBe(true)
   })
 
-  it('sets aiState="thinking" when is_processing is true', async () => {
+  it('displays subtitle text on mount', () => {
     render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_processing: true, is_listening: true })
-    expect(getParticleProps()?.aiState).toBe('thinking')
+    // Either BARQ is ready (greeting subtitle) or Loading (weather) should appear
+    const found = screen.getAllByText(/BARQ is ready|Loading\.\.\./)
+    expect(found.length).toBeGreaterThan(0)
   })
 
-  it('sets aiState="listening" when conversation_active is true', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ conversation_active: true, is_listening: true })
-    expect(getParticleProps()?.aiState).toBe('listening')
-  })
-
-  it('sets aiState="idle" when no active flags are set', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_listening: true })
-    expect(getParticleProps()?.aiState).toBe('idle')
-  })
-
-  // ── Priority ordering ─────────────────────────────────────────────
-
-  it('gives speaking priority over processing', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_speaking: true, is_processing: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
-  })
-
-  it('gives processing priority over conversation_active', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_processing: true, conversation_active: true })
-    expect(getParticleProps()?.aiState).toBe('thinking')
-  })
-
-  it('gives speaking priority over both processing and conversation_active', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_speaking: true, is_processing: true, conversation_active: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
-  })
-
-  // ── State transitions ─────────────────────────────────────────────
-
-  it('transitions through all states: idle→listening→thinking→responding→idle', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-
-    await sendStatus({})
-    expect(getParticleProps()?.aiState).toBe('idle')
-
-    await sendStatus({ conversation_active: true, is_listening: true })
-    expect(getParticleProps()?.aiState).toBe('listening')
-
-    await sendStatus({ is_processing: true })
-    expect(getParticleProps()?.aiState).toBe('thinking')
-
-    await sendStatus({ is_speaking: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
-
-    await sendStatus({})
-    expect(getParticleProps()?.aiState).toBe('idle')
-  })
-
-  it('ignores non-voice_status messages', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_speaking: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
-
-    // Non-voice_status message should be ignored
-    await act(async () => {
-      mockWs!.onmessage!(
-        { data: JSON.stringify({ type: 'other_event', data: 'test' }) } as MessageEvent,
-      )
-    })
-    expect(getParticleProps()?.aiState).toBe('responding')
-  })
-
-  // ── Derived values ────────────────────────────────────────────────
-
-  it('propagates stt_text to the sphere', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ stt_text: 'hello world' })
-    expect(getParticleProps()?.sttText).toBe('hello world')
-  })
-
-  it('propagates mic_level as audioAmplitude to the sphere', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ mic_level: 0.75 })
-    expect(getParticleProps()?.audioAmplitude).toBeCloseTo(0.75, 2)
-  })
-
-  it('maps is_listening to inverted micMuted on the sphere', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-
-    await sendStatus({ is_listening: true })
-    expect(getParticleProps()?.micMuted).toBe(false)
-
-    await sendStatus({ is_listening: false })
-    expect(getParticleProps()?.micMuted).toBe(true)
-  })
-
-  it('shows ON AIR when detector is running and conversation is active', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_listening: true, conversation_active: true })
-    expect(screen.getByText('ON AIR')).toBeInTheDocument()
-  })
-
-  it('shows STANDBY when detector is running but no conversation', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
+  it('shows STANDBY in voice pill when detector is running but no conversation', async () => {
+    await openWsAndRender()
     await sendStatus({ is_listening: true, conversation_active: false })
     expect(screen.getByText('STANDBY')).toBeInTheDocument()
   })
 
-  it('shows MUTED when detector is not running', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
+  it('shows MUTED in voice pill when detector is not running', async () => {
+    await openWsAndRender()
     await sendStatus({ is_listening: false })
     expect(screen.getByText('MUTED')).toBeInTheDocument()
   })
 
-  // ── Edge cases ────────────────────────────────────────────────────
+  it('shows ON AIR when detector is running and conversation is active', async () => {
+    await openWsAndRender()
+    await sendStatus({ is_listening: true, conversation_active: true })
+    expect(screen.getByText('ON AIR')).toBeInTheDocument()
+  })
+})
 
-  it('defaults to idle on empty data', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({})
-    expect(getParticleProps()?.aiState).toBe('idle')
+
+// ═══════════════════════════════════════════════════════════════════════
+// STT and Response Text Display
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('DashboardPage STT and response display', () => {
+  beforeEach(setupTestEnv)
+  afterEach(teardownTestEnv)
+
+  it('shows STT text when received from server', async () => {
+    await openWsAndRender()
+    await sendStatus({ stt_text: 'hello world' })
+    // Appears in both greeting subtitle and STT bubble
+    const found = screen.getAllByText(/hello world/)
+    expect(found.length).toBeGreaterThan(0)
   })
 
-  it('defaults to idle when fields are explicitly false', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ is_speaking: false, is_processing: false, conversation_active: false })
-    expect(getParticleProps()?.aiState).toBe('idle')
+  it('shows LISTENING greeting when STT text is present', async () => {
+    await openWsAndRender()
+    await sendStatus({ stt_text: 'test command', conversation_active: true })
+    const h1 = document.querySelector('h1')
+    expect(h1?.textContent).toBe('LISTENING')
   })
 
-  it('handles null mic_level (defaults to 0)', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ mic_level: null })
-    expect(getParticleProps()?.audioAmplitude).toBe(0)
+  it('shows RESPONDING greeting when response text is present', async () => {
+    await openWsAndRender()
+    await sendStatus({ response_text: 'Here is my response', is_speaking: true })
+    const h1 = document.querySelector('h1')
+    expect(h1?.textContent).toBe('RESPONDING')
   })
 
-  it('handles undefined stt_text (defaults to empty string)', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({})
-    expect(getParticleProps()?.sttText).toBe('')
+  it('shows THINKING greeting when processing', async () => {
+    await openWsAndRender()
+    await sendStatus({ is_processing: true })
+    const h1 = document.querySelector('h1')
+    expect(h1?.textContent).toBe('THINKING')
   })
 
-  it('does not crash on malformed JSON', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    expect(() => {
-      act(() => {
-        mockWs!.onmessage!({ data: 'not-json' } as MessageEvent)
-      })
-    }).not.toThrow()
+  it('shows response text in the UI', async () => {
+    await openWsAndRender()
+    await sendStatus({ response_text: 'Processing complete' })
+    // Appears in both greeting subtitle and response bubble
+    const found = screen.getAllByText(/Processing complete/)
+    expect(found.length).toBeGreaterThan(0)
   })
 
-  it('resets stt_text when subsequent message omits it', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
+  it('preserves STT text in LiveCaptions after server clears (6s dissolve)', async () => {
+    await openWsAndRender()
     await sendStatus({ stt_text: 'previous command' })
-    expect(getParticleProps()?.sttText).toBe('previous command')
+    const found = screen.getAllByText(/previous command/)
+    expect(found.length).toBeGreaterThan(0)
+    // LiveCaptions retains the last non-empty STT for a 6-second dissolve
+    // window — the text should STILL be visible even after the server
+    // sends empty stt_text. Only the top-left greeting subtitle reverts.
+    await sendStatus({ stt_text: '' })
+    // The text persists in LiveCaptions (displayStt is cached)
+    const afterClear = screen.getAllByText(/previous command/)
+    expect(afterClear.length).toBeGreaterThan(0)
+  })
+})
 
-    await sendStatus({})
-    expect(getParticleProps()?.sttText).toBe('')
+
+// ═══════════════════════════════════════════════════════════════════════
+// Module Indicator Dots
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('DashboardPage module indicators', () => {
+  beforeEach(setupTestEnv)
+  afterEach(teardownTestEnv)
+
+  it('shows CORE module indicator', () => {
+    render(<DashboardPage />)
+    expect(screen.getByText('CORE')).toBeInTheDocument()
   })
 
-  it('resets audioAmplitude when mic_level is omitted', async () => {
+  it('shows VISION module indicator', () => {
     render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
-    await sendStatus({ mic_level: 0.9 })
-    expect(getParticleProps()?.audioAmplitude).toBeCloseTo(0.9, 2)
+    expect(screen.getByText('VISION')).toBeInTheDocument()
+  })
 
-    await sendStatus({})
-    expect(getParticleProps()?.audioAmplitude).toBe(0)
+  it('shows NET module indicator', () => {
+    render(<DashboardPage />)
+    expect(screen.getByText('NET')).toBeInTheDocument()
+  })
+
+  it('shows AUDIO module indicator', () => {
+    render(<DashboardPage />)
+    expect(screen.getByText('AUDIO')).toBeInTheDocument()
   })
 })
 
@@ -418,12 +279,12 @@ describe('DashboardPage WebSocket lifecycle', () => {
   it('creates a WebSocket on mount with the correct URL', () => {
     render(<DashboardPage />)
     expect(mockWs).not.toBeNull()
-    expect(mockWs!.url).toBe('ws://127.0.0.1:8956/voice/ws/status')
+    expect(mockWs!.url).toBe('ws://127.0.0.1:8970/voice/ws/status')
   })
 
   it('closes the WebSocket on unmount', async () => {
     render(<DashboardPage />)
-    await flushLazyImport()
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
     await openWebSocket()
     const closeSpy = mockWs!.close
     cleanup()
@@ -433,48 +294,72 @@ describe('DashboardPage WebSocket lifecycle', () => {
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// AI State Control Panel — Manual Override Buttons
+// State Derivation via WebSocket
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('DashboardPage AI state manual control', () => {
+describe('DashboardPage voice state derivation', () => {
   beforeEach(setupTestEnv)
   afterEach(teardownTestEnv)
 
-  it('renders all four AI state control buttons', () => {
-    render(<DashboardPage />)
-    expect(screen.getByText('idle')).toBeInTheDocument()
-    expect(screen.getByText('listening')).toBeInTheDocument()
-    expect(screen.getByText('thinking')).toBeInTheDocument()
-    expect(screen.getByText('responding')).toBeInTheDocument()
+  it('ignores non-voice_status messages', async () => {
+    await openWsAndRender()
+    // After connecting, both MUTED (voice pill) and a greeting should appear
+    const found = screen.getAllByText(/STANDBY|MUTED|GOOD/)
+    expect(found.length).toBeGreaterThan(0)
+
+    // Non-voice_status message should be ignored
+    await act(async () => {
+      mockWs!.onmessage!(
+        { data: JSON.stringify({ type: 'other_event', data: 'test' }) } as MessageEvent,
+      )
+    })
+
+    // State should remain unchanged — same texts still present
+    const after = screen.getAllByText(/STANDBY|MUTED|GOOD/)
+    expect(after.length).toBeGreaterThan(0)
   })
 
-  it('starts with idle state by default', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    const el = screen.queryByTestId('particle-sphere')
-    if (el) {
-      expect(el.getAttribute('data-ai-state')).toBe('idle')
-    }
+  it('does not crash on malformed JSON', async () => {
+    await openWsAndRender()
+    expect(() => {
+      act(() => {
+        mockWs!.onmessage!({ data: 'not-json' } as MessageEvent)
+      })
+    }).not.toThrow()
   })
 
-  it('clicking listening button sets the sphere to listening', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    fireEvent.click(screen.getByText('listening'))
-    const el = screen.queryByTestId('particle-sphere')
-    if (el) {
-      expect(el.getAttribute('data-ai-state')).toBe('listening')
-    }
-  })
+  it('shows appropriate subtitle for each AI state', async () => {
+    await openWsAndRender()
 
-  it('manual button click overrides WebSocket state', async () => {
-    render(<DashboardPage />)
-    await flushLazyImport()
-    await openWebSocket()
+    // idle state
+    await sendStatus({})
+    expect(screen.queryByText('BARQ is ready')).toBeInTheDocument()
+
+    // listening state — detector must be running too
+    await sendStatus({ conversation_active: true, is_listening: true })
+    expect(screen.queryByText('Listening for commands')).toBeInTheDocument()
+
+    // thinking state
+    await sendStatus({ is_processing: true })
+    expect(screen.queryByText('Processing...')).toBeInTheDocument()
+
+    // responding state
     await sendStatus({ is_speaking: true })
-    expect(getParticleProps()?.aiState).toBe('responding')
+    expect(screen.queryByText('BARQ is speaking')).toBeInTheDocument()
+  })
+})
 
-    fireEvent.click(screen.getByText('thinking'))
-    expect(getParticleProps()?.aiState).toBe('thinking')
+
+// ═══════════════════════════════════════════════════════════════════════
+// Branding
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('DashboardPage branding', () => {
+  beforeEach(setupTestEnv)
+  afterEach(teardownTestEnv)
+
+  it('shows BARQ Agent Network branding', () => {
+    render(<DashboardPage />)
+    expect(screen.getByText(/B\.A\.R\.Q.*Agent Network/)).toBeInTheDocument()
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { MicrophoneAnalyser } from '../hooks/useMicrophoneAnalyser'
 
 interface AudioWaveformProps {
@@ -128,7 +128,9 @@ export function AudioWaveform({ isActive = false, analyser }: AudioWaveformProps
   }, [isActive])
 
   // Keep analyser ref in sync without triggering effect re-runs
-  analyserRef.current = analyser
+  useLayoutEffect(() => {
+    analyserRef.current = analyser
+  }, [analyser])
 
   return (
     <canvas

@@ -3,14 +3,22 @@ FastAPI routes for social media automation.
 Uses database DAOs for storing trends, scripts, videos, and posts.
 """
 
-import time
 import json
+import time
 from typing import Any
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
-from . import TrendResearch, ScriptGenerator, VideoAssembler, ContentPoster, ContentCalendar
-from database import social_dao, analytics_dao
 
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
+
+from database import analytics_dao, social_dao
+
+from . import (
+    ContentCalendar,
+    ContentPoster,
+    ScriptGenerator,
+    TrendResearch,
+    VideoAssembler,
+)
 
 router = APIRouter()
 
@@ -361,7 +369,7 @@ async def calendar_week(start: str = ""):
     Defaults to current week if start not provided.
     """
     try:
-        from datetime import date, timedelta
+        from datetime import date
         if not start:
             today = date.today()
             start = today.isoformat()

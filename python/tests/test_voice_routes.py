@@ -5,7 +5,7 @@ Patches the module-level names that routes.py imports BEFORE module load so
 the module-level constructors (SpeechProcessor(), BARQResponder(), etc.) use mocks.
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -241,8 +241,9 @@ async def test_action_log_multiple_entries_order(client):
 @pytest.mark.asyncio
 async def test_action_log_severity_preserved(client):
     """GET /action-log/recent should preserve severity values for all levels."""
-    from database.connection import db_connection
     import json
+
+    from database.connection import db_connection
     for sev in ("info", "warning", "danger"):
         await db_connection.insert(
             "INSERT INTO action_log (action, description, severity, metadata) VALUES (?, ?, ?, ?)",
@@ -292,8 +293,9 @@ async def test_action_log_custom_limit(client):
 @pytest.mark.asyncio
 async def test_action_log_metadata_parsing(client):
     """GET /action-log/recent should parse stored metadata JSON into a dict."""
-    from database.connection import db_connection
     import json
+
+    from database.connection import db_connection
     metadata = {"command": "tail -f /var/log/syslog", "tier": "safe", "duration_ms": 1234}
     await db_connection.insert(
         "INSERT INTO action_log (action, description, metadata) VALUES (?, ?, ?)",

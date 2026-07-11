@@ -25,16 +25,16 @@ Usage:
 """
 
 from .base import (
+    Category,
+    Channel,
     NotificationEvent,
     NotificationResult,
     Priority,
-    Category,
-    Channel,
 )
-from .manager import notification_manager, NotificationManager
 from .desktop import DesktopChannel
-from .telegram import TelegramChannel
 from .email_smtp import EmailChannel
+from .manager import NotificationManager, notification_manager
+from .telegram import TelegramChannel
 
 __all__ = [
     "notification_manager",

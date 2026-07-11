@@ -3,7 +3,7 @@ import { join } from 'path'
 import { app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 
-const SIDECAR_PORT = 8956
+const SIDECAR_PORT = 8970
 const SIDECAR_HOST = '127.0.0.1'
 const SIDECAR_URL = `http://${SIDECAR_HOST}:${SIDECAR_PORT}`
 

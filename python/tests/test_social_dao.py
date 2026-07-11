@@ -3,7 +3,9 @@ Tests for SocialDAO - trends, scripts, videos, and posts CRUD.
 """
 
 import json
+
 import pytest
+
 from database import social_dao
 
 

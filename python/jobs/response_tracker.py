@@ -10,7 +10,8 @@ Tracks:
 
 from datetime import datetime, timezone
 from typing import Any, Optional
-from database import db_connection, analytics_dao
+
+from database import analytics_dao, db_connection
 
 
 class ResponseTracker:

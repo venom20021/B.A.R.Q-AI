@@ -569,8 +569,8 @@ async def seed_defaults(db):
         default_tasks = [
             ("job_scan", "Auto Job Scan", '{"keywords": ["software engineer", "developer", "full stack"], "location": "remote"}', "0 */6 * * *"),
             ("trend_check", "Trend Check", '{"niche": "technology"}', "0 */6 * * *"),
-            ("analytics_snapshot", "Daily Analytics", '{}', "0 0 * * *"),
-            ("digest_email", "Daily Digest", '{}', "0 8 * * *"),
+            ("analytics_snapshot", "Daily Analytics", "{}", "0 0 * * *"),
+            ("digest_email", "Daily Digest", "{}", "0 8 * * *"),
         ]
         for task_type, name, config, cron in default_tasks:
             await db.execute(

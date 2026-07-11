@@ -62,8 +62,11 @@ export function FilesPage(): JSX.Element {
   }, [searchQuery, cwd])
 
   useEffect(() => {
-    void fetchSystemInfo()
-    setLoading(false)
+    const init = async () => {
+      await fetchSystemInfo()
+      setLoading(false)
+    }
+    init()
   }, [fetchSystemInfo])
 
   return (

@@ -26,7 +26,7 @@ def main():
         # Start Python sidecar
         print("\n[1/2] Starting Python sidecar...")
         python_process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "main:app", "--reload", "--host", "127.0.0.1", "--port", "8956"],
+            [sys.executable, "-m", "uvicorn", "main:app", "--reload", "--host", "127.0.0.1", "--port", "8970"],
             cwd=PROJECT_ROOT / "python",
             env={**os.environ, "BARQ_DEBUG": "true"},
             stdout=subprocess.PIPE,
@@ -48,8 +48,8 @@ def main():
 
         print("\n✅ Both services started!")
         print("   Electron: http://localhost:5173")
-        print("   Python API: http://127.0.0.1:8956")
-        print("   Python Docs: http://127.0.0.1:8956/docs")
+        print("   Python API: http://127.0.0.1:8970")
+        print("   Python Docs: http://127.0.0.1:8970/docs")
         print("\nPress Ctrl+C to stop both services.\n")
 
         # Wait for any process to finish

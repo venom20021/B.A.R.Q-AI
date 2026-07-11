@@ -93,7 +93,7 @@ function generateArcSegment(
   outerR: number,
   fromAngle: number,
   toAngle: number,
-  complexity: number,
+  _complexity: number,
 ): { x: number; y: number }[] {
   const pts: { x: number; y: number }[] = []
   const steps = 4 + Math.floor(Math.random() * 6)
@@ -618,7 +618,7 @@ export const ArcReactor = memo(function ArcReactor({
       canvas.removeEventListener('mouseleave', handleMouseLeave)
       if (resizeObserver) resizeObserver.disconnect()
     }
-  }, [fullscreen, theme])
+  }, [fullscreen, theme, isSpeaking, micLevel])
 
   const tooltipColors = THEMES[theme]
   const tooltipRgb = tooltipColors?.plasmaRgb ?? '0, 229, 255'

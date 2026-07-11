@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { BrainCircuit, Search, FileText, Globe, Plus, Loader2, Trash2 } from 'lucide-react'
+import { useState, useEffect, useCallback, startTransition } from 'react'
+import { Search, FileText, Plus, Loader2, Trash2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 interface MemoryItem {
@@ -73,8 +73,7 @@ export function MemoryPage(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    void fetchMemories()
-    void fetchNotes()
+    startTransition(() => { void fetchMemories(); void fetchNotes() })
   }, [fetchMemories, fetchNotes])
 
   const displayItems = searchResults.length > 0 ? searchResults : memories

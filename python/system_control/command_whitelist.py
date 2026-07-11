@@ -10,11 +10,11 @@ Each category is defined by regex patterns. Custom rules can be added
 via the database settings system and are merged at runtime.
 """
 
-import re
 import json
+import re
 from typing import Optional
-from database import settings_dao
 
+from database import settings_dao
 
 # ─── Safety Tiers ────────────────────────────────────────────────────────────
 

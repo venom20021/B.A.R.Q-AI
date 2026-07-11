@@ -15,22 +15,32 @@ Provides OS-level operations:
 import asyncio
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
-import platform
-import re
-import tempfile
-from pathlib import Path
-from typing import Optional, Any
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from database import analytics_dao, settings_dao, db_connection
-from .command_whitelist import SAFE, WARN, DANGEROUS, classify_command, describe_classification, approve_command, is_approved, clear_approvals, get_custom_rules, set_custom_rules
+from database import analytics_dao, settings_dao
+
+from .command_whitelist import (
+    DANGEROUS,
+    WARN,
+    approve_command,
+    classify_command,
+    clear_approvals,
+    describe_classification,
+    get_custom_rules,
+    is_approved,
+    set_custom_rules,
+)
 
 router = APIRouter()
 
@@ -291,15 +301,30 @@ async def read_file(request: FileOperation):
 
 @router.post("/file/write")
 async def write_file(request: FileOperation):
-    """Write content to a file."""
+    """Write content to a file.
+
+    If the path is a directory (e.g. "."), a filename is auto-generated
+    based on the content (e.g. first line or a hash prefix).
+    """
     try:
         if request.content is None:
             raise HTTPException(status_code=400, detail="Content is required")
+
         path = Path(request.path)
+
+        # ── If path is a directory, auto-generate a filename ───────────
+        if path.is_dir() or not path.suffix or path.name == ".":
+            # Derive filename from content or use a default
+            first_line = request.content.strip().split("\n")[0][:40]
+            safe_name = "".join(c for c in first_line if c.isalnum() or c in " _-").strip() or "output"
+            safe_name = safe_name.replace(" ", "_").lower()[:30]
+            filename = f"{safe_name or 'barq_output'}.txt"
+            path = path / filename
+
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(request.content, encoding="utf-8")
-        await analytics_dao.log_activity("system", "write_file", f"Wrote file: {request.path}")
-        return {"status": "written", "path": request.path, "size_bytes": len(request.content)}
+        await analytics_dao.log_activity("system", "write_file", f"Wrote file: {path}")
+        return {"status": "written", "path": str(path), "size_bytes": len(request.content)}
     except HTTPException:
         raise
     except Exception as e:
@@ -814,7 +839,7 @@ async def list_monitors():
         monitors = []
 
         if system == "windows":
-            import pygetwindow as gw
+            import pygetwindow as gw  # noqa: F401
             # Windows: use tkinter or screeninfo for monitor info
             try:
                 import screeninfo

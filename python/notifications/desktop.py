@@ -6,14 +6,13 @@ poll for them and show native desktop toasts. This is always
 enabled and acts as the primary notification sink.
 """
 
-from datetime import datetime, timezone
-from typing import Optional
 from database import settings_dao
+
 from .base import (
+    Channel,
     NotificationChannel,
     NotificationEvent,
     NotificationResult,
-    Channel,
 )
 
 

@@ -5,10 +5,9 @@ timestamps, and auto-pruning of old entries (max 200).
 """
 
 import json
-from datetime import datetime, timezone
 from typing import Any, Optional
-from database import db_connection
 
+from database import db_connection
 
 # ─── Severity levels ────────────────────────────────────────────────────────
 

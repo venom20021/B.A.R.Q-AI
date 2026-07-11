@@ -3,11 +3,13 @@ FastAPI routes for job search automation.
 Uses database DAOs for all CRUD operations.
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from . import JobScanner, JobEvaluator, JobApplier, ResponseTracker, FollowUpAutomation
+
+from database import analytics_dao, db_connection, jobs_dao
+
+from . import FollowUpAutomation, JobApplier, JobEvaluator, JobScanner, ResponseTracker
 from .scanner import get_scan_progress, set_scan_error
-from database import jobs_dao, analytics_dao, db_connection
 
 router = APIRouter()
 

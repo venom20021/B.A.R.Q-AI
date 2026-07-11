@@ -2,9 +2,10 @@
 Tests for AnalyticsDAO - career snapshots, social snapshots, revenue, and activity log.
 """
 
-import json
-import pytest
 from datetime import datetime, timezone
+
+import pytest
+
 from database import analytics_dao
 
 

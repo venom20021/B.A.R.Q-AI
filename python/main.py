@@ -11,34 +11,35 @@ This service runs alongside the Electron app and provides:
 - Playwright-based auto-apply
 """
 
-import asyncio
 import json
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from fastapi import FastAPI
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure the python directory is on the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import get_settings
-from database import init_db, close_db
-from database import analytics_dao
-from voice.routes import router as voice_router
-from jobs.routes import router as jobs_router
-from social.routes import router as social_router
+from agent.routes import router as agent_router
+from agent.vision_routes import router as vision_router
 from analytics.routes import router as analytics_router
-from notifications.routes import router as notification_router
-from system_control.routes import router as system_router
-from memory_knowledge.routes import router as memory_router
-from web_media.routes import router as web_router
-from documents.routes import router as documents_router
-from desktop_automation.routes import router as desktop_router
 from api.routes import router as api_v1_router
 from auth_routes import router as auth_router
+from config import get_settings
+from database import analytics_dao, close_db, init_db
+from desktop_automation.routes import router as desktop_router
+from documents.routes import router as documents_router
+from jobs.routes import router as jobs_router
+from memory_knowledge.routes import router as memory_router
+from notifications.routes import router as notification_router
+from social.routes import router as social_router
+from system_control.routes import router as system_router
+from voice.routes import router as voice_router
+from web_media.routes import router as web_router
 
 settings = get_settings()
 logger = logging.getLogger("barq")
@@ -93,8 +94,8 @@ async def stop_scheduler():
 async def _auto_scan_jobs():
     """Auto-scan for new jobs (called by scheduler)."""
     try:
+        from database import analytics_dao, jobs_dao
         from jobs import JobScanner
-        from database import jobs_dao, analytics_dao
 
         scanner = JobScanner()
         jobs = await scanner.scan_all(
@@ -117,9 +118,9 @@ async def _auto_scan_jobs():
 async def _auto_match_jobs():
     """Auto-match new jobs against resume (called by scheduler)."""
     try:
+        from database import analytics_dao, jobs_dao
         from jobs.matcher import JobMatcher
         from jobs.resume_parser import parse_resume
-        from database import jobs_dao, analytics_dao
 
         resume = parse_resume()
         if resume.get("_error"):
@@ -171,10 +172,33 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # DB might not be ready yet
     await start_scheduler()
+    # Start the agent task queue
+    try:
+        from agent.task_queue import get_task_queue
+        queue = get_task_queue()
+        await queue.start()
+        print("[BARQ Sidecar] Agent task queue started")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Agent task queue start error: {e}")
+
+    # Initialize the SkillRegistry with built-in tools
+    try:
+        from agent.skill_registry import register_builtin_skills
+        register_builtin_skills()
+    except Exception as e:
+        print(f"[BARQ Sidecar] Skill registry init error: {e}")
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown
     await stop_scheduler()
+    # Stop the agent task queue
+    try:
+        from agent.task_queue import get_task_queue
+        queue = get_task_queue()
+        await queue.stop()
+        print("[BARQ Sidecar] Agent task queue stopped")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Agent task queue stop error: {e}")
     try:
         await analytics_dao.log_activity(
             "system", "shutdown", "BARQ Sidecar shutting down",
@@ -218,6 +242,8 @@ app.include_router(documents_router, prefix="/documents", tags=["Document Genera
 app.include_router(desktop_router, prefix="/desktop", tags=["Desktop Automation"])
 app.include_router(auth_router, tags=["Auth"])
 app.include_router(api_v1_router, tags=["Jobs v1"])  # Already has /api/v1 prefix
+app.include_router(agent_router, prefix="/agent", tags=["Agent System"])
+app.include_router(vision_router, prefix="/vision", tags=["Visual Awareness"])
 
 
 @app.get("/health")
@@ -273,8 +299,9 @@ async def get_scheduled_tasks():
 async def create_scheduled_task(data: dict):
     """Create a new scheduled task."""
     try:
-        from database import db_connection
         import json
+
+        from database import db_connection
         task_id = await db_connection.insert(
             "INSERT INTO scheduled_tasks (task_type, name, config, cron_expression, enabled) "
             "VALUES (?, ?, ?, ?, ?)",

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Bell, CheckCheck, X, AlertTriangle, Info, Zap, ExternalLink } from 'lucide-react'
+import { Bell, CheckCheck, X, AlertTriangle, Info, Zap } from 'lucide-react'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 
 interface Notification {

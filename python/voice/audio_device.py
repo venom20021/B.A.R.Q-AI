@@ -111,10 +111,10 @@ def get_device_list():
 
         # Get default device indices using kind= query (returns single Device or None)
         try:
-            default_in_dev = sd.query_devices(kind='input')
-            default_out_dev = sd.query_devices(kind='output')
-            default_in_idx = int(default_in_dev['index']) if default_in_dev is not None else -1
-            default_out_idx = int(default_out_dev['index']) if default_out_dev is not None else -1
+            default_in_dev = sd.query_devices(kind="input")
+            default_out_dev = sd.query_devices(kind="output")
+            default_in_idx = int(default_in_dev["index"]) if default_in_dev is not None else -1
+            default_out_idx = int(default_out_dev["index"]) if default_out_dev is not None else -1
         except Exception:
             default_in_idx = -1
             default_out_idx = -1
@@ -124,12 +124,12 @@ def get_device_list():
 
         for i, dev in enumerate(sd.query_devices()):
             # sounddevice returns dicts on this platform
-            name = str(dev.get('name', 'Unknown')).strip()
-            ch_in = int(dev.get('max_input_channels', 0))
-            ch_out = int(dev.get('max_output_channels', 0))
-            samplerate = float(dev.get('default_samplerate', 44100))
-            host_api_idx = int(dev.get('hostapi', 0))
-            hostapi_name = str(hostapis[host_api_idx].get('name', 'Unknown')) if host_api_idx < len(hostapis) else 'Unknown'
+            name = str(dev.get("name", "Unknown")).strip()
+            ch_in = int(dev.get("max_input_channels", 0))
+            ch_out = int(dev.get("max_output_channels", 0))
+            samplerate = float(dev.get("default_samplerate", 44100))
+            host_api_idx = int(dev.get("hostapi", 0))
+            hostapi_name = str(hostapis[host_api_idx].get("name", "Unknown")) if host_api_idx < len(hostapis) else "Unknown"
 
             devices.append({
                 "index": i,

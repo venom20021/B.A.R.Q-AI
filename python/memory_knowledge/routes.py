@@ -6,12 +6,12 @@ vector search, and RAG knowledge base.
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import analytics_dao, settings_dao
+from database.connection import db_connection
 
 router = APIRouter()
 
@@ -98,8 +98,6 @@ async def search_memory(query: str):
 
 # ─── Notes (SQLite) ───────────────────────────────────────────────────────────
 
-from database.connection import db_connection
-
 
 @router.get("/notes")
 async def get_notes():
@@ -120,7 +118,7 @@ async def get_notes():
                     note["tags"] = []
             notes.append(note)
         return {"notes": notes}
-    except Exception as e:
+    except Exception:
         # Fallback to file-based notes if table doesn't exist yet
         return _fallback_get_notes()
 
@@ -165,7 +163,7 @@ async def create_note(request: NoteItem):
                 "created_at": _now_iso(),
             },
         }
-    except Exception as e:
+    except Exception:
         # Fallback to file-based notes
         return _fallback_create_note(request)
 
@@ -239,8 +237,9 @@ async def index_directory(directory: str):
     """Index a directory for vector search."""
     try:
         try:
-            import lancedb
             import numpy as np
+
+            import lancedb
         except ImportError:
             return {"status": "unavailable", "message": "LanceDB not installed. Run: pip install lancedb"}
 
@@ -298,7 +297,7 @@ async def vector_search(request: SearchQuery):
         # Simple string matching fallback for now
         results = table.search().limit(request.limit).to_list()
         return {"results": results, "query": request.query}
-    except Exception as e:
+    except Exception:
         # Fallback to filename search
         return await _filename_search(request)
 

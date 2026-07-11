@@ -3,7 +3,6 @@ Tests for notification FastAPI routes: send, pending, read, digest, settings, st
 Uses the notification_manager singleton which gracefully handles unconfigured channels.
 """
 
-from unittest.mock import AsyncMock, patch
 
 import pytest
 

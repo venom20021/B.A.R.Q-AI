@@ -3,7 +3,9 @@ Tests for SettingsDAO - user settings, profiles, notifications, and voice comman
 """
 
 import json
+
 import pytest
+
 from database import settings_dao
 
 

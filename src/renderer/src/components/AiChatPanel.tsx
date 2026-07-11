@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, startTransition, useLayoutEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Mic, Send, MessageSquare, X, Volume2, VolumeX } from 'lucide-react'
 import { AudioWaveform } from './AudioWaveform'
@@ -19,7 +19,8 @@ interface AiChatPanelProps {
 
 export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps): JSX.Element {
   const [isOpen, setIsOpen] = useState(false)
-  const [messages, setMessages] = useState<Message[]>([
+  // Use lazy initializer to avoid Date.now() purity violation
+  const [messages, setMessages] = useState<Message[]>(() => [
     {
       id: 'welcome',
       role: 'ai',
@@ -34,14 +35,8 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
-  const [speechSupported, setSpeechSupported] = useState(false)
+  const [speechSupported] = useState(() => !!(window.SpeechRecognition || window.webkitSpeechRecognition))
   const micAnalyser = useMicrophoneAnalyser()
-
-  // Check browser speech recognition support
-  useEffect(() => {
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition
-    setSpeechSupported(!!SpeechRecognitionAPI)
-  }, [])
 
   // Keep a ref to the audio element for playing TTS responses
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -79,7 +74,9 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
 
   // Refs for safe access inside callbacks/effects without stale closures
   const speakAudioRef = useRef(speakAudio)
-  speakAudioRef.current = speakAudio
+  useLayoutEffect(() => {
+    speakAudioRef.current = speakAudio
+  }, [speakAudio])
 
   const stream = useStreamingChat({
     onToken: (token: string) => {
@@ -107,11 +104,14 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
   })
 
   const sendRef = useRef<(text: string) => void>()
-  sendRef.current = stream.send
+  useLayoutEffect(() => {
+    sendRef.current = stream.send
+  }, [stream.send])
 
   // Cancel streaming on unmount (stream.cancel is stable — memoized with [])
   useEffect(() => {
     return () => { stream.cancel() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.cancel])
 
   // Cancel audio when muted
@@ -135,8 +135,7 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
   // Start speech recognition on open
   useEffect(() => {
     if (!isOpen) {
-      setIsListening(false)
-      setTranscript('')
+      startTransition(() => { setIsListening(false); setTranscript('') })
       micAnalyser.stop()
       // Stop speech recognition
       if (recognitionRef.current) {
@@ -147,7 +146,7 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     }
 
     // Start mic analyser for waveform visualization
-    micAnalyser.start().then(() => setIsListening(true))
+    micAnalyser.start().then(() => startTransition(() => setIsListening(true)))
     inputRef.current?.focus()
 
     // Start speech recognition if supported
@@ -212,6 +211,7 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     setIsProcessing(true)
     streamingAccRef.current = ''
     stream.send(text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, isProcessing, stream.isStreaming, stream.send])
 
   return (

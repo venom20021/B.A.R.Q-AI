@@ -12,13 +12,12 @@ import math
 import re
 import struct
 import threading
+import urllib.error
+import urllib.request
 import wave
 from typing import Callable, Optional
-import urllib.request
-import urllib.error
 
 from config import get_settings
-
 
 # Electron wake receiver endpoint — spawned as a lightweight HTTP server
 ELECTRON_WAKE_URL = "http://127.0.0.1:8112/wake"
@@ -135,11 +134,12 @@ def _play_wav(wav_bytes: bytes, label: str = "sound"):
     """Play WAV bytes through speakers in a daemon thread."""
     def _play():
         try:
-            import sounddevice as sd
             import numpy as np
+            import sounddevice as sd
+
+            from config import get_settings as _cfg
 
             from .audio_device import resolve_output_device
-            from config import get_settings as _cfg
             output_device = resolve_output_device(_cfg().audio_output_device)
 
             with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
@@ -240,6 +240,10 @@ class WakeWordDetector:
         # Pause/resume — used to release the mic stream before STT opens its own
         self._paused = False
 
+        # Last full utterance captured during wake word detection
+        # Contains the complete Vosk recognition text (wake word + command)
+        self._last_utterance: str = ""
+
         # Build sensitivity phrases from the configured wake word
         self._sensitivity_phrases = self._build_sensitivity_phrases(self.settings.wake_word)
         self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
@@ -294,7 +298,7 @@ class WakeWordDetector:
             self.model = self.model_en
             self._wake_phrases = self._sensitivity_phrases[self._sensitivity]
             self._rec_needs_rebuild = True
-            print(f"[WakeWord] Switched to English")
+            print("[WakeWord] Switched to English")
             return True
         elif lang == "hi" and self.model_hi:
             self._language = "hi"
@@ -342,7 +346,6 @@ class WakeWordDetector:
 
         # Escape regex special characters for safe pattern building
         escaped_word = re.escape(word)
-        escaped_primary = re.escape(primary)
 
         patterns = {
             "low": [
@@ -380,7 +383,6 @@ class WakeWordDetector:
             # Replace trailing 'q' with 'k' (barq -> bark)
             if primary.endswith("q"):
                 phonetic = primary[:-1] + "k"
-                escaped_phonetic = re.escape(phonetic)
                 if prefix:
                     phrase = f"{prefix} {phonetic}"
                 else:
@@ -450,6 +452,18 @@ class WakeWordDetector:
         """Get the confidence score from the most recent Vosk recognition result."""
         return self._last_vosk_confidence if self._running else 0.0
 
+    def get_last_utterance(self) -> str:
+        """Get the most recent full utterance captured during wake word detection.
+
+        Returns the complete Vosk recognition text (wake phrase + any following
+        command), or an empty string if no wake word has been triggered.
+        """
+        return self._last_utterance
+
+    def clear_last_utterance(self):
+        """Clear the stored utterance so it is not reprocessed."""
+        self._last_utterance = ""
+
     def start(self):
         """Start listening for wake word in a background thread."""
         if self._running or not self.model:
@@ -499,8 +513,9 @@ class WakeWordDetector:
         called the stream is reopened and detection continues seamlessly.
         """
         import time as _time
-        import sounddevice as sd
+
         import numpy as np
+        import sounddevice as sd
         import vosk
 
         # Resolve input device from config
@@ -535,7 +550,7 @@ class WakeWordDetector:
                     device=device,
                     samplerate=16000,
                     channels=1,
-                    dtype='int16',
+                    dtype="int16",
                     blocksize=4000,
                 )
                 try:
@@ -587,11 +602,16 @@ class WakeWordDetector:
                                 lang_tag = "HI" if self._language == "hi" else "EN"
                                 print(f"[WakeWord] [{lang_tag}] Wake word detected: '{text}' matched '{phrase}'")
 
+                                # Store the full utterance so downstream can extract
+                                # the command portion (text after the wake word).
+                                self._last_utterance = text
+
                                 play_wake_sound()
                                 _send_wake_signal()
 
                                 if self.on_wake_word:
-                                    self.on_wake_word()
+                                    # Pass the full utterance text to the callback
+                                    self.on_wake_word(text)
 
                                 # Trigger conversation mode (Alexa/Gemini-style)
                                 if self.on_conversation_trigger:

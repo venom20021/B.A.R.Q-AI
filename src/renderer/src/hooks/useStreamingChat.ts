@@ -34,7 +34,7 @@ export function useStreamingChat(options: StreamingChatOptions = {}): StreamingC
     setFullText('')
 
     try {
-      const baseUrl = 'http://127.0.0.1:8956'
+      const baseUrl = 'http://127.0.0.1:8970'
       const response = await fetch(`${baseUrl}/voice/chat/stream`, {
         method: 'POST',
         headers: {

@@ -3,8 +3,8 @@ Data access layer for user settings and profiles.
 Handles user preferences, API keys, and profile management.
 """
 
-from datetime import datetime, timezone
 from typing import Any, Optional
+
 from .connection import db_connection
 
 

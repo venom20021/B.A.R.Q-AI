@@ -9,7 +9,6 @@ import pytest
 
 from database import social_dao
 
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _seed_script_and_video(title: str = "Test") -> tuple[int, int]:
@@ -29,7 +28,6 @@ async def _seed_script_and_video(title: str = "Test") -> tuple[int, int]:
 def router():
     """Import social routes, mocking moviepy to avoid FFMPEG dependency at import time."""
     import sys
-    from unittest.mock import MagicMock
 
     # Force-replace moviepy in sys.modules so video.py's import doesn't trigger
     # FFMPEG detection.  Python's import system checks sys.modules first, so

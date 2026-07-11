@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Settings, Shield, Bell, Mic, Key, Palette, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye } from 'lucide-react'
+import { useState, useEffect, useCallback, startTransition } from 'react'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 interface SettingsSection {
@@ -18,6 +18,7 @@ const sections: SettingsSection[] = [
   { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },
   { id: 'security', label: 'Security', icon: Shield, description: 'Command whitelist and approvals' },
   { id: 'privacy', label: 'Privacy', icon: ShieldOff, description: 'Data storage and local processing' },
+  { id: 'profile', label: 'Profile', icon: User, description: 'Your name and personal details' },
   { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display settings' },
 ]
 
@@ -57,16 +58,18 @@ export function SettingsPage(): JSX.Element {
   const [languageUpdating, setLanguageUpdating] = useState(false)
   const [lastDetectedLanguage, setLastDetectedLanguage] = useState('')  // last auto-detected language
   const [lastDetectedAt, setLastDetectedAt] = useState('')  // ISO timestamp of last auto-detection
-  const [tick, setTick] = useState(0)  // forces re-render for relative time display
   const [sensitivity, setSensitivity] = useState('medium')
   const [voiceUpdating, setVoiceUpdating] = useState(false)
   const [wakeSoundEnabled, setWakeSoundEnabled] = useState(true)
   const [commandSoundEnabled, setCommandSoundEnabled] = useState(true)
-  const [soundSettingsLoading, setSoundSettingsLoading] = useState(false)
   const [wakeGreetingEnabled, setWakeGreetingEnabled] = useState(true)
   const [weatherCity, setWeatherCity] = useState('Lucknow')
   const [vadSilenceTimeout, setVadSilenceTimeout] = useState(0.4)
   const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
+  // TTS backend selection
+  const [ttsBackend, setTtsBackend] = useState('edge')
+  const [ttsBackendUpdating, setTtsBackendUpdating] = useState(false)
+  const [piperAvailable, setPiperAvailable] = useState(false)
 
   // Notification settings
   const [notifSettings, setNotifSettings] = useState({
@@ -130,7 +133,7 @@ export function SettingsPage(): JSX.Element {
     try {
       const resp = await window.barq?.python.request('/voice/status')
       if (resp && typeof resp === 'object') {
-        const data = resp as unknown as VoiceStatus & { language?: string; tts_voice?: string; last_detected_language?: string; last_detected_at?: string }
+        const data = resp as unknown as VoiceStatus & { language?: string; tts_voice?: string; last_detected_language?: string; last_detected_at?: string; tts_backend?: string }
         setVoiceStatus(data)
         if (data.wake_greeting_enabled !== undefined) {
           setWakeGreetingEnabled(data.wake_greeting_enabled)
@@ -150,9 +153,39 @@ export function SettingsPage(): JSX.Element {
         if (data.last_detected_at) {
           setLastDetectedAt(data.last_detected_at)
         }
+        // TTS backend
+        if (data.tts_backend) {
+          setTtsBackend(data.tts_backend)
+        }
       }
     } catch { /* ignore */ }
     setVoiceLoading(false)
+  }, [])
+
+  const fetchTtsBackend = useCallback(async () => {
+    try {
+      const resp = await window.barq?.python.request('/voice/tts-backend')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (typeof data.backend === 'string') setTtsBackend(data.backend)
+        if (typeof data.piper_available === 'boolean') setPiperAvailable(data.piper_available)
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  const handleTtsBackendChange = useCallback(async (backend: string) => {
+    setTtsBackend(backend)
+    setTtsBackendUpdating(true)
+    try {
+      await window.barq?.python.request('/voice/tts-backend', {
+        method: 'POST',
+        body: JSON.stringify({ backend }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch (err) {
+      console.error('[Settings] TTS backend switch failed:', err)
+    }
+    setTtsBackendUpdating(false)
   }, [])
 
   const handleWeatherCityChange = useCallback(async (city: string) => {
@@ -269,7 +302,7 @@ export function SettingsPage(): JSX.Element {
   }, [commandSoundEnabled])
 
   const fetchSoundSettings = useCallback(async () => {
-    setSoundSettingsLoading(true)
+    setVadSettingsLoading(true)
     try {
       const resp = await window.barq?.python.request('/voice/sound-settings')
       if (resp && typeof resp === 'object') {
@@ -278,7 +311,7 @@ export function SettingsPage(): JSX.Element {
         if (typeof data.command_sound_enabled === 'boolean') setCommandSoundEnabled(data.command_sound_enabled)
       }
     } catch { /* ignore */ }
-    setSoundSettingsLoading(false)
+    setVadSettingsLoading(false)
   }, [])
 
   const fetchSettings = useCallback(async () => {
@@ -399,19 +432,23 @@ export function SettingsPage(): JSX.Element {
       setTimeout(() => setClearMsg(''), 3000) }
   }, [])
 
-  // Tick every 30s to keep the relative timestamp fresh
+  // Tick forces re-render every second for relative time display
+  const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
-    const t = setInterval(() => setTick(v => v + 1), 1_000)
+    const t = setInterval(() => setNowMs(Date.now()), 1_000)
     return () => clearInterval(t)
   }, [])
 
   useEffect(() => {
-    void fetchVoiceStatus()
-    void fetchSettings()
-    void fetchSoundSettings()
-    void fetchWhitelistRules()
-    void fetchVadSettings()
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings])
+    startTransition(() => {
+      void fetchVoiceStatus()
+      void fetchSettings()
+      void fetchSoundSettings()
+      void fetchWhitelistRules()
+      void fetchVadSettings()
+      void fetchTtsBackend()
+    })
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -528,7 +565,7 @@ export function SettingsPage(): JSX.Element {
                       <p className="text-[10px] font-exo text-dim-500">
                         {lastDetectedAt
                           ? (() => {
-                              const diff = Date.now() - new Date(lastDetectedAt).getTime()
+                              const diff = nowMs - new Date(lastDetectedAt).getTime()
                               const mins = Math.floor(diff / 60000)
                               const secs = Math.floor((diff % 60000) / 1000)
                               if (mins > 0) return `${mins}m ${secs}s ago`
@@ -551,8 +588,51 @@ export function SettingsPage(): JSX.Element {
 
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">TTS Engine</p>
+                    <p className="text-xs font-exo text-dim-400">
+                      {ttsBackend === 'piper'
+                        ? 'Piper TTS — Fully offline, local ONNX voice model'
+                        : 'Edge TTS — High-quality cloud voices (requires internet)'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center">
+                      <button
+                        onClick={() => handleTtsBackendChange('edge')}
+                        className={`px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-l-lg border transition-all ${
+                          ttsBackend === 'edge'
+                            ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                            : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:text-ghost'
+                        }`}
+                      >
+                        Edge
+                      </button>
+                      <button
+                        onClick={() => handleTtsBackendChange('piper')}
+                        disabled={!piperAvailable}
+                        className={`px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-r-lg border border-l-0 transition-all ${
+                          ttsBackend === 'piper'
+                            ? 'bg-green-500/15 text-green-300 border-green-500/30'
+                            : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:text-ghost'
+                        } disabled:opacity-40 disabled:cursor-not-allowed`}
+                        title={!piperAvailable ? 'Piper model not found in models/piper/' : 'Switch to offline Piper TTS'}
+                      >
+                        Piper 🎧
+                      </button>
+                    </div>
+                    {ttsBackendUpdating && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
+                    {ttsBackend === 'piper' && (
+                      <span className="text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-green-500/10 text-green-300 border border-green-500/15">
+                        OFFLINE
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">TTS Voice</p>
-                    <p className="text-xs font-exo text-dim-400">Select voice for spoken responses</p>
+                    <p className="text-xs font-exo text-dim-400">Select voice for spoken responses {ttsBackend === 'piper' && <span className="text-dim-500">(not used in Piper mode)</span>}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {renderSelect(selectedVoice, TTS_VOICES, handleVoiceChange)}
@@ -1273,6 +1353,82 @@ export function SettingsPage(): JSX.Element {
                 </div>
                 <div className="pt-3 border-t border-cyan-500/8">
                   <p className="text-xs font-exo text-dim-500">Your data stays on your machine. BARQ processes everything locally using Ollama, Whisper, and Edge TTS. No cloud dependency.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Profile Section ─── */}
+          {activeSection === 'profile' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Profile</h3>
+                <p className="text-sm font-rajdhani text-dim-400">Set your display name for the dashboard greeting</p>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div className="flex-1">
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Display Name</p>
+                    <p className="text-xs font-exo text-dim-400">Shown in the dashboard greeting (e.g. &ldquo;GOOD AFTERNOON, RUBEN&rdquo;)</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      id="user-name-input"
+                      placeholder="Enter your name..."
+                      defaultValue={(() => {
+                        try { return localStorage.getItem('barq_user_name') || '' } catch { return '' }
+                      })()}
+                      onChange={(e) => {
+                        const name = e.target.value.trim()
+                        try {
+                          localStorage.setItem('barq_user_name', name)
+                          window.dispatchEvent(new CustomEvent('barq:profile-updated'))
+                        } catch { /* storage unavailable */ }
+                      }}
+                      className="bg-void-800/60 text-ghost text-sm font-sans px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500 w-44"
+                    />
+                    <button
+                      onClick={() => {
+                        const input = document.getElementById('user-name-input') as HTMLInputElement
+                        if (input) {
+                          const name = input.value.trim()
+                          try {
+                            localStorage.setItem('barq_user_name', name)
+                            window.dispatchEvent(new CustomEvent('barq:profile-updated'))
+                          } catch { /* ignore */ }
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all"
+                    >
+                      <CheckCircle className="w-3 h-3" /> Save
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-cyan-500/8 border border-cyan-500/15 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.5)]" />
+                    <span className="text-xs font-rajdhani font-bold text-cyan-300 uppercase tracking-wider">Preview</span>
+                  </div>
+                  <p className="text-sm font-sans text-white/70">
+                    Your dashboard will greet you with &ldquo;
+                    {(() => {
+                      const hour = new Date().getHours()
+                      const greeting = hour < 12 ? 'GOOD MORNING' : hour < 17 ? 'GOOD AFTERNOON' : 'GOOD EVENING'
+                      let name = ''
+                      try { name = localStorage.getItem('barq_user_name') || '' } catch {}
+                      return name ? `${greeting}, ${name.toUpperCase()}` : greeting
+                    })()}
+                    &rdquo;
+                  </p>
+                </div>
+
+                <div className="pt-2">
+                  <p className="text-xs font-exo text-dim-500">
+                    Your name is stored locally and never sent to any server. It only appears
+                    in the dashboard greeting to make the experience feel more personal.
+                  </p>
                 </div>
               </div>
             </div>

@@ -5,6 +5,7 @@ Handles career funnel snapshots, social performance, and revenue tracking.
 
 from datetime import datetime, timezone
 from typing import Any, Optional
+
 from .connection import db_connection
 
 

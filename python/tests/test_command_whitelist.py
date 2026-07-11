@@ -12,10 +12,8 @@ Covers:
 """
 
 import json
-import re
-import pytest
-from typing import Optional
 
+import pytest
 
 # ─── Module Under Test ───────────────────────────────────────────────────────
 

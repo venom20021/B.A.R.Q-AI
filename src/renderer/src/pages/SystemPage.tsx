@@ -306,6 +306,7 @@ function DropZonePanel(): JSX.Element {
     setLoading(false)
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadRules() }, [loadRules])
 
   const createRule = useCallback(async () => {

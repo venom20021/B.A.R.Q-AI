@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, startTransition } from 'react'
 import {
   TrendingUp,
   Users,
@@ -79,7 +79,7 @@ export function AnalyticsPage(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    fetchAnalytics()
+    startTransition(() => { void fetchAnalytics() })
   }, [fetchAnalytics])
 
   const fmt = (n: number): string =>

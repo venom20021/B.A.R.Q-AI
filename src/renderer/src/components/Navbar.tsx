@@ -1,5 +1,4 @@
-import { Mic, LayoutDashboard, StickyNote, ImageIcon, Smartphone, Settings, BrainCircuit } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { Mic, LayoutDashboard, StickyNote, ImageIcon, Smartphone, Settings } from 'lucide-react'
 import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 
 export type NavTab = 'DASHBOARD' | 'NOTES' | 'GALLERY' | 'PHONE' | 'SETTINGS'

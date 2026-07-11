@@ -4,8 +4,9 @@ BARQ Configuration - Centralized settings management.
 
 import os
 from functools import lru_cache
-from pydantic_settings import BaseSettings
+
 from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 
 # Load .env file from the project root
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -15,7 +16,7 @@ load_dotenv(env_path)
 class Settings(BaseSettings):
     # Sidecar server
     host: str = os.getenv("SIDECAR_HOST", "127.0.0.1")
-    port: int = int(os.getenv("SIDECAR_PORT", "8956"))
+    port: int = int(os.getenv("SIDECAR_PORT", "8970"))
     debug: bool = os.getenv("BARQ_DEBUG", "false").lower() == "true"
 
     # Voice

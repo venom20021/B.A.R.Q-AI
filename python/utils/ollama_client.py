@@ -3,8 +3,9 @@ Ollama LLM client for conversational AI responses.
 Connects to a local Ollama instance to generate natural language replies.
 """
 
+from typing import AsyncIterable
+
 import httpx
-from typing import Any, AsyncIterable
 
 from config import get_settings
 

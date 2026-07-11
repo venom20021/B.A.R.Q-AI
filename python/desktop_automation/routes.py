@@ -6,8 +6,8 @@ AI Wallpaper, and custom protocols/workflows.
 import asyncio
 import json
 import os
-import subprocess
 import platform
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -182,7 +182,7 @@ async def set_wallpaper(request: WallpaperRequest):
             # Free tier, no key needed for basic searches
             async with httpx.AsyncClient() as client:
                 search_resp = await client.get(
-                    f"https://api.unsplash.com/search/photos",
+                    "https://api.unsplash.com/search/photos",
                     params={
                         "query": request.description,
                         "per_page": 1,
@@ -329,7 +329,7 @@ async def activate_protocol(name: str):
                     import httpx
                     async with httpx.AsyncClient() as client:
                         await client.post(
-                            f"http://127.0.0.1:8956/desktop/wallpaper/set",
+                            "http://127.0.0.1:8970/desktop/wallpaper/set",
                             json={"description": f"{theme} aesthetic wallpaper", "source": "unsplash"},
                             timeout=10,
                         )

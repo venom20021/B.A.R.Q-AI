@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Terminal as TerminalIcon, GitBranch, Globe, Play, Code, FileCode, Loader2, ExternalLink } from 'lucide-react'
+import { Terminal as TerminalIcon, GitBranch, Globe, Play, Code, Loader2, ExternalLink } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export function DevPage(): JSX.Element {

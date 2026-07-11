@@ -3,8 +3,8 @@ Data access layer for social media module.
 Handles CRUD for trends, content scripts, videos, and posts.
 """
 
-from datetime import datetime, timezone
 from typing import Any, Optional
+
 from .connection import db_connection
 
 

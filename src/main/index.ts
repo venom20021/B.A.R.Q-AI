@@ -34,8 +34,8 @@ function startWakeReceiver(): void {
     }
 
     if (req.method === 'POST' && req.url === '/wake') {
-      let body = ''
-      req.on('data', (chunk: string) => { body += chunk })
+      const chunks: string[] = []
+      req.on('data', (chunk: string) => { chunks.push(chunk) })
       req.on('end', () => {
         try {
           const win = BrowserWindow.getAllWindows()[0]

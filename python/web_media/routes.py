@@ -3,10 +3,7 @@ FastAPI routes for web & media: Playwright browsing, Spotify control,
 stock market, weather, maps, and image generation.
 """
 
-import asyncio
-import json
 from typing import Optional
-from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -22,6 +19,9 @@ class BrowseRequest(BaseModel):
     url: str
     action: str = "navigate"  # navigate, click, screenshot, scrape
     selector: Optional[str] = None
+
+class WebSearchRequest(BaseModel):
+    query: str
 
 class SpotifyAction(BaseModel):
     action: str  # play, pause, skip, search
@@ -55,7 +55,6 @@ async def browse_web(request: BrowseRequest):
             if request.action == "navigate":
                 await page.goto(request.url, wait_until="domcontentloaded", timeout=30000)
                 title = await page.title()
-                content = await page.content()
                 text = await page.inner_text("body") if await page.query_selector("body") else ""
 
                 await analytics_dao.log_activity(
@@ -97,8 +96,9 @@ async def browse_web(request: BrowseRequest):
 
 
 @router.post("/browse/search")
-async def web_search(query: str):
+async def web_search(request: WebSearchRequest):
     """Perform a web search."""
+    query = request.query
     try:
         from playwright.async_api import async_playwright
 
@@ -146,12 +146,9 @@ async def spotify_control(request: SpotifyAction):
         from spotipy.oauth2 import SpotifyOAuth
 
         # Expect credentials from env or settings
-        from config import get_settings
-        settings = get_settings()
-
         client_id = os_getenv("SPOTIFY_CLIENT_ID", "")
         client_secret = os_getenv("SPOTIFY_CLIENT_SECRET", "")
-        redirect_uri = "http://127.0.0.1:8956/callback"
+        redirect_uri = "http://127.0.0.1:8970/callback"
 
         if not client_id:
             return {"status": "unconfigured", "message": "Spotify credentials not set. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env"}
