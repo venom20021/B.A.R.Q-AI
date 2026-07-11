@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Video, BarChart3, Settings, Mic,
   FolderOpen, Terminal, Monitor, Globe, Smartphone, Search,
   FileText, MessageSquare, Palette, ChevronDown, PanelRightOpen,
-  BrainCircuit, Bell,
+  BrainCircuit, Cpu, Eye,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NotificationCenter } from './NotificationCenter'
@@ -52,6 +52,8 @@ const navSections: { label: string; items: NavItemDef[] }[] = [
     items: [
       { path: '/chat', label: 'Chat', icon: MessageSquare },
       { path: '/memory', label: 'Memory', icon: BrainCircuit },
+      { path: '/agent', label: 'Agent', icon: Cpu },
+      { path: '/vision', label: 'Vision', icon: Eye },
       { path: '/widgets', label: 'Widgets', icon: Palette },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],

@@ -273,6 +273,7 @@ export function ContentPage(): JSX.Element {
   // ─── Effects ────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchPipeline()
     fetchCalendar(calendarYear, calendarMonth)
   }, [fetchPipeline, fetchCalendar, calendarYear, calendarMonth])

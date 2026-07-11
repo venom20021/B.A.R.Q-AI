@@ -26,6 +26,8 @@ import { ChatPage } from './pages/ChatPage'
 import { MemoryPage } from './pages/MemoryPage'
 import { WidgetsPage } from './pages/WidgetsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { AgentPage } from './pages/AgentPage'
+import { VisionPage } from './pages/VisionPage'
 
 // Lazy loaded views for the main navbar tabs
 const NotesView = lazy(() => import('./views/NotesView'))
@@ -268,14 +270,6 @@ function AppContent(): JSX.Element {
     }
   }, [navigate])
 
-  const handleSubmitText = useCallback(
-    (text: string): void => {
-      setRecentCommands((prev) => [text, ...prev.slice(0, 9)])
-      processQuickCommand(text.toLowerCase(), navigate)
-    },
-    [navigate],
-  )
-
   const handleQuickOverlayClose = useCallback((): void => {
     setQuickOverlay((prev) => ({ ...prev, visible: false }))
   }, [])
@@ -369,6 +363,8 @@ function AppContent(): JSX.Element {
                   <Route path="/docs" element={<AnimatedPage><DocsPage /></AnimatedPage>} />
                   <Route path="/chat" element={<AnimatedPage><ChatPage /></AnimatedPage>} />
                   <Route path="/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
+                  <Route path="/agent" element={<AnimatedPage><AgentPage /></AnimatedPage>} />
+                  <Route path="/vision" element={<AnimatedPage><VisionPage /></AnimatedPage>} />
                   <Route path="/widgets" element={<AnimatedPage><WidgetsPage /></AnimatedPage>} />
                 </Routes>
               </AnimatePresence>

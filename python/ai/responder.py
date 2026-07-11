@@ -11,7 +11,7 @@ import hashlib
 import io
 import re
 from pathlib import Path
-from typing import AsyncIterable, Optional
+from typing import AsyncIterable
 
 import edge_tts
 import numpy as np
@@ -33,7 +33,7 @@ def _split_sentences(text: str) -> list[str]:
     Splits on . ! ? : ; and commas so that smaller chunks
     can be sent to TTS faster while the LLM keeps generating.
     """
-    parts = re.split(r'(?<=[.!?:;,])\s+', text)
+    parts = re.split(r"(?<=[.!?:;,])\s+", text)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -50,6 +50,7 @@ class BARQResponder:
         self._interrupt_requested = False  # set True to abort an active stream
         self.stt_text: str = ""  # latest interim STT transcript (for live display via WebSocket)
         self.stt_confidence: float = 0.0  # confidence score of current/interim STT (0.0-1.0)
+        self.response_text: str = ""  # accumulated AI response text (for live display via WebSocket)
 
     # ── Non-streaming (legacy) respond ───────────────────────────────
 
@@ -68,6 +69,21 @@ class BARQResponder:
         """
         self.is_processing = True
         try:
+            # ── Slash commands ──────────────────────────────────────
+            stripped = user_input.strip()
+            if stripped.startswith("/"):
+                if stripped.startswith("/ponytail-review"):
+                    response_text = await self._handle_ponytail_review()
+                else:
+                    response_text = f"Unknown slash command: {stripped.split()[0]}"
+                self.conversation.add_assistant_message(response_text)
+                audio_path = await self._text_to_speech(response_text)
+                return {
+                    "text": response_text,
+                    "audio_path": str(audio_path),
+                    "action": "slash_command",
+                }
+
             self.conversation.add_user_message(user_input)
 
             # ── Small talk check (faster than LLM) ──────────────────
@@ -132,6 +148,7 @@ class BARQResponder:
             if small_talk_reply:
                 self.conversation.add_user_message(user_input)
                 self.conversation.add_assistant_message(small_talk_reply)
+                self.response_text = small_talk_reply
                 audio_path, audio_pcm = await self._text_to_speech_both(small_talk_reply)
                 yield {
                     "text": small_talk_reply,
@@ -146,6 +163,7 @@ class BARQResponder:
 
             # Commands are short — use non-streaming path
             if intent == "command":
+                self.response_text = "Processing command..."
                 result = await self.respond(user_input)
                 # Add PCM data to command results (generated once)
                 if "audio_path" in result:
@@ -154,6 +172,7 @@ class BARQResponder:
                         result["audio_pcm"] = audio_pcm
                     except Exception:
                         pass
+                self.response_text = result.get("text", "")
                 yield result
                 return
 
@@ -161,6 +180,7 @@ class BARQResponder:
             context = self.conversation.get_context()
             buffer = ""
             full_text = ""
+            self.response_text = ""  # reset for new turn
 
             try:
                 async for token in self.llm.stream_chat(context):
@@ -168,6 +188,7 @@ class BARQResponder:
                         break
                     buffer += token
                     full_text += token
+                    self.response_text = full_text  # update live display text
 
                     # Flush complete sentences from the buffer
                     parts = _split_sentences(buffer)
@@ -212,6 +233,7 @@ class BARQResponder:
         finally:
             self.is_processing = False
             self._interrupt_requested = False
+            self.response_text = ""  # clear live display text when turn ends
 
     # ── Intent classification ────────────────────────────────────────
 
@@ -261,6 +283,22 @@ class BARQResponder:
 
             if action == "cancel":
                 return "Command cancelled."
+
+            if action == "agent_task":
+                goal = result.get("goal", text)
+                try:
+                    from agent.agent_executor import AgentExecutor
+                    executor = AgentExecutor()
+                    task_result = await executor.execute(goal=goal)
+                    return task_result
+                except Exception as e:
+                    print(f"[Responder] Agent task error: {e}")
+                    # Fallback: try conversational response via LLM
+                    context = self.conversation.get_context()
+                    try:
+                        return await self.llm.chat(context)
+                    except Exception:
+                        return "I'll work on that now and let you know when I'm done."
 
             if action == "unknown":
                 context = self.conversation.get_context()
@@ -360,8 +398,86 @@ class BARQResponder:
 
         return np.concatenate(pcm_chunks).astype(np.float32) / 32768.0
 
+    # ── Slash command: /ponytail-review ────────────────────────────
+
+    async def _handle_ponytail_review(self) -> str:
+        """Run a Ponytail review audit on the current git diff.
+
+        Gets the diff, loads the Ponytail rules, and sends both to
+        Ollama for a "lazy senior dev" over-engineering assessment.
+        """
+        import asyncio
+
+        # 1. Get git diff (staged + unstaged)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "diff", "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            diff = stdout.decode(errors="replace")
+            if not diff.strip():
+                # Try just unstaged
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "diff",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                diff = stdout.decode(errors="replace")
+            if not diff.strip():
+                return "No changes to review — working tree is clean."
+        except Exception as e:
+            return f"Could not run git diff: {e}"
+
+        # 2. Load Ponytail rules
+        try:
+            from pathlib import Path
+            rules_path = Path(__file__).parent.parent / "agent" / "PONYTAIL.md"
+            ponytail_rules = rules_path.read_text(encoding="utf-8")
+        except Exception as e:
+            ponytail_rules = f"[Could not load Ponytail rules: {e}]"
+
+        # 3. Build analysis prompt
+        review_prompt = (
+            "You are a lazy senior dev code reviewer. "
+            "Review the following git diff against the Ponytail philosophy below.\n\n"
+            f"## Ponytail Rules\n{ponytail_rules}\n\n"
+            "## Git Diff to Review\n```\n"
+            f"{diff[:6000]}"  # cap at ~6k chars to avoid prompt overflow
+            + ("" if len(diff) <= 6000 else "\n[... truncated to first 6000 chars ...]")
+            + "\n```\n\n"
+            "Give a concise, honest review. For each change:"
+            "\n- ❌ Over-engineered (too many files, abstractions, boilerplate, new deps)"
+            "\n- ✅ Minimal and justified"
+            "\n- 🔧 Could be simpler (suggest how)"
+            "\n\nEnd with a summary: PASS, MINOR ISSUES, or OVER-ENGINEERED."
+        )
+
+        # 4. Send to Ollama
+        messages = [
+            {"role": "system", "content": "You are a lazy senior developer who reviews code for over-engineering. Be brutally honest and concise."},
+            {"role": "user", "content": review_prompt},
+        ]
+        try:
+            review = await self.llm.chat(messages)
+            return review.strip()
+        except Exception as e:
+            return f"Review generation failed: {e}"
+
+    # ── Text-only respond ──────────────────────────────────────────
+
     async def respond_text_only(self, user_input: str) -> str:
         """Quick text-only response (no audio generation)."""
+
+        # ── Slash commands ──────────────────────────────────────────
+        stripped = user_input.strip()
+        if stripped.startswith("/ponytail-review"):
+            return await self._handle_ponytail_review()
+        if stripped.startswith("/"):
+            return f"Unknown slash command: {stripped.split()[0]}"
+
         self.conversation.add_user_message(user_input)
         context = self.conversation.get_context()
         try:

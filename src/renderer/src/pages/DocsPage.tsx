@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { FileText, Presentation, Sheet, File as FilePdf, Download, Loader2, CheckCircle } from 'lucide-react'
+import { FileText, Presentation, Sheet, File as FilePdf, Download, Loader2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export function DocsPage(): JSX.Element {

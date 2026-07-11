@@ -3,7 +3,6 @@ Tests for jobs FastAPI routes: scan, matches, approve, applications, status.
 External dependencies (JobScanner, JobEvaluator, JobApplier) are mocked.
 """
 
-from unittest.mock import AsyncMock, patch
 
 import pytest
 

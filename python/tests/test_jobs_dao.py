@@ -3,8 +3,10 @@ Tests for JobsDAO - job listings, evaluations, and applications CRUD.
 """
 
 import json
-import pytest
 from datetime import datetime, timezone
+
+import pytest
+
 from database import jobs_dao
 
 
@@ -53,8 +55,8 @@ async def test_search_jobs():
 @pytest.mark.asyncio
 async def test_get_active_jobs():
     """Test retrieving active jobs with evaluations."""
-    j1 = await jobs_dao.insert_job_listing({"title": "Active Job", "company": "A", "source_board": "linkedin", "is_active": 1})
-    j2 = await jobs_dao.insert_job_listing({"title": "Inactive Job", "company": "B", "source_board": "linkedin"})
+    await jobs_dao.insert_job_listing({"title": "Active Job", "company": "A", "source_board": "linkedin", "is_active": 1})
+    await jobs_dao.insert_job_listing({"title": "Inactive Job", "company": "B", "source_board": "linkedin"})
 
     # Deactivate the second job
     await jobs_dao.deactivate_expired_jobs()

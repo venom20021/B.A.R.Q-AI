@@ -11,15 +11,14 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
-from typing import Optional
 
 from config import get_settings
+
 from .base import (
+    Channel,
     NotificationChannel,
     NotificationEvent,
     NotificationResult,
-    Channel,
-    Priority,
 )
 
 
@@ -79,7 +78,7 @@ class EmailChannel(NotificationChannel):
         """Build an HTML email from a notification event."""
         msg = MIMEMultipart("alternative")
         # Sanitize subject: strip newlines and truncate to prevent header injection
-        safe_subject = event.title.replace('\n', ' ').replace('\r', '')[:200]
+        safe_subject = event.title.replace("\n", " ").replace("\r", "")[:200]
         msg["Subject"] = f"[BARQ] {safe_subject}"
         msg["From"] = formataddr(("BARQ Notifications", self.settings.smtp_user))
         msg["To"] = self.settings.notification_email
@@ -105,7 +104,7 @@ class EmailChannel(NotificationChannel):
         color = priority_colors.get(event.priority.value, "#3b82f6")
         safe_title = html.escape(event.title)
         safe_body = html.escape(event.body)
-        safe_category = html.escape(event.category.value.replace('_', ' ').title())
+        safe_category = html.escape(event.category.value.replace("_", " ").title())
         safe_priority = html.escape(event.priority.value.upper())
 
         return f"""<!DOCTYPE html>
@@ -154,7 +153,7 @@ Sent by BARQ — Your Voice-Controlled Desktop Assistant
             )
 
         try:
-            safe_digest_type = digest_type[:20].replace('\n', ' ')
+            safe_digest_type = digest_type[:20].replace("\n", " ")
             subject = f"[BARQ] {safe_digest_type.title()} Digest — {len(events)} notifications"
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
@@ -172,7 +171,7 @@ Sent by BARQ — Your Voice-Controlled Desktop Assistant
                     <p style="margin: 0; color: #6b7280; font-size: 14px;">{safe_body}</p>
                 </div>"""
 
-            html = f"""<!DOCTYPE html>
+            html_content = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f3f4f6;">
@@ -199,7 +198,7 @@ Sent by BARQ — Your Voice-Controlled Desktop Assistant
                 text += f"• {evt.title}: {evt.body}\n"
 
             msg.attach(MIMEText(text, "plain"))
-            msg.attach(MIMEText(html, "html"))
+            msg.attach(MIMEText(html_content, "html"))
 
             await asyncio.to_thread(self._send_smtp, msg)
 

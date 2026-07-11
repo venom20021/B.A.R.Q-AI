@@ -14,10 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-# Module under test
-from ai.responder import _split_sentences, BARQResponder
 from ai.conversation import ConversationManager
 
+# Module under test
+from ai.responder import BARQResponder, _split_sentences
 
 # Helper: create a fake return value for _text_to_speech_both
 _NP_ZERO = np.array([0.0], dtype=np.float32)

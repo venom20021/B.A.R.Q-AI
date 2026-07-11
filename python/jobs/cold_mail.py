@@ -5,7 +5,6 @@ Supports multiple tones: professional, casual, enthusiastic
 Uses Ollama to write compelling outreach that references the recipient/company.
 """
 
-from typing import Any
 
 from config import get_settings
 

@@ -11,19 +11,15 @@ Integration tests for the conversation listener:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from voice.conversation_listener import (
-    ConversationListener,
     VAD_SILENCE_TIMEOUT,
-    VAD_ENERGY_THRESHOLD,
-    VAD_MAX_DURATION,
+    ConversationListener,
 )
 from voice.interrupt_handler import InterruptHandler
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Fixtures

@@ -2,11 +2,10 @@
 Multi-platform content poster - queues and posts to YouTube, TikTok, Instagram, Twitter.
 """
 
-from typing import Any
 from datetime import datetime, timezone
+from typing import Any
 
 from config import get_settings
-
 
 PLATFORMS = ["youtube", "tiktok", "instagram", "twitter"]
 

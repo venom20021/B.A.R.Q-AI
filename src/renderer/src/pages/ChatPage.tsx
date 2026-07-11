@@ -33,6 +33,16 @@ export function ChatPage(): JSX.Element {
     setSending(true)
 
     try {
+      // Friendly response mapping for known command actions
+      const FRIENDLY_RESPONSES: Record<string, string> = {
+        show_diagnostics: 'Showing system diagnostics',
+        scan_jobs: 'Scanning for new job listings',
+        navigate: 'Navigating to the requested page',
+        toggle_mute: 'Toggling microphone',
+        weather: 'Fetching weather data',
+        help: 'Here are the available commands',
+      }
+
       // Try AI chat first for natural conversation
       const resp = await window.barq?.python.request('/voice/chat/text', {
         method: 'POST',
@@ -41,7 +51,8 @@ export function ChatPage(): JSX.Element {
       })
       if (resp && typeof resp === 'object') {
         const data = resp as { text?: string; action?: string }
-        const responseText = data.text || 'Command processed.'
+        const friendlyText = data.action ? FRIENDLY_RESPONSES[data.action] : undefined
+        const responseText = data.text || friendlyText || 'Command processed.'
 
         // Dispatch custom event for known command actions
         if (data.action && data.action !== 'conversation') {

@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
-    "dev:python": "cd python && uvicorn main:app --reload --host 127.0.0.1 --port 8956",
+    "dev:python": "cd python && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8970",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
@@ -16,6 +16,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "lint": "eslint .",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -36,6 +37,7 @@
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -49,8 +51,10 @@
     "electron-builder": "^25.0.5",
     "electron-vite": "^2.3.0",
     "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "happy-dom": "^20.10.6",
     "jsdom": "^27.0.1",
+    "playwright": "^1.61.1",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",
     "typescript": "^5.5.4",

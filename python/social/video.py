@@ -3,19 +3,16 @@ Video assembly pipeline - pulls stock footage, generates voiceovers,
 adds overlays, and renders final MP4.
 """
 
-import tempfile
 from pathlib import Path
 from typing import Any
+
 from moviepy import (
-    VideoFileClip,
     AudioFileClip,
     TextClip,
-    CompositeVideoClip,
     concatenate_videoclips,
 )
 
 from config import get_settings
-from .script import ScriptGenerator
 
 
 class VideoAssembler:

@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
 import {
-  Search, Filter, Star, ExternalLink, CheckCircle, Clock,
+  Search, Filter, ExternalLink, CheckCircle,
   Loader2, Activity, BarChart3, Mail, Send, RefreshCw,
-  TrendingUp, Target, AlertCircle, UserCheck, XCircle,
+  TrendingUp, Target, AlertCircle, UserCheck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -206,6 +206,7 @@ function JobListings(): JSX.Element {
     setLoading(false)
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchJobs() }, [fetchJobs])
 
   useEffect(() => {
@@ -419,7 +420,7 @@ function ResponseAnalytics(): JSX.Element {
         const resp = await window.barq?.jobs.responseAnalytics()
         if (resp?.success && resp.data) setAnalytics(resp.data as ResponseAnalytics)
       } catch { /* ignore */ }
-      setLoading(false)
+      startTransition(() => setLoading(false))
     })()
   }, [])
 
@@ -554,6 +555,7 @@ function FollowUpPanel(): JSX.Element {
     setLoading(false)
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchCandidates() }, [fetchCandidates])
 
   const handleSchedule = useCallback(async () => {

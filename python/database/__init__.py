@@ -15,12 +15,12 @@ Usage:
     jobs = await dao.get_active_jobs()
 """
 
-from .connection import db_connection, DatabaseConnection
-from .schema import initialize_schema, seed_defaults, ALL_TABLES
-from .jobs_dao import JobsDAO
-from .social_dao import SocialDAO
 from .analytics_dao import AnalyticsDAO
+from .connection import DatabaseConnection, db_connection
+from .jobs_dao import JobsDAO
+from .schema import initialize_schema, seed_defaults
 from .settings_dao import SettingsDAO
+from .social_dao import SocialDAO
 
 
 async def init_db():

@@ -10,6 +10,7 @@ from typing import Any
 
 from config import get_settings
 
+from .pdf_generator import ResumePDFGenerator
 
 # ATS platform signatures for form detection
 ATS_SIGNATURES = {
@@ -295,6 +296,35 @@ Write a professional cover letter that:
 4. Closes with a call to action
 Keep it to 3-4 paragraphs.
 """
+
+    async def generate_resume_pdf(
+        self,
+        job: dict[str, Any],
+        user_profile: dict[str, Any],
+        output_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Generate a tailored resume AND compile it to PDF.
+
+        Args:
+            job: Job listing details (title, company, description)
+            user_profile: User's resume/profile data
+            output_dir: Optional output directory for the PDF
+
+        Returns:
+            Dict with pdf_path, backend_used, and the resume text
+        """
+        # Generate the resume text via LLM
+        resume_md = await self.generate_resume(job, user_profile)
+
+        # Add the generated resume text to user_profile for PDF compilation
+        pdf_profile = {**user_profile, "raw_md": resume_md}
+
+        # Generate PDF
+        generator = ResumePDFGenerator()
+        result = await generator.generate(pdf_profile, output_dir)
+        result["resume_text"] = resume_md
+        return result
 
     def _fallback_resume(self, profile: dict[str, Any]) -> str:
         skills = "\n".join(f"- {s}" for s in profile.get("skills", []))

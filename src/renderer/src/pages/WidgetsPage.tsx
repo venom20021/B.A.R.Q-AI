@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Palette, Clock, TrendingUp, Calculator, Code, Wand2, Globe, Loader2, CheckCircle } from 'lucide-react'
+import { Clock, TrendingUp, Calculator, Code, Wand2, Globe, CheckCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 const widgetDefs = [
@@ -21,7 +21,7 @@ export function WidgetsPage(): JSX.Element {
         method: 'POST',
         body: JSON.stringify({
           name: `widget_${action}`,
-          steps: [{ action: 'open_url', target: `http://127.0.0.1:8956/docs` }],
+          steps: [{ action: 'open_url', target: `http://127.0.0.1:8970/docs` }],
           trigger_phrase: `spawn ${action} widget`,
         }),
         headers: { 'Content-Type': 'application/json' },

@@ -24,14 +24,13 @@ import warnings
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 # Ensure the python directory is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from database.connection import db_connection
 from database.schema import initialize_schema, seed_defaults
-
 
 # ── Memory limit configuration ────────────────────────────────────
 # Soft warning threshold (local dev feedback)

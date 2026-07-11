@@ -3,8 +3,8 @@ Content Calendar — schedule, view, and manage social media posting schedules.
 Provides weekly/monthly calendar views and scheduling endpoints.
 """
 
-from datetime import datetime, timedelta, date, timezone
-from typing import Any, Optional
+from datetime import date, datetime, timedelta
+from typing import Any
 
 from database import social_dao
 

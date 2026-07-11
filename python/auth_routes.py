@@ -2,9 +2,10 @@
 FastAPI routes for API key and authentication management.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from auth import get_configured_api_key, validate_api_key, require_api_key
+
+from auth import get_configured_api_key, require_api_key, validate_api_key
 
 router = APIRouter()
 

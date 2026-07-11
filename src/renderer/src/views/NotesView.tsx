@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, startTransition } from 'react'
 import { motion } from 'framer-motion'
 import { StickyNote, Search, Plus, Trash2, Pin } from 'lucide-react'
 
@@ -47,7 +47,7 @@ export default function NotesView({ glassPanel }: { glassPanel: string }): JSX.E
     } catch { /* ignore */ }
   }, [fetchNotes])
 
-  useEffect(() => { fetchNotes() }, [fetchNotes])
+  useEffect(() => { startTransition(() => { void fetchNotes() }) }, [fetchNotes])
 
   const filtered = notes.filter(n =>
     n.title.toLowerCase().includes(search.toLowerCase()) ||

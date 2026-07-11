@@ -6,20 +6,18 @@ priority, category, and user preferences. Supports Telegram for
 urgent/high alerts, email for digests, and desktop for all alerts.
 """
 
-import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
-from database import settings_dao, analytics_dao
+from database import analytics_dao, settings_dao
+
 from .base import (
+    Category,
+    Channel,
     NotificationEvent,
     NotificationResult,
-    Channel,
     Priority,
-    Category,
 )
-from .telegram import TelegramChannel
-from .email_smtp import EmailChannel
 from .desktop import DesktopChannel
+from .email_smtp import EmailChannel
+from .telegram import TelegramChannel
 
 
 class NotificationManager:

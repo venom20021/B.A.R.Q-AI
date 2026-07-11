@@ -1,43 +1,281 @@
 """
-Speech processing using faster-whisper for STT and Edge TTS for synthesis.
+Speech processing using faster-whisper for STT and Edge TTS / Piper TTS for synthesis.
 
-Upgraded from OpenAI Whisper to faster-whisper for ~4x faster transcription
-with lower memory usage and near-identical accuracy.
+Supports two TTS backends:
+- "edge" (default): Microsoft Edge TTS — requires internet, high-quality natural voices
+- "piper": Local Piper TTS — fully offline, uses ONNX models (en_US-lessac-medium by default)
+
+The TTS backend can be switched at runtime via the /voice/tts-backend API.
 """
 
 import asyncio
 import io
+import json
 import tempfile
+import threading
 import wave
 from pathlib import Path
 from typing import Any, AsyncIterable, Optional
+
 import edge_tts
 import numpy as np
 
 from config import get_settings
 
+# ── Piper TTS Engine (offline, local) ──────────────────────────────────
+
+
+class PiperTTSEngine:
+    """Wrapper around Piper TTS for fully offline speech synthesis.
+
+    Uses ONNX voice models (e.g. en_US-lessac-medium) downloaded to a local
+    directory.  The model is loaded lazily on first use and cached.
+    """
+
+    DEFAULT_MODEL = "en_US-lessac-medium"
+    MODELS_DIR = Path(__file__).parent.parent / "models" / "piper"
+
+    def __init__(self, model_name: str = ""):
+        self._voice: Any = None  # PiperVoice instance (lazy-loaded)
+        self._model_name: str = model_name or self.DEFAULT_MODEL
+        self._model_path: Path = self.MODELS_DIR / f"{self._model_name}.onnx"
+        self._config_path: Path = self.MODELS_DIR / f"{self._model_name}.onnx.json"
+        self._sample_rate: int = 22050  # default, updated on load
+        self._load_lock = threading.Lock()  # thread safety for lazy loading
+
+    @property
+    def is_available(self) -> bool:
+        """Check if the Piper voice model file exists on disk."""
+        return self._model_path.exists() and self._config_path.exists()
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @model_name.setter
+    def model_name(self, name: str):
+        """Switch to a different Piper voice model (lazy-loaded on next use)."""
+        self._voice = None  # force re-load
+        self._model_name = name
+        self._model_path = self.MODELS_DIR / f"{name}.onnx"
+        self._config_path = self.MODELS_DIR / f"{name}.onnx.json"
+
+    def _load_voice(self):
+        """Lazy-load the PiperVoice model (thread-safe with double-checked locking)."""
+        if self._voice is not None:
+            return
+        with self._load_lock:
+            if self._voice is not None:
+                return
+            if not self.is_available:
+                raise RuntimeError(
+                    f"Piper voice model not found at {self._model_path}. "
+                    f"Download with: python -m piper.download_voices {self._model_name} "
+                    f"--download-dir {self.MODELS_DIR}"
+                )
+
+            from piper.voice import PiperVoice
+            print(f"[Piper] Loading voice model: {self._model_name}")
+            self._voice = PiperVoice.load(
+                str(self._model_path),
+                config_path=str(self._config_path),
+                use_cuda=False,
+            )
+            # Read sample rate from the onnx config json
+            config_data = json.loads(self._config_path.read_text(encoding="utf-8"))
+            self._sample_rate = config_data.get("audio", {}).get("sample_rate", 22050)
+            print(f"[Piper] Voice model loaded (sample_rate={self._sample_rate})")
+
+    def synthesize(self, text: str) -> bytes:
+        """Convert text to speech and return WAV bytes.
+
+        Args:
+            text: The text to speak
+
+        Returns:
+            WAV bytes (16-bit PCM with proper WAV header)
+        """
+        self._load_voice()
+
+        pcm_chunks: list[bytes] = []
+        for chunk in self._voice.synthesize(text):
+            pcm_chunks.append(chunk.audio_int16_bytes)
+
+        if not pcm_chunks:
+            raise ValueError("Piper TTS produced no audio output")
+
+        full_pcm = b"".join(pcm_chunks)
+
+        # Wrap in WAV header
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit = 2 bytes
+            wf.setframerate(self._sample_rate)
+            wf.writeframes(full_pcm)
+
+        return buf.getvalue()
+
+    def synthesize_pcm(self, text: str) -> tuple[np.ndarray, int]:
+        """Convert text to speech and return PCM float32 audio.
+
+        Args:
+            text: The text to speak
+
+        Returns:
+            Tuple of (audio_float32 normalized to [-1.0, 1.0], sample_rate)
+        """
+        self._load_voice()
+
+        float_chunks: list[np.ndarray] = []
+        for chunk in self._voice.synthesize(text):
+            float_chunks.append(chunk.audio_float_array)
+
+        if not float_chunks:
+            raise ValueError("Piper TTS produced no audio output")
+
+        audio = np.concatenate(float_chunks)
+        return audio.astype(np.float32), self._sample_rate
+
+    def list_available_models(self) -> list[dict]:
+        """List all downloaded Piper voice models in the models/piper directory."""
+        if not self.MODELS_DIR.exists():
+            return []
+        models = []
+        for f in self.MODELS_DIR.glob("*.onnx"):
+            stem = f.stem  # e.g. "en_US-lessac-medium"
+            json_path = self.MODELS_DIR / f"{stem}.onnx.json"
+            if json_path.exists():
+                models.append({
+                    "id": stem,
+                    "path": str(f),
+                })
+        return models
+
 
 class SpeechProcessor:
-    """Handles speech-to-text and text-to-speech operations."""
+    """Handles speech-to-text and text-to-speech operations.
+
+    Supports two TTS backends:
+    - "edge" (default): Microsoft Edge TTS — natural voices, requires internet
+    - "piper": Local Piper TTS — fully offline, uses local ONNX models
+    """
 
     def __init__(self):
         self.settings = get_settings()
         self._whisper_model: Any = None
         self.tts_voice: str = "en-US-JennyNeural"
+        # TTS backend: "edge" or "piper"
+        self.tts_backend: str = "edge"
+        # Lazy-loaded Piper engine (created on-demand when switching to piper backend)
+        self._piper_engine: Optional[PiperTTSEngine] = None
         # STT language: "en" or "hi" — defaults to English, auto-detected from speech
         self.stt_language: str = "en"
         # Callback fired when language is auto-detected to differ from current
         # signature: on_language_detected(detected_lang: str) -> None
         self.on_language_detected: Optional[callable] = None
         # Live mic level tracking — updated by transcribe_streaming() every chunk
+        # and by the background mic monitor between turns, so the sphere always
+        # shows audio reactivity even when STT is idle.
         self._current_mic_level: float = 0.0
+        # Background mic monitor (persistent, between STT turns)
+        self._mic_monitor_running: bool = False
+        self._mic_monitor_thread: Optional[threading.Thread] = None
 
     def get_mic_level(self) -> float:
-        """Get the current microphone audio level (0.0–1.0) from the active STT stream.
+        """Get the current microphone audio level (0.0–1.0).
 
-        Returns 0.0 if no streaming transcription is currently running.
+        Returns the live RMS-based mic level, updated continuously by:
+        - The background mic monitor (between STT turns, during conversations)
+        - ``transcribe_streaming()`` (during active STT)
+
+        Returns 0.0 when no mic stream is open (e.g. before first conversation).
         """
         return self._current_mic_level
+
+    # ── Background Mic Level Monitor ────────────────────────────────
+    # A lightweight background thread that continuously reads the microphone
+    # RMS level when no STT stream is active.  This keeps the WebSocket mic_level
+    # alive so the 3D sphere shows audio wave reactivity even between turns.
+    #
+    # Lifecycle:
+    #   - Started by ConversationListener when conversation mode begins
+    #   - Stopped by transcribe_streaming() before opening its own stream
+    #   - Restarted by transcribe_streaming() after releasing its stream
+    #   - Stopped by ConversationListener when conversation mode ends
+
+    def start_mic_monitor(self):
+        """Start the background mic level monitor thread.
+
+        Opens its own lightweight InputStream (blocksize=1024, no processing)
+        and updates ``_current_mic_level`` on every chunk.  Call when
+        conversation mode starts (between turns) to keep the sphere alive.
+        """
+        if self._mic_monitor_running:
+            return
+        self._mic_monitor_running = True
+        self._mic_monitor_thread = threading.Thread(
+            target=self._mic_monitor_loop, daemon=True,
+        )
+        self._mic_monitor_thread.start()
+        print("[Speech] Background mic monitor started")
+
+    def stop_mic_monitor(self):
+        """Stop the background mic level monitor thread.
+
+        The thread's stream is closed and the thread joins (up to 1 s).
+        Call before ``transcribe_streaming()`` opens its own stream, and
+        when conversation mode ends.
+        """
+        self._mic_monitor_running = False
+        if self._mic_monitor_thread and self._mic_monitor_thread.is_alive():
+            self._mic_monitor_thread.join(timeout=1)
+            self._mic_monitor_thread = None
+        print("[Speech] Background mic monitor stopped")
+
+    def _mic_monitor_loop(self):
+        """Background loop: lightweight mic stream for RMS level reading only.
+
+        Opens a separate ``sd.InputStream`` with minimal blocksize, reads
+        each chunk, computes RMS, and updates ``_current_mic_level``.
+        If the stream fails (e.g. device disconnected) it retries every 500 ms.
+        """
+        import numpy as np
+        import sounddevice as sd
+
+        from .audio_device import resolve_input_device
+
+        device = resolve_input_device(self.settings.audio_input_device)
+
+        while self._mic_monitor_running:
+            try:
+                stream = sd.InputStream(
+                    device=device,
+                    samplerate=16000,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=1024,
+                )
+                stream.start()
+
+                while self._mic_monitor_running:
+                    data, _ = stream.read(1024)
+                    try:
+                        rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                        self._current_mic_level = min(1.0, rms / 10000.0)
+                    except Exception:
+                        self._current_mic_level = 0.0
+
+            except Exception as e:
+                err_str = str(e)
+                # Ignore benign "stream closed" or "input overflowed" errors
+                if "Stream closed" not in err_str and "Input overflowed" not in err_str:
+                    print(f"[Speech] Mic monitor error: {e}")
+                self._current_mic_level = 0.0
+
+            # Wait before retrying if the stream failed
+            import time
+            time.sleep(0.5)
 
     def _get_model(self):
         """Lazy-load the faster-whisper model (~4x faster than OpenAI Whisper)."""
@@ -79,17 +317,27 @@ class SpeechProcessor:
 
         return text
 
+    def get_piper_engine(self) -> PiperTTSEngine:
+        """Get or create the lazy-loaded Piper TTS engine."""
+        if self._piper_engine is None:
+            self._piper_engine = PiperTTSEngine()
+        return self._piper_engine
+
     async def synthesize(self, text: str, voice: str = "en-US-JennyNeural") -> bytes:
         """
-        Convert text to speech using Edge TTS.
+        Convert text to speech using the currently active TTS backend.
 
         Args:
             text: The text to speak
-            voice: Edge TTS voice name
+            voice: Edge TTS voice name (only used by "edge" backend)
 
         Returns:
-            Audio bytes (MP3 format)
+            Audio bytes (MP3 format for "edge", WAV format for "piper")
         """
+        if self.tts_backend == "piper":
+            return await asyncio.to_thread(self.get_piper_engine().synthesize, text)
+
+        # Default: Edge TTS
         communicate = edge_tts.Communicate(text, voice)
         audio_bytes = b""
 
@@ -120,15 +368,22 @@ class SpeechProcessor:
     async def synthesize_pcm(self, text: str, voice: str = "") -> tuple[np.ndarray, int]:
         """
         Convert text to speech and return decoded PCM audio for in-memory playback.
-        Uses PyAV to decode MP3 bytes on-the-fly — no temp files needed.
+
+        Uses the currently active TTS backend:
+        - "edge": Uses PyAV to decode MP3 bytes on-the-fly
+        - "piper": Returns float32 PCM directly from Piper (no decode needed)
 
         Args:
             text: The text to speak
-            voice: Edge TTS voice name (defaults to self.tts_voice)
+            voice: Edge TTS voice name (only used by "edge" backend)
 
         Returns:
-            Tuple of (audio_float32 normalized to [-1.0, 1.0], sample_rate=24000)
+            Tuple of (audio_float32 normalized to [-1.0, 1.0], sample_rate)
         """
+        if self.tts_backend == "piper":
+            return await asyncio.to_thread(self.get_piper_engine().synthesize_pcm, text)
+
+        # Default: Edge TTS → decode MP3 to PCM via PyAV
         import av
 
         mp3_bytes = await self.synthesize(text, voice or self.tts_voice)
@@ -161,7 +416,6 @@ class SpeechProcessor:
             Transcribed text
         """
         import sounddevice as sd
-        import numpy as np
 
         # Resolve input device from config
         from .audio_device import resolve_input_device
@@ -172,7 +426,7 @@ class SpeechProcessor:
             int(16000 * duration),
             samplerate=16000,
             channels=1,
-            dtype='int16',
+            dtype="int16",
             device=device,
             blocking=True,
         )
@@ -210,8 +464,8 @@ class SpeechProcessor:
         Returns:
             Transcribed text, or None if no speech detected.
         """
-        import sounddevice as sd
         import numpy as np
+        import sounddevice as sd
 
         from .audio_device import resolve_input_device
         device = resolve_input_device(self.settings.audio_input_device)
@@ -220,7 +474,7 @@ class SpeechProcessor:
             device=device,
             samplerate=16000,
             channels=1,
-            dtype='int16',
+            dtype="int16",
             blocksize=1024,
         )
         stream.start()
@@ -301,9 +555,8 @@ class SpeechProcessor:
             Interim dicts while the user is speaking, then one final dict.
             Yields nothing if no speech is detected.
         """
-        import asyncio
-        import sounddevice as sd
         import numpy as np
+        import sounddevice as sd
 
         from .audio_device import resolve_input_device
         device = resolve_input_device(self.settings.audio_input_device)
@@ -312,7 +565,7 @@ class SpeechProcessor:
             device=device,
             samplerate=16000,
             channels=1,
-            dtype='int16',
+            dtype="int16",
             blocksize=1024,
         )
         stream.start()
@@ -325,6 +578,10 @@ class SpeechProcessor:
         has_speech = False
         last_interim_at = 0
         chunk_count = 0
+
+        # Stop the background mic monitor BEFORE opening our stream to avoid
+        # resource contention (two streams on the same device).
+        self.stop_mic_monitor()
 
         try:
             for _ in range(max_chunks):
@@ -370,6 +627,9 @@ class SpeechProcessor:
         finally:
             stream.stop()
             stream.close()
+            # Restart the background mic monitor so level readings continue
+            # (sphere stays reactive between turns).
+            self.start_mic_monitor()
 
     async def _transcribe_frames(self, frames: list) -> dict:
         """Helper: save audio frames to a temp WAV and return transcription + confidence.

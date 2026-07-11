@@ -6,6 +6,7 @@ Handles initialization, connection lifecycle, and transaction management.
 import os
 from pathlib import Path
 from typing import Optional
+
 import aiosqlite
 
 from config import get_settings

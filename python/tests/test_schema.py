@@ -3,6 +3,7 @@ Tests for database schema - verify all tables are created with correct structure
 """
 
 import pytest
+
 from database.connection import db_connection
 from database.schema import ALL_TABLES
 

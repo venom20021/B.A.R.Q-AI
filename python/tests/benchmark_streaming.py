@@ -26,7 +26,6 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncIterable, Optional
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # Simulated Timing Profiles  (based on real-world measurements)
 # ═══════════════════════════════════════════════════════════════════════
@@ -112,16 +111,16 @@ class BenchmarkSuite:
                 ttfa_improvement = (q.first_audible_ms - s.first_audible_ms) / q.first_audible_ms * 100
                 total_improvement = (q.total_duration_ms - s.total_duration_ms) / q.total_duration_ms * 100
 
-                lines.append(f"  Time-to-first-audible (TTFA):")
+                lines.append("  Time-to-first-audible (TTFA):")
                 lines.append(f"    Sequential: {q.first_audible_ms:>8.1f} ms")
                 lines.append(f"    Streaming:  {s.first_audible_ms:>8.1f} ms")
-                lines.append(f"    ─────────────────────────────────────")
+                lines.append("    ─────────────────────────────────────")
                 lines.append(f"    Improvement: {ttfa_improvement:>+6.1f}%  ({q.first_audible_ms - s.first_audible_ms:.0f} ms faster)")
                 lines.append("")
-                lines.append(f"  Total completion time:")
+                lines.append("  Total completion time:")
                 lines.append(f"    Sequential: {q.total_duration_ms:>8.1f} ms")
                 lines.append(f"    Streaming:  {s.total_duration_ms:>8.1f} ms")
-                lines.append(f"    ─────────────────────────────────────")
+                lines.append("    ─────────────────────────────────────")
                 lines.append(f"    Improvement: {total_improvement:>+6.1f}%  ({q.total_duration_ms - s.total_duration_ms:.0f} ms faster)")
                 lines.append("")
 
@@ -196,7 +195,7 @@ async def _simulate_tts(text: str) -> None:
 def _split_sentences(text: str) -> list[str]:
     """Mirror of responder._split_sentences for benchmark isolation."""
     import re
-    parts = re.split(r'(?<=[.!?:;,])\s+', text)
+    parts = re.split(r"(?<=[.!?:;,])\s+", text)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -268,7 +267,7 @@ async def benchmark_streaming(text: str) -> BenchmarkResult:
     overlap = max(0, llm_done_time - first_tts_start)
 
     return BenchmarkResult(
-        name=f"Streaming — {len(chunks)} chunks (\"{text[:40]}...\")",
+        name=f'Streaming — {len(chunks)} chunks ("{text[:40]}...")',
         total_duration_ms=total_duration,
         first_audible_ms=chunk_times[0] if chunk_times else total_duration,
         chunk_count=len(chunks),
@@ -323,7 +322,7 @@ async def benchmark_sequential(text: str) -> BenchmarkResult:
     total_duration = (time.perf_counter() - start_time) * 1000
 
     return BenchmarkResult(
-        name=f"Sequential — {len(chunks)} sentences (\"{text[:40]}...\")",
+        name=f'Sequential — {len(chunks)} sentences ("{text[:40]}...")',
         total_duration_ms=total_duration,
         first_audible_ms=chunk_times[0] if chunk_times else total_duration,
         chunk_count=len(chunks),
@@ -498,7 +497,7 @@ async def main():
     print()
 
     # ── 3. Chunking efficiency ──────────────────────────────────
-    print(f"  Benchmark 3: Sentence-aware chunking efficiency")
+    print("  Benchmark 3: Sentence-aware chunking efficiency")
     print("  ──────────────────────────────────────────────────────────")
     r5 = await benchmark_chunking_efficiency(RESPONSE_TEXT)
     suite.add(r5)
@@ -508,7 +507,7 @@ async def main():
     print()
 
     # ── 4. Barge-in interrupt response ─────────────────────────
-    print(f"  Benchmark 4: Barge-in interrupt latency")
+    print("  Benchmark 4: Barge-in interrupt latency")
     print("  ──────────────────────────────────────────────────────────")
     r6 = await benchmark_interrupt_latency(RESPONSE_TEXT)
     suite.add(r6)

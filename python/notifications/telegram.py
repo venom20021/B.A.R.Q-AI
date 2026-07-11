@@ -6,17 +6,18 @@ Designed for high-priority alerts like great job matches and
 successful video posts.
 """
 
-import asyncio
 import html
 from typing import Optional
+
 import httpx
 
 from config import get_settings
+
 from .base import (
+    Channel,
     NotificationChannel,
     NotificationEvent,
     NotificationResult,
-    Channel,
     Priority,
 )
 
@@ -120,7 +121,7 @@ class TelegramChannel(NotificationChannel):
         priority_icon = priority_icons.get(event.priority, "📢")
         safe_title = html.escape(event.title)
         safe_body = html.escape(event.body)
-        safe_category = html.escape(event.category.value.replace('_', ' ').title())
+        safe_category = html.escape(event.category.value.replace("_", " ").title())
 
         lines = [
             f"{priority_icon} <b>{safe_title}</b>",
@@ -133,7 +134,7 @@ class TelegramChannel(NotificationChannel):
         if event.metadata:
             lines.append("")
             for key, value in event.metadata.items():
-                safe_key = html.escape(key.replace('_', ' ').title())
+                safe_key = html.escape(key.replace("_", " ").title())
                 safe_val = html.escape(str(value))
                 lines.append(f"• {safe_key}: {safe_val}")
 

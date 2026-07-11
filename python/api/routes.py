@@ -10,17 +10,22 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
-from database import jobs_dao, analytics_dao
-from jobs import JobScanner, JobEvaluator, JobApplier
-from jobs.resume_parser import parse_resume, clear_parse_cache
+from database import analytics_dao, jobs_dao
+from jobs import JobApplier, JobEvaluator, JobScanner
+from jobs.cold_mail import ColdEmailWriter
+from jobs.cover_letter import CoverLetterGenerator
 from jobs.matcher import JobMatcher
 from jobs.optimizer import ResumeOptimizer
-from jobs.cover_letter import CoverLetterGenerator
-from jobs.cold_mail import ColdEmailWriter
+from jobs.resume_parser import clear_parse_cache, parse_resume
 
 router = APIRouter(prefix="/api/v1", tags=["Jobs v1"])
 
@@ -394,6 +399,49 @@ async def generate_cold_mail(job_id: int, request: ColdMailRequest):
 
 # ─── Applications ────────────────────────────────────────────────────────────
 
+@router.post("/jobs/{job_id}/resume/pdf")
+async def generate_job_resume_pdf(job_id: int):
+    """Generate a tailored resume PDF for a job."""
+    try:
+        job = await jobs_dao.get_job_listing(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        resume = parse_resume()
+        if resume.get("_error"):
+            raise HTTPException(status_code=400, detail=resume["_error"])
+
+        user_profile = {
+            "full_name": resume.get("full_name", ""),
+            "email": resume.get("email", ""),
+            "phone": resume.get("phone", ""),
+            "linkedin_url": resume.get("linkedin_url", ""),
+            "github_url": resume.get("github_url", ""),
+            "portfolio_url": resume.get("portfolio_url", ""),
+            "summary": resume.get("summary", ""),
+            "headline": resume.get("headline", ""),
+            "skills": resume.get("skills", []),
+            "experience": resume.get("experience", []),
+            "education": resume.get("education", []),
+            "projects": resume.get("projects", []),
+        }
+
+        result = await applier.generate_resume_pdf(job, user_profile)
+
+        return {
+            "status": result["status"],
+            "pdf_path": result.get("pdf_path", ""),
+            "backend": result.get("backend", ""),
+            "file_size_bytes": result.get("file_size_bytes", 0),
+            "resume_text": result.get("resume_text", ""),
+            "message": f"Resume PDF generated using {result.get('backend', 'unknown')} backend",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/jobs/{job_id}/apply")
 async def auto_apply(job_id: int, request: ApplyRequest | None = None):
     """Start auto-fill application (Playwright)."""
@@ -414,7 +462,7 @@ async def auto_apply(job_id: int, request: ApplyRequest | None = None):
             "education": resume.get("education", []),
         }
 
-        result = await applier.fill_application_form(
+        result = await applier.fill_application_form(  # noqa: F841
             form_fields=[],  # Will be detected by Playwright
             user_profile=user_profile,
         )
@@ -498,8 +546,6 @@ async def dashboard_funnel():
         counts = await jobs_dao.get_application_count_by_status()
         status_map = {row["status"]: row["count"] for row in counts}
 
-        total = sum(status_map.values()) or 1  # Avoid division by zero
-
         funnel = [
             {"stage": "Scanned", "count": status_map.get("new", 0) + status_map.get("draft", 0), "pct": 0},
             {"stage": "Matched", "count": status_map.get("matched", 0), "pct": 0},
@@ -548,4 +594,4 @@ async def broadcast_notification(message: dict[str, Any]):
             await client.send_json(message)
         except Exception:
             disconnected.add(client)
-    connected_clients -= disconnected
+    connected_clients.difference_update(disconnected)

@@ -92,7 +92,7 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     // Wait for the "Failed to process command" error message to appear
-    const errorMsg = await screen.findByText('Failed to process command')
+    const errorMsg = await screen.findByText('Failed to process command.')
     expect(errorMsg).toBeInTheDocument()
 
     // Verify the event was NOT dispatched

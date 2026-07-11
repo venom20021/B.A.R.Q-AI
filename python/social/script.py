@@ -6,7 +6,6 @@ from typing import Any
 
 from config import get_settings
 
-
 FORMAT_TEMPLATES = {
     "tiktok_short": {
         "max_duration": 60,

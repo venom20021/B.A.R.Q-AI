@@ -8,13 +8,20 @@ Provides endpoints for:
 - Triggering digests
 """
 
-from datetime import datetime, timezone
 from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from database import settings_dao
-from .manager import notification_manager, NotificationEvent, Priority, Category, Channel
+
+from .manager import (
+    Category,
+    Channel,
+    NotificationEvent,
+    Priority,
+    notification_manager,
+)
 
 router = APIRouter()
 

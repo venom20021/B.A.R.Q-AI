@@ -20,13 +20,19 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ai.responder import BARQResponder
-from voice.speech import SpeechProcessor
 from voice.interrupt_handler import InterruptHandler
 from voice.pipeline import (
     TranscriptionFrame as PipelineTranscriptionFrame,
-    TTSAudioFrame as PipelineTTSAudioFrame,
-    InterruptFrame as PipelineInterruptFrame,
 )
+from voice.pipeline import (
+    TTSAudioFrame as PipelineTTSAudioFrame,
+)
+from voice.speech import SpeechProcessor
+
+# Type aliases for optional command callbacks
+ParseCommandFn = Callable[[str, bool, Optional[str]], dict]
+# execute_command(text, action_result) -> str (spoken confirmation)
+ExecuteCommandFn = Callable[[str, dict], str]
 
 
 # Aggressive silence endpointing defaults (overridable per-instance)
@@ -54,11 +60,15 @@ class ConversationListener:
         responder: BARQResponder,
         on_stop: Optional[Callable] = None,
         use_pipeline: bool = True,
+        energy_threshold: float = 160.0,
+        parse_command: Optional[ParseCommandFn] = None,
+        execute_command: Optional[ExecuteCommandFn] = None,
     ):
         self.stt = stt
         self.responder = responder
         self.use_pipeline = use_pipeline
-        self.interrupt_handler = InterruptHandler()
+        self.energy_threshold = energy_threshold  # RMS energy threshold for barge-in detection
+        self.interrupt_handler = InterruptHandler(energy_threshold=energy_threshold)
         self.on_stop = on_stop  # callback invoked when conversation stops (e.g. to resume wake detector)
         self._conversation_active = False
         self._loop_task: Optional[asyncio.Task] = None
@@ -69,6 +79,9 @@ class ConversationListener:
             "end conversation", "stop conversation",
             "go to sleep", "shut down", "that's it for now",
         ]
+        # Optional voice command callbacks — wired by routes.py
+        self._parse_command: Optional[ParseCommandFn] = parse_command
+        self._execute_command: Optional[ExecuteCommandFn] = execute_command
 
     @property
     def is_active(self) -> bool:
@@ -80,6 +93,11 @@ class ConversationListener:
             return
         self._conversation_active = True
         self.responder.conversation.start_session("voice_conversation")
+
+        # Start background mic monitor so the sphere shows audio wave
+        # reactivity even between speech turns (before the first STT stream).
+        self.stt.start_mic_monitor()
+
         print("[Conversation] Hands-free conversation mode started — listening...")
         if self.use_pipeline:
             print("[Conversation] Using pipecat-inspired frame-based pipeline")
@@ -116,6 +134,9 @@ class ConversationListener:
                 print("[Conversation] Managed event loop stopped")
             except RuntimeError:
                 pass
+
+        # Stop the background mic monitor (conversation is done).
+        self.stt.stop_mic_monitor()
 
         # Notify caller that conversation has stopped (e.g. resume wake detector)
         if self.on_stop:
@@ -205,7 +226,26 @@ class ConversationListener:
                     await self.stop_conversation()
                     return
 
-                # ── 3. Streaming respond with sentence-aware TTS ─────
+                # ── 3. Check if it's a voice command (open/launch/run/etc.) ──
+                if self._parse_command and self._execute_command:
+                    parsed = self._parse_command(text, False, None)
+                    if parsed.get("action") != "unknown":
+                        print(f"[Conversation] Voice command detected: {parsed['action']} → {parsed.get('target', parsed.get('command', ''))}")
+                        # Execute the command and speak the result
+                        confirmation = await self._execute_command(text, parsed)
+                        self.responder.is_speaking = True
+                        try:
+                            pcm, sr = await self.responder.speech.synthesize_pcm(confirmation)
+                            await self.interrupt_handler.play_pcm_with_interrupt(
+                                pcm, sr, listen_for_interrupt=True,
+                            )
+                        except Exception as e:
+                            print(f"[Conversation] Command feedback TTS error: {e}")
+                        finally:
+                            self.responder.is_speaking = False
+                        continue
+
+                # ── 4. Streaming respond with sentence-aware TTS ─────
                 try:
                     self.responder.is_speaking = True
                     interrupted = False
@@ -330,7 +370,26 @@ class ConversationListener:
                     await self.stop_conversation()
                     return
 
-                # ── 3. Feed into pipeline (LLM → TTS) ───────────────
+                # ── 3. Check if it's a voice command (open/launch/run/etc.) ──
+                if self._parse_command and self._execute_command:
+                    parsed = self._parse_command(text, False, None)
+                    if parsed.get("action") != "unknown":
+                        print(f"[Conversation·Pipeline] Voice command detected: {parsed['action']} → {parsed.get('target', parsed.get('command', ''))}")
+                        # Execute the command and speak the result
+                        confirmation = await self._execute_command(text, parsed)
+                        self.responder.is_speaking = True
+                        try:
+                            pcm, sr = await self.responder.speech.synthesize_pcm(confirmation)
+                            await self.interrupt_handler.play_pcm_with_interrupt(
+                                pcm, sr, listen_for_interrupt=True,
+                            )
+                        except Exception as e:
+                            print(f"[Conversation·Pipeline] Command feedback TTS error: {e}")
+                        finally:
+                            self.responder.is_speaking = False
+                        continue
+
+                # ── 4. Feed into pipeline (LLM → TTS) ───────────────
                 try:
                     self.responder.is_speaking = True
                     self.responder._interrupt_requested = False

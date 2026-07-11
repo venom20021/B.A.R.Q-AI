@@ -35,7 +35,6 @@ from typing import AsyncIterable, Callable, Optional
 
 import numpy as np
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # Frame Types — standalone dataclasses (no inheritance) to avoid Python
 # MRO field ordering issues with defaults.
@@ -396,6 +395,7 @@ class LLMProcessor(FrameProcessor):
         stream_chat_fn: Callable[[list[dict]], AsyncIterable[str]],
         get_context_fn: Callable[[], list[dict]],
         add_message_fn: Callable[[str], None],
+        response_text_callback: Optional[Callable[[str], None]] = None,
     ):
         """
         Args:
@@ -406,10 +406,15 @@ class LLMProcessor(FrameProcessor):
                             Typically ``conversation.get_context``.
             add_message_fn: Stores assistant response in history.
                             Typically ``conversation.add_assistant_message``.
+            response_text_callback: Optional callback invoked with the accumulated
+                                    response text after each token, for real-time
+                                    display via WebSocket. Typically
+                                    ``setattr(responder, 'response_text', ...)``.
         """
         self._stream_chat = stream_chat_fn
         self._get_context = get_context_fn
         self._add_message = add_message_fn
+        self._response_text_callback = response_text_callback
         self._interrupted = False
 
     async def process_stream(
@@ -443,6 +448,10 @@ class LLMProcessor(FrameProcessor):
                         break
                     buffer += token
                     full_text += token
+
+                    # Push accumulated response text for real-time display
+                    if self._response_text_callback:
+                        self._response_text_callback(full_text)
 
                     # Flush at sentence boundaries
                     parts = _split_sentences(buffer)
@@ -617,6 +626,7 @@ def build_conversation_pipeline(responder, include_stt: bool = True) -> VoicePip
         stream_chat_fn=responder.llm.stream_chat,
         get_context_fn=responder.conversation.get_context,
         add_message_fn=responder.conversation.add_assistant_message,
+        response_text_callback=lambda text: setattr(responder, "response_text", text),
     ))
 
     pipeline.add_stage(TTSProcessor(

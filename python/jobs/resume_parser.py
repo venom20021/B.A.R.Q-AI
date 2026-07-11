@@ -7,9 +7,9 @@ work experience (with bullet points), education, and projects.
 
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 # Default path for the resume file
 DEFAULT_RESUME_PATH = os.path.join(
@@ -96,8 +96,8 @@ def _extract_name(md: str) -> str:
     """Extract the full name from the resume."""
     lines = md.strip().split("\n")
     # Usually the first non-empty, non-heading line is the name
-    for line in lines[:5]:
-        stripped = line.strip().strip("#").strip("*").strip()
+    for line_text in lines[:5]:
+        stripped = line_text.strip().strip("#").strip("*").strip()
         if stripped and len(stripped) < 60 and not stripped.startswith(("-", ">", "|")):
             # Check if it looks like a name (not an email, URL, etc.)
             if not re.match(r"^[\w.+-]+@[\w-]+\.[\w.]+$", stripped) and \
@@ -153,12 +153,12 @@ def _extract_url(md: str, service: str) -> str:
 
 def _extract_headline(md: str) -> str:
     """Extract the headline/tagline (often right after the name)."""
-    lines = [l.strip() for l in md.strip().split("\n") if l.strip()]
-    for i, line in enumerate(lines):
+    raw_lines = [ln.strip() for ln in md.strip().split("\n") if ln.strip()]
+    for i, line in enumerate(raw_lines):
         name = _extract_name(md)
         if name and name in line:
             # Next non-empty line after name might be the headline
-            for next_line in lines[i + 1:i + 4]:
+            for next_line in raw_lines[i + 1:i + 4]:
                 if next_line != name and \
                    not re.match(r"[\w.+-]+@[\w-]+\.[\w.]+", next_line) and \
                    not next_line.startswith("http") and \
@@ -272,7 +272,7 @@ def _extract_education(md: str) -> list[dict[str, Any]]:
         if not block:
             continue
 
-        lines = [l.strip().lstrip("-*+").strip() for l in block.split("\n") if l.strip()]
+        lines = [ln.strip().lstrip("-*+").strip() for ln in block.split("\n") if ln.strip()]
         title = lines[0] if lines else ""
 
         entries.append({
@@ -297,7 +297,7 @@ def _extract_projects(md: str) -> list[dict[str, Any]]:
         if not block:
             continue
 
-        lines = [l.strip().lstrip("-*+").strip() for l in block.split("\n") if l.strip()]
+        lines = [ln.strip().lstrip("-*+").strip() for ln in block.split("\n") if ln.strip()]
         title = lines[0] if lines else ""
         description = " ".join(lines[1:]) if len(lines) > 1 else ""
 

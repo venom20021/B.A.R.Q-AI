@@ -1,13 +1,11 @@
-import { useRef, useMemo, useCallback, useEffect, useState, Component, type MutableRefObject } from 'react'
-import type { ReactNode } from 'react'
-import { motion } from 'framer-motion'
-import { Canvas, useFrame } from '@react-three/fiber'
-import type { Group, Mesh, Points, MeshBasicMaterial } from 'three'
-// Import specific Three.js values instead of namespace import to avoid bundling issues
-import { AdditiveBlending, DoubleSide, CanvasTexture } from 'three'
-import { Grid } from '@react-three/drei'
+import { useRef, useMemo, useState, useCallback, useEffect, Component } from 'react'
+import type { ReactNode, MutableRefObject } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import type { Group, Mesh, Points } from 'three'
+import { AdditiveBlending, DoubleSide, CanvasTexture, Vector3, type MeshBasicMaterial, Color } from 'three'
+import { Html, QuadraticBezierLine, OrbitControls } from '@react-three/drei'
 
-// ─── Error Boundary — prevents 3D sphere crash from blanking the whole dashboard
+// ─── Error Boundary ────────────────────────────────────────────────────
 
 interface ErrorBoundaryState {
   hasError: boolean
@@ -23,7 +21,7 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; fallback?: Re
   render(): ReactNode {
     if (this.state.hasError) {
       return this.props.fallback ?? (
-        <div className="w-[280px] h-[280px] flex items-center justify-center">
+        <div className="w-full h-full flex items-center justify-center">
           <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
         </div>
       )
@@ -32,257 +30,108 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; fallback?: Re
   }
 }
 
-// ─── AI State Types ────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────
 
 export type AIState = 'idle' | 'listening' | 'thinking' | 'responding'
 
-// ─── Voice Reactivity Config ───────────────────────────────────────────
-
-// ─── Exported constants for testing — state behavior values ──────────
-// These are exported so unit tests can verify the exact numeric values
-// that govern each AI state's visual behavior (rotation speed, scale,
-// particle colors, ring opacity, pulse amplitude, etc.)
-
-export const IDLE_ROTATION_SPEED = 0.08
-export const SPEAKING_ROTATION_SPEED = 0.25
-export const THINKING_ROTATION_SPEED = 0.6
-/** Scale factor for thinking state — sphere collapses to 82% of normal size */
-export const THINKING_SCALE_FACTOR = 0.82
-export const IDLE_WOBBLE_SPEED = 0.025
-export const SPEAKING_WOBBLE_SPEED = 0.05
-export const IDLE_WOBBLE_AMPLITUDE = 0.08
-export const SPEAKING_WOBBLE_AMPLITUDE = 0.18
-export const IDLE_PULSE_AMPLITUDE = 0.01
-export const SPEAKING_PULSE_AMPLITUDE = 0.035
-export const IDLE_PULSE_FREQ = 0.5
-export const SPEAKING_PULSE_FREQ = 1.2
-export const RING_IDLE_SPEED = 0.04
-export const RING_SPEAKING_SPEED = 0.12
-
-// Per-state color targets — used by the particle field to lerp between
-export const STATE_PARTICLE_COLORS: Record<AIState, [number, number, number]> = {
-  idle: [8, 1, 10],          // Deep purple
-  listening: [12, 6, 0],     // Amber
-  thinking: [10, 10, 12],    // Cool white
-  responding: [0, 10, 2],    // Neon green
+export interface TransferSparkData {
+  id: string
+  from: [number, number, number]
+  to: [number, number, number]
+  color: string
+  progress: number // 0-1
 }
 
-// Per-state ring opacity
-export const STATE_RING_OPACITY: Record<AIState, number> = {
-  idle: 0.2,
-  listening: 0.35,
-  thinking: 0.35,
-  responding: 0.4,
+export interface TemporalLogEntry {
+  id: string
+  timestamp: number
+  text: string
+  icon?: string
 }
 
-export const COLOR_LERP_RATE = 0.06
+// ─── Agent Node Data ───────────────────────────────────────────────────
 
-// Per-state outer particle color boost
-export const STATE_OUTER_BOOST: Record<AIState, [number, number, number]> = {
-  idle: [0.3, 0.0, 0.25],
-  listening: [0.25, 0.15, 0.0],
-  thinking: [0.1, 0.1, 0.1],
-  responding: [0.0, 0.35, 0.15],
+interface AgentNodeData {
+  id: string
+  label: string
+  color: string
+  position: [number, number, number]
+  description: string
 }
 
+const AGENT_NODES: AgentNodeData[] = [
+  { id: 'strategist', label: 'Strategist', color: '#00E5FF', position: [5.0, 1.8, 1.0], description: 'Planning & Strategy' },
+  { id: 'researcher', label: 'Researcher', color: '#A855F7', position: [2.0, 4.5, 2.0], description: 'Deep Research' },
+  { id: 'chief-of-staff', label: 'Chief of Staff', color: '#FBBF24', position: [-3.5, 4.0, 1.5], description: 'Coordination' },
+  { id: 'finance', label: 'Finance', color: '#34D399', position: [-5.5, 0.0, -1.0], description: 'Budget & Tracking' },
+  { id: 'memory', label: 'Memory', color: '#F472B6', position: [-3.0, -3.8, 2.0], description: 'Context & Recall' },
+  { id: 'vision', label: 'Vision', color: '#60A5FA', position: [3.5, -3.5, 2.5], description: 'Computer Vision' },
+  { id: 'analytics', label: 'Analytics', color: '#FB923C', position: [0.5, -5.5, -1.5], description: 'Data Insights' },
+  { id: 'coding', label: 'Coding', color: '#2DD4BF', position: [1.5, 5.0, -2.0], description: 'Code Generation' },
+]
 
-// ─── Mouse Tracking Config ─────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────
 
-const MOUSE_SPRING = 0.10       // lerp factor per frame — faster mouse response
-const MOUSE_MAX_ANGLE = 0.35    // max rotation offset in radians (~20°)
-
-// ─── Parallax Depth Config ────────────────────────────────────────────
-
-const PARALLAX_STRENGTH = 0.25  // max X/Y shift for surface particles (units)
-const PARALLAX_DEPTH_MIN = 0.75 // innermost particle radius fraction
-const PARALLAX_DEPTH_MAX = 1.0  // outermost particle radius fraction
-
-    // per-frame lerp factor for theme color transitions (~2.5s to converge)
-
-// ─── Wake Animation Config (mount expansion) ────────────────────────────
-
-const WAKE_EASE_RATE = 0.035    // per-frame lerp toward 1.0 (~1.4s to converge)
-const WAKE_MIN_SCALE = 0.02     // starting scale (tiny bright point)
-
-// ─── Types ──────────────────────────────────────────────────────────────
-
-export type ThemeColor = 'cyan' | 'purple' | 'amber' | 'red'
-
-interface ThemePalette {
-  primary: string
-  primaryHex: string
-  particle: [number, number, number]  // RGB base for inner core
-  particleOuterBoost: [number, number, number]  // RGB boost for outer particles
-  ringOpacity: number
-}
-
-const THEMES: Record<ThemeColor, ThemePalette> = {
-  cyan: {
-    primary: '#00E5FF',
-    primaryHex: '#00E5FF',
-    particle: [0.0, 0.7, 0.85],
-    particleOuterBoost: [0.15, 0.3, 0.15],
-    ringOpacity: 0.2,
-  },
-  purple: {
-    primary: '#A855F7',
-    primaryHex: '#A855F7',
-    particle: [0.45, 0.15, 0.85],
-    particleOuterBoost: [0.25, 0.0, 0.15],
-    ringOpacity: 0.18,
-  },
-  amber: {
-    primary: '#F59E0B',
-    primaryHex: '#F59E0B',
-    particle: [0.85, 0.5, 0.05],
-    particleOuterBoost: [0.15, 0.2, 0.0],
-    ringOpacity: 0.2,
-  },
-  red: {
-    primary: '#EF4444',
-    primaryHex: '#EF4444',
-    particle: [0.85, 0.15, 0.1],
-    particleOuterBoost: [0.15, 0.0, 0.0],
-    ringOpacity: 0.2,
-  },
-}
-
-// ─── Constants ──────────────────────────────────────────────────────────
-
-const PARTICLE_COUNT = 30000
+const PARTICLE_COUNT = 20000
 const SPHERE_RADIUS = 2.8
+const WAKE_EASE_RATE = 0.035
+const WAKE_MIN_SCALE = 0.02
 
-// ─── Density Config ────────────────────────────────────────────────────
+// ─── Cyan Particle Core ────────────────────────────────────────────────
 
-const DENSITY_POWER = 5.0         // power distribution: >1 clusters particles toward inner core
-
-// ─── Inner Particle Field ───────────────────────────────────────────────
-
-function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micMuted, sttText, tokenBurst }: {
-  activeTheme: ThemeColor
-  aiState: AIState
-  audioAmplitude: number
-  mouseTarget: MutableRefObject<{ x: number; y: number }>
-  micMuted: boolean
-  sttText?: string
-  tokenBurst?: number
-}): JSX.Element {
+function ParticleCore(): JSX.Element {
+  "use no memo"
   const groupRef = useRef<Group>(null!)
   const pointsRef = useRef<Points>(null!)
-
-  // Refs to avoid stale closure in useFrame
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const audioAmpRef = useRef(audioAmplitude)
-  audioAmpRef.current = audioAmplitude
-  const prevStateRef = useRef(aiState)
-  const prevTokenBurstRef = useRef(tokenBurst)
-
-  // Pulse timer for 'listening' transition flash
-  const pulseTimerRef = useRef(0)
-
-  // Token burst timer — brief flash when LLM tokens arrive during responding
-  const tokenBurstTimerRef = useRef(0)
-
-  // Detect state transition from non-listening to listening
-  if (prevStateRef.current !== aiState) {
-    if (aiState === 'listening') {
-      pulseTimerRef.current = 1.0
-    }
-    prevStateRef.current = aiState
-  }
-
-  // Detect tokenBurst increment — triggers a brief particle flash
-  if (tokenBurst !== prevTokenBurstRef.current) {
-    prevTokenBurstRef.current = tokenBurst
-    tokenBurstTimerRef.current = 1.0
-  }
-
-  // Wake animation on mount — particles expand from a tiny bright point
   const wakeProgressRef = useRef(0)
   const wakeDoneRef = useRef(false)
 
-  // Spring-damped mouse offset — smoothly follows the mouse
-  const mouseOffset = useRef({ x: 0, y: 0 })
-
-  const theme = THEMES[activeTheme]
-
-  // Per-particle depth values (0.75–1.0) and a ref to the original rest positions
-  const depthFactorsRef = useRef<Float32Array>(null!)
-  const restPositionsRef = useRef<Float32Array>(null!)
-
-  // ─── Stable geometry — generated once ──────────────────────────
-  const { positions, sizes } = useMemo(() => {
+  const [particleGeometry] = useState(() => {
     const pos = new Float32Array(PARTICLE_COUNT * 3)
     const sz = new Float32Array(PARTICLE_COUNT)
-    const depths = new Float32Array(PARTICLE_COUNT)
-
     for (let i = 0; i < PARTICLE_COUNT; i++) {
-      // Fibonacci sphere distribution for even spread
       const goldenRatio = (1 + Math.sqrt(5)) / 2
       const theta = 2 * Math.PI * i / goldenRatio
       const phi = Math.acos(1 - 2 * (i + 0.5) / PARTICLE_COUNT)
-      // Power-weighted distribution: most particles cluster near the inner
-      // radius (dense core), thinning out toward the surface (scattered edge)
-      const t = Math.pow(Math.random(), DENSITY_POWER)
-      const r = SPHERE_RADIUS * (PARALLAX_DEPTH_MIN + t * (PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN))
-
-      const x = r * Math.sin(phi) * Math.cos(theta)
-      const y = r * Math.sin(phi) * Math.sin(theta)
-      const z = r * Math.cos(phi)
-
-      pos[i * 3] = x
-      pos[i * 3 + 1] = y
-      pos[i * 3 + 2] = z
-
-      // Store depth ratio for parallax
-      depths[i] = r / SPHERE_RADIUS
-
-      // Size gradient: inner particles larger (bright core), outer smaller
-      const depthFraction = (depths[i] - PARALLAX_DEPTH_MIN) / (PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN)
-      sz[i] = (0.30 - depthFraction * 0.23) + Math.random() * 0.06
+      const t = Math.pow(Math.random(), 4.0)
+      const r = SPHERE_RADIUS * (0.75 + t * 0.25)
+      pos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+      pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
+      pos[i * 3 + 2] = r * Math.cos(phi)
+      sz[i] = (0.28 - t * 0.20) + Math.random() * 0.05
     }
-
-    // Store refs for useFrame
-    restPositionsRef.current = new Float32Array(pos)
-    depthFactorsRef.current = depths
-
     return { positions: pos, sizes: sz }
-  }, [])  // ⬅️ empty deps — stable for the lifetime of the component
+  })
 
-  // ─── Particle colors (recomputed on theme change) ──────────────
   const colors = useMemo(() => {
     const col = new Float32Array(PARTICLE_COUNT * 3)
-    const [rBase, gBase, bBase] = theme.particle
-    const [rBoost, gBoost, bBoost] = theme.particleOuterBoost
-    const depths = depthFactorsRef.current
     for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const depth = depths[i]  // 0.75–1.0
-      col[i * 3] = rBase + (1 - depth) * rBoost
-      col[i * 3 + 1] = gBase + (1 - depth) * gBoost
-      col[i * 3 + 2] = bBase + (1 - depth) * bBoost
+      const r = Math.sqrt(
+        particleGeometry.positions[i * 3] ** 2 +
+        particleGeometry.positions[i * 3 + 1] ** 2 +
+        particleGeometry.positions[i * 3 + 2] ** 2
+      )
+      const normalizedDepth = (r / SPHERE_RADIUS - 0.75) / 0.25
+      const isInner = normalizedDepth < 0.5
+      if (isInner) {
+        col[i * 3] = 0.3 + Math.random() * 0.4
+        col[i * 3 + 1] = 0.8 + Math.random() * 0.5
+        col[i * 3 + 2] = 1.0
+      } else {
+        const fade = (normalizedDepth - 0.5) * 2
+        col[i * 3] = 0.1 * (1 - fade)
+        col[i * 3 + 1] = 0.4 * (1 - fade * 0.5)
+        col[i * 3 + 2] = 0.7 * (1 - fade * 0.3)
+      }
     }
     return col
-  }, [activeTheme])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  // ─── Animated color buffer — lerps toward `colors` each frame ──
-  // Stable Float32Array reference passed to the buffer attribute;
-  // mutated in-place each frame so R3F never re-uploads the buffer.
-  const colorBufferRef = useRef<Float32Array | null>(null)
-  const targetColorsRef = useRef<Float32Array>(colors)
-  if (!colorBufferRef.current) {
-    colorBufferRef.current = new Float32Array(colors)
-  }
-
-  // ─── Soft bokeh texture — generated once ─────────────────────
-  // Canvas-based radial gradient creates a soft circle texture.
-  // When thousands of these overlap with additive blending, they
-  // naturally form a glowing energy cloud.
   const softTexture = useMemo(() => {
     const size = 64
     const canvas = document.createElement('canvas')
-    canvas.width = size
-    canvas.height = size
+    canvas.width = size; canvas.height = size
     const ctx = canvas.getContext('2d')!
     const cx = size / 2, cy = size / 2, r = size / 2
     const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
@@ -297,682 +146,536 @@ function ParticleField({ activeTheme, aiState, audioAmplitude, mouseTarget, micM
     return tex
   }, [])
 
-  // ─── Per-state color targets (recomputed when state changes) ──
-  const stateColors = useMemo(() => {
-    // When mic is muted and idle, override with red to indicate muted state
-    const effectiveState = (aiState === 'idle' && micMuted) ? 'muted' : aiState
-    const [rBase, gBase, bBase] = effectiveState === 'muted'
-      ? [10, 0.5, 0.3]    // Red for muted idle
-      : STATE_PARTICLE_COLORS[aiState]
-    const [rBoost, gBoost, bBoost] = effectiveState === 'muted'
-      ? [0.3, 0.0, 0.0]    // Red outer boost for muted idle
-      : STATE_OUTER_BOOST[aiState]
-    const col = new Float32Array(PARTICLE_COUNT * 3)
-    const depths = depthFactorsRef.current
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const depth = depths[i]
-      col[i * 3] = rBase + (1 - depth) * rBoost
-      col[i * 3 + 1] = gBase + (1 - depth) * gBoost
-      col[i * 3 + 2] = bBase + (1 - depth) * bBoost
-    }
-    return col
-  }, [aiState, micMuted])
-
-  // Target colors ref — updated when state changes
-  targetColorsRef.current = stateColors
-
-  // Animation loop — AI-state-reactive + mouse-tracking + parallax depth
   useFrame((state) => {
     const t = state.clock.elapsedTime
-    const curState = aiStateRef.current
-    const amp = audioAmpRef.current
-    const isActive = curState !== 'idle'
-
-    // ── Wake animation (one-time expansion on mount) ────────────────
     if (!wakeDoneRef.current) {
       wakeProgressRef.current += (1 - wakeProgressRef.current) * WAKE_EASE_RATE
-      if (wakeProgressRef.current > 0.999) {
-        wakeProgressRef.current = 1
-        wakeDoneRef.current = true
-      }
+      if (wakeProgressRef.current > 0.999) { wakeProgressRef.current = 1; wakeDoneRef.current = true }
     }
     const wakeScale = WAKE_MIN_SCALE + wakeProgressRef.current * (1 - WAKE_MIN_SCALE)
-    const wakeBrightness = 1 + (1 - wakeProgressRef.current) * 0.5
-
-    // ── Speed & motion params per state ────────────────────────
-    let rotSpeed = IDLE_ROTATION_SPEED
-    let wobbleSpeed = IDLE_WOBBLE_SPEED
-    let wobbleAmp = IDLE_WOBBLE_AMPLITUDE
-    let pulseAmp = IDLE_PULSE_AMPLITUDE
-    let pulseFreq = IDLE_PULSE_FREQ
-
-    // Scale factor for particle positions (thinking = tighter)
-    let scaleFactor = 1.0
-
-    // Breathing pulse for 'responding' state
-    let breatheScale = 1.0
-
-    // Wave displacement for 'listening' state
-    let waveStrength = 0
-
-    // Boost when streaming STT is active (user speaking, text flowing)
-    const hasStt = sttText !== undefined && sttText.length > 0
-
-    switch (curState) {
-      case 'listening':
-        rotSpeed = SPEAKING_ROTATION_SPEED
-        wobbleSpeed = SPEAKING_WOBBLE_SPEED
-        wobbleAmp = SPEAKING_WOBBLE_AMPLITUDE
-        pulseAmp = SPEAKING_PULSE_AMPLITUDE
-        pulseFreq = SPEAKING_PULSE_FREQ
-        // Clean waveform ripples — amplitude-driven displacement, steady frequency
-        // Boost wave strength when STT text is actively flowing (user speaking)
-        waveStrength = amp * (hasStt ? 0.80 : 0.50)
-        break
-      case 'thinking':
-        // Tighter spin: faster rotation, more collapsed
-        rotSpeed = THINKING_ROTATION_SPEED
-        pulseAmp = IDLE_PULSE_AMPLITUDE * 0.5
-        pulseFreq = IDLE_PULSE_FREQ * 2
-        scaleFactor = THINKING_SCALE_FACTOR
-        break
-      case 'responding':
-        rotSpeed = SPEAKING_ROTATION_SPEED * 0.7
-        wobbleSpeed = SPEAKING_WOBBLE_SPEED * 0.5
-        wobbleAmp = SPEAKING_WOBBLE_AMPLITUDE * 0.6
-        pulseAmp = SPEAKING_PULSE_AMPLITUDE
-        pulseFreq = SPEAKING_PULSE_FREQ
-        // Moderate breathing — audio-driven amplitude, ±3-18% group pulse
-        breatheScale = 1 + Math.sin(t * 2.0) * (0.03 + amp * 0.15)
-        break
-      default: // idle
-        break
-    }
-
-    // Spring-damped mouse tracking
-    const target = mouseTarget.current
-    const offset = mouseOffset.current
-    offset.x += (target.x - offset.x) * MOUSE_SPRING
-    offset.y += (target.y - offset.y) * MOUSE_SPRING
-
     if (groupRef.current) {
-      // Base rotation
-      const baseY = t * rotSpeed
-      const baseX = Math.sin(t * wobbleSpeed) * wobbleAmp
-
-      groupRef.current.rotation.y = baseY + offset.x * MOUSE_MAX_ANGLE
-      groupRef.current.rotation.x = baseX + offset.y * MOUSE_MAX_ANGLE
-
-      // Breathing scale for 'responding'
-      groupRef.current.scale.setScalar(breatheScale)
+      groupRef.current.rotation.y = t * 0.06
+      groupRef.current.rotation.x = Math.sin(t * 0.02) * 0.05
+      groupRef.current.scale.setScalar(wakeScale)
     }
-
-    // ── Particle position displacement ──────────────────────────
-    if (pointsRef.current && restPositionsRef.current && depthFactorsRef.current) {
-      const geometry = pointsRef.current.geometry
-      const posAttr = geometry.attributes.position
-      if (posAttr) {
-        const posArray = posAttr.array as Float32Array
-        const rest = restPositionsRef.current
-        const depths = depthFactorsRef.current
-        const depthRange = PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN
-
-        // Pulse flash on transition to 'listening' — boosted with audio amplitude
-        const pulse = pulseTimerRef.current
-        const flashExpand = pulse > 0 ? 1 + pulse * (0.12 + amp * 0.08) : 1
-
-        // Token burst flash — brief ripple when LLM tokens arrive
-        const tokenBurstGlow = tokenBurstTimerRef.current > 0
-          ? 1 + tokenBurstTimerRef.current * 0.15
-          : 1
-
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
-          const depthFactor = (depths[i] - PARALLAX_DEPTH_MIN) / depthRange
-          const i3 = i * 3
-
-          // Start from rest position (scaled by wake animation on mount)
-          let px = rest[i3] * wakeScale
-          let py = rest[i3 + 1] * wakeScale
-          let pz = rest[i3 + 2] * wakeScale
-
-          // Mouse parallax: surface shifts more
-          px += offset.x * depthFactor * PARALLAX_STRENGTH
-          py += offset.y * depthFactor * PARALLAX_STRENGTH
-
-          // Apply state-based behaviors
-          if (curState === 'listening' && waveStrength > 0) {
-            // Dual counter-propagating waves — creates an interference pattern
-            const theta = Math.atan2(py, px)
-            const phi = Math.acos(pz / (Math.sqrt(px*px + py*py + pz*pz) || 1))
-            const wave = Math.sin(t * 2.5 + theta * 4 + phi * 3) * waveStrength * 0.65
-            const counterWave = Math.sin(t * 2.5 - theta * 4 - phi * 3) * waveStrength * 0.45
-            const combined = wave + counterWave
-            px *= (1 + combined)
-            py *= (1 + combined)
-            pz *= (1 + combined)
-          } else if (curState === 'thinking') {
-            // Tighter sphere — collapse toward center
-            px *= scaleFactor
-            py *= scaleFactor
-            pz *= scaleFactor
-          } else if (curState === 'responding') {
-            // Subtle breathing wave — gentle surface ripple
-            const theta = Math.atan2(py, px)
-            const breathe = 1 + Math.sin(t * 1.5 + theta) * 0.01
-            px *= breathe
-            py *= breathe
-            pz *= breathe
-          }
-
-          // Apply listening flash expansion
-          px *= flashExpand
-          py *= flashExpand
-          pz *= flashExpand
-
-          // Apply token burst glow (brief pulse when LLM tokens arrive)
-          px *= tokenBurstGlow
-          py *= tokenBurstGlow
-          pz *= tokenBurstGlow
-
-          posArray[i3] = px
-          posArray[i3 + 1] = py
-          posArray[i3 + 2] = pz
-        }
-        posAttr.needsUpdate = true
-      }
-    }
-
-    // Decay pulse timer
-    if (pulseTimerRef.current > 0) {
-      pulseTimerRef.current -= 0.035
-      if (pulseTimerRef.current < 0) pulseTimerRef.current = 0
-    }
-
-    // Decay token burst timer (slower decay for visible flash)
-    if (tokenBurstTimerRef.current > 0) {
-      tokenBurstTimerRef.current -= 0.02
-      if (tokenBurstTimerRef.current < 0) tokenBurstTimerRef.current = 0
-    }
-
-    // Pulse particle size
     if (pointsRef.current) {
-      const geometry = pointsRef.current.geometry
-      const sizeAttr = geometry.attributes.size
+      const sizeAttr = pointsRef.current.geometry.attributes.size
       if (sizeAttr) {
         const array = sizeAttr.array as Float32Array
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
-          const depthFraction = (depthFactorsRef.current[i] - PARALLAX_DEPTH_MIN) / (PARALLAX_DEPTH_MAX - PARALLAX_DEPTH_MIN)
-          const base = (0.30 - depthFraction * 0.23) + (i % 3) * 0.04
-          array[i] = base + Math.sin(t * pulseFreq + i * 0.1) * pulseAmp
-          // Boost size during listening flash — amplitude-enhanced
-          if (pulseTimerRef.current > 0) {
-            array[i] += pulseTimerRef.current * (0.08 + amp * 0.06)
-          }
-          // Token burst size boost — brief glow when LLM tokens arrive
-          if (tokenBurstTimerRef.current > 0) {
-            array[i] += tokenBurstTimerRef.current * 0.05
-          }
-        }
+        const pulse = 1 + Math.sin(t * 0.3) * 0.03
+        const sizes = particleGeometry.sizes
+        for (let i = 0; i < PARTICLE_COUNT; i++) array[i] = sizes[i] * pulse
         sizeAttr.needsUpdate = true
-      }
-    }
-
-    // Smooth color transition — lerp toward target state color
-    if (colorBufferRef.current && targetColorsRef.current && pointsRef.current) {
-      const cur = colorBufferRef.current
-      const tgt = targetColorsRef.current
-      const colorAttr = pointsRef.current.geometry.attributes.color
-      if (colorAttr && colorAttr.array === cur) {
-        let dirty = false
-        for (let i = 0; i < cur.length; i++) {
-          const diff = tgt[i] - cur[i]
-          if (Math.abs(diff) > 0.001) {
-            cur[i] += diff * COLOR_LERP_RATE
-            dirty = true
-          }
-        }
-        // Boost colors during wake animation (bright ignition flash)
-        if (!wakeDoneRef.current && wakeProgressRef.current < 1) {
-          for (let i = 0; i < cur.length; i++) {
-            cur[i] = Math.min(cur[i] * wakeBrightness, 15)
-          }
-          dirty = true
-        }
-        if (dirty) colorAttr.needsUpdate = true
       }
     }
   })
 
   return (
     <group ref={groupRef}>
-      {/* Particle points */}
       <points ref={pointsRef}>
         <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            count={PARTICLE_COUNT}
-            array={positions}
-            itemSize={3}
-          />
-          <bufferAttribute
-            attach="attributes-size"
-            count={PARTICLE_COUNT}
-            array={sizes}
-            itemSize={1}
-          />
-          <bufferAttribute
-            attach="attributes-color"
-            count={PARTICLE_COUNT}
-            array={colorBufferRef.current}
-            itemSize={3}
-          />
+          <bufferAttribute attach="attributes-position" count={PARTICLE_COUNT} array={particleGeometry.positions} itemSize={3} />
+          <bufferAttribute attach="attributes-size" count={PARTICLE_COUNT} array={particleGeometry.sizes} itemSize={1} />
+          <bufferAttribute attach="attributes-color" count={PARTICLE_COUNT} array={colors} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial
-          size={0.06}
-          sizeAttenuation
-          transparent
-          opacity={1}
-          vertexColors
-          depthWrite={false}
-          blending={AdditiveBlending}
-          map={softTexture}
-        />
+        <pointsMaterial size={0.06} sizeAttenuation transparent opacity={0.95} vertexColors depthWrite={false} blending={AdditiveBlending} map={softTexture} />
       </points>
     </group>
   )
 }
 
-// ─── Outer Ring Segments ────────────────────────────────────────────────
+// ─── Gold Orbiting Ring ────────────────────────────────────────────────
 
-const RING_BOOST_MULTIPLIER = 6    // peak speed multiplier on theme switch
-const RING_BOOST_DECAY = 0.04       // per-frame decay toward 1.0 (~1.5s to settle)
-
-function Rings({ activeTheme, aiState, micMuted }: { activeTheme: ThemeColor; aiState: AIState; micMuted?: boolean }): JSX.Element {
-  const ring1Ref = useRef<Mesh>(null!)
-  const ring2Ref = useRef<Mesh>(null!)
-
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const micMutedRef = useRef(micMuted ?? false)
-  micMutedRef.current = micMuted ?? false
-
-  const theme = THEMES[activeTheme]
-
-  // Wake animation on mount — rings fade in and expand
-  const wakeProgressRef = useRef(0)
-  const wakeDoneRef = useRef(false)
-
-  // Speed boost on theme change
-  const prevThemeRef = useRef(activeTheme)
-  const speedBoostRef = useRef(1)  // multiplier, decays from 6 → 1
-  if (prevThemeRef.current !== activeTheme) {
-    prevThemeRef.current = activeTheme
-    speedBoostRef.current = RING_BOOST_MULTIPLIER
-  }
-
-  // Accumulated rotation (delta-based to avoid jumps on speed change)
-  const ringRotationRef = useRef({ z: 0, x: 0 })
-
-  // Animated ring color — lerps toward target each frame
-  const currentRgbRef = useRef<{ r: number; g: number; b: number } | null>(null)
-  const targetRgbRef = useRef({ r: 0, g: 0, b: 0 })
-
-  // Parse target from current theme
-  const tgtR = parseInt(theme.primary.slice(1, 3), 16) / 255
-  const tgtG = parseInt(theme.primary.slice(3, 5), 16) / 255
-  const tgtB = parseInt(theme.primary.slice(5, 7), 16) / 255
-
-  if (!currentRgbRef.current) {
-    currentRgbRef.current = { r: tgtR, g: tgtG, b: tgtB }
-  }
-  targetRgbRef.current = { r: tgtR, g: tgtG, b: tgtB }
-
-  useFrame((_state, delta) => {
-    const curState = aiStateRef.current
-    let baseSpeed = RING_IDLE_SPEED
-    if (curState === 'listening') baseSpeed = RING_SPEAKING_SPEED
-    else if (curState === 'thinking') baseSpeed = RING_SPEAKING_SPEED * 1.5
-    else if (curState === 'responding') baseSpeed = RING_SPEAKING_SPEED
-
-    // ── Wake animation (one-time fade-in + scale-up on mount)
-    if (!wakeDoneRef.current) {
-      wakeProgressRef.current += (1 - wakeProgressRef.current) * WAKE_EASE_RATE
-      if (wakeProgressRef.current > 0.999) {
-        wakeProgressRef.current = 1
-        wakeDoneRef.current = true
-      }
-    }
-    const wakeScale = WAKE_MIN_SCALE + wakeProgressRef.current * (1 - WAKE_MIN_SCALE)
-
-    // Decay speed boost toward 1.0
-    if (speedBoostRef.current > 1.001) {
-      speedBoostRef.current += (1 - speedBoostRef.current) * RING_BOOST_DECAY
-    } else {
-      speedBoostRef.current = 1
-    }
-
-    const speed = baseSpeed * speedBoostRef.current
-
-    // Accumulate rotation with current speed (delta-based = smooth)
-    ringRotationRef.current.z += delta * speed
-    ringRotationRef.current.x += delta * speed * 0.75
-
-    if (ring1Ref.current) {
-      ring1Ref.current.rotation.z = ringRotationRef.current.z
-      // Scale rings up during wake animation
-      ring1Ref.current.scale.setScalar(wakeScale)
-    }
-    if (ring2Ref.current) {
-      ring2Ref.current.rotation.x = ringRotationRef.current.x
-      ring2Ref.current.scale.setScalar(wakeScale)
-    }
-
-    // Update ring opacity per state
-    const isMutedIdle = curState === 'idle' && micMutedRef.current
-    const targetOpacity = isMutedIdle ? 0.45 : STATE_RING_OPACITY[curState]
-    if (ring1Ref.current) {
-      const mat = ring1Ref.current.material as MeshBasicMaterial
-      mat.opacity += (targetOpacity - mat.opacity) * 0.05
-    }
-    if (ring2Ref.current) {
-      const mat = ring2Ref.current.material as MeshBasicMaterial
-      mat.opacity += (targetOpacity * 0.7 - mat.opacity) * 0.05
-    }
-
-    // Override target color for muted idle → red
-    if (isMutedIdle) {
-      targetRgbRef.current = { r: 1, g: 0.1, b: 0.1 }
-    }
-
-    // Lerp ring color toward target
-    if (currentRgbRef.current) {
-      const cur = currentRgbRef.current
-      const tgt = targetRgbRef.current
-      const dr = tgt.r - cur.r
-      const dg = tgt.g - cur.g
-      const db = tgt.b - cur.b
-      if (Math.abs(dr) > 0.001 || Math.abs(dg) > 0.001 || Math.abs(db) > 0.001) {
-        cur.r += dr * COLOR_LERP_RATE
-        cur.g += dg * COLOR_LERP_RATE
-        cur.b += db * COLOR_LERP_RATE
-
-        const mat1 = ring1Ref.current?.material as MeshBasicMaterial | undefined
-        const mat2 = ring2Ref.current?.material as MeshBasicMaterial | undefined
-        if (mat1?.color) { mat1.color.r = cur.r; mat1.color.g = cur.g; mat1.color.b = cur.b }
-        if (mat2?.color) { mat2.color.r = cur.r; mat2.color.g = cur.g; mat2.color.b = cur.b }
-      }
+function GoldRing(): JSX.Element {
+  const ringRef = useRef<Group>(null!)
+  useFrame((state) => {
+    if (ringRef.current) {
+      ringRef.current.rotation.y = state.clock.elapsedTime * 0.15
+      ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.05) * 0.1
     }
   })
-
   return (
-    <group>
-      {/* Horizontal ring */}
-      <mesh ref={ring1Ref} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[SPHERE_RADIUS * 1.15, SPHERE_RADIUS * 1.18, 128]} />
-        <meshBasicMaterial
-          transparent
-          opacity={theme.ringOpacity}
-          side={DoubleSide}
-          depthWrite={false}
-        />
+    <group ref={ringRef}>
+      <mesh rotation={[Math.PI / 2.5, 0, 0]}>
+        <torusGeometry args={[SPHERE_RADIUS * 1.45, 0.035, 32, 96]} />
+        <meshBasicMaterial color="#FBBF24" transparent opacity={0.6} side={DoubleSide} depthWrite={false} />
       </mesh>
-
-      {/* Vertical ring */}
-      <mesh ref={ring2Ref}>
-        <ringGeometry args={[SPHERE_RADIUS * 1.25, SPHERE_RADIUS * 1.27, 128]} />
-        <meshBasicMaterial
-          transparent
-          opacity={theme.ringOpacity * 0.7}
-          side={DoubleSide}
-          depthWrite={false}
-        />
+      <mesh rotation={[Math.PI / 2.5, 0.3, 0]}>
+        <torusGeometry args={[SPHERE_RADIUS * 1.45, 0.08, 16, 96]} />
+        <meshBasicMaterial color="#FBBF24" transparent opacity={0.12} side={DoubleSide} depthWrite={false} />
+      </mesh>
+      <mesh rotation={[Math.PI / 3, Math.PI / 4, 0]}>
+        <torusGeometry args={[SPHERE_RADIUS * 1.35, 0.02, 24, 80]} />
+        <meshBasicMaterial color="#FDE68A" transparent opacity={0.3} side={DoubleSide} depthWrite={false} />
       </mesh>
     </group>
   )
 }
 
-// ─── CSS Glow Effect (replaces WebGL bloom — avoids WebGL context loss) ─
+// ─── Resource Ring (telemetry) ─────────────────────────────────────────
 
-function useCSSGlow(containerRef: React.RefObject<HTMLDivElement | null>, aiState: AIState, themeColor: string, micMuted?: boolean) {
-  const currentIntensity = useRef(0.3)
-  const aiStateRef = useRef(aiState)
-  aiStateRef.current = aiState
-  const micMutedRef = useRef(micMuted ?? false)
-  micMutedRef.current = micMuted ?? false
+function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
+  const ringRef = useRef<Group>(null!)
+  const matRef = useRef<MeshBasicMaterial>(null!)
 
-  // Animated glow color — lerps toward target
-  const currentRgbRef = useRef<{ r: number; g: number; b: number } | null>(null)
-  const targetRgbRef = useRef({ r: 0, g: 0, b: 0 })
+  useFrame((state) => {
+    if (!ringRef.current || !matRef.current) return
+    // Higher load = faster spin, brighter/cyan shift
+    const normalizedLoad = systemLoad / 100 // 0-1
+    const speed = 0.05 + normalizedLoad * 0.02
+    ringRef.current.rotation.y += speed
+    ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.1) * 0.08
 
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
+    const opacity = 0.15 + normalizedLoad * 0.6
+    matRef.current.opacity = opacity
 
-    // Parse target from hex
-    const tgtR = parseInt(themeColor.slice(1, 3), 16) / 255
-    const tgtG = parseInt(themeColor.slice(3, 5), 16) / 255
-    const tgtB = parseInt(themeColor.slice(5, 7), 16) / 255
+    // Shift color from blue to cyan/yellow as load increases
+    const r = 0.1 + normalizedLoad * 0.8
+    const g = 0.5 + normalizedLoad * 0.4
+    const b = 1.0 - normalizedLoad * 0.6
+    matRef.current.color.setRGB(r, g, b)
+  })
 
-    // Initialize current on first mount
-    if (!currentRgbRef.current) {
-      currentRgbRef.current = { r: tgtR, g: tgtG, b: tgtB }
-    }
-    targetRgbRef.current = { r: tgtR, g: tgtG, b: tgtB }
-
-    let rafId: number
-    let startTime = performance.now()
-
-    const animate = (now: number) => {
-      const t = (now - startTime) / 1000
-      const curState = aiStateRef.current
-      const isActive = curState !== 'idle'
-
-      // Idle breathing: ~0.35–0.45 (boosted for brighter core)
-      const idleTarget = 0.4 + Math.sin(t * 0.5) * 0.05
-      const isMutedIdle = curState === 'idle' && micMutedRef.current
-      // Muted idle: steady higher red glow
-      const mutedTarget = 0.9 + Math.sin(t * 1.5) * 0.1
-      // Active state glow: varies by state
-      const target = isMutedIdle
-        ? mutedTarget
-        : isActive
-          ? 0.8 + Math.sin(t * 2.0) * 0.15
-          : idleTarget
-
-      // Spring-damped interpolation
-      const curInt = currentIntensity.current
-      const nextInt = curInt + (target - curInt) * 0.08
-      currentIntensity.current = nextInt
-
-      // Lerp color toward target
-      if (currentRgbRef.current) {
-        const cur = currentRgbRef.current
-        const tgt = targetRgbRef.current
-        const dr = tgt.r - cur.r
-        const dg = tgt.g - cur.g
-        const db = tgt.b - cur.b
-        if (Math.abs(dr) > 0.001) cur.r += dr * COLOR_LERP_RATE
-        if (Math.abs(dg) > 0.001) cur.g += dg * COLOR_LERP_RATE
-        if (Math.abs(db) > 0.001) cur.b += db * COLOR_LERP_RATE
-      }
-
-      // Override target color for muted idle → red
-      if (isMutedIdle) {
-        targetRgbRef.current = { r: 1, g: 0.15, b: 0.1 }
-      }
-
-      // Apply as CSS filter — drop-shadow creates a bloom-like glow
-      const glowSize = 8 + nextInt * 22  // 8px at min, ~30px at max
-      const alpha = 0.3 + nextInt * 0.4  // 0.44 at min, ~0.68 at max
-      const rgb = currentRgbRef.current!
-      el.style.filter = `drop-shadow(0 0 ${glowSize}px rgba(${Math.round(rgb.r * 255)},${Math.round(rgb.g * 255)},${Math.round(rgb.b * 255)},${alpha.toFixed(3)}) ) brightness(${1 + nextInt * 0.2})`
-
-      rafId = requestAnimationFrame(animate)
-    }
-
-    rafId = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(rafId)
-  }, [containerRef, themeColor])
+  return (
+    <group ref={ringRef}>
+      <mesh rotation={[Math.PI / 2.2, 0, 0]}>
+        <torusGeometry args={[SPHERE_RADIUS * 1.65, 0.025, 24, 80]} />
+        <meshBasicMaterial ref={matRef} color="#4FC3F7" transparent opacity={0.2} side={DoubleSide} depthWrite={false} />
+      </mesh>
+    </group>
+  )
 }
 
-// ─── Perspective Grid Floor ─────────────────────────────────────────────
+// ─── Transfer Spark ────────────────────────────────────────────────────
 
-function PerspectiveGrid({ activeTheme }: { activeTheme: ThemeColor }): JSX.Element {
-  const theme = THEMES[activeTheme]
+function TransferSpark({ spark }: { spark: TransferSparkData }): JSX.Element {
+  const meshRef = useRef<Mesh>(null!)
+
+  // Compute the same QuadraticBezier mid-point the connecting lines use
+  const mid = useMemo(() => {
+    const start = new Vector3(...spark.from)
+    const end = new Vector3(...spark.to)
+    const m = new Vector3().addVectors(start, end).multiplyScalar(0.5)
+    const dir = new Vector3().copy(end).normalize()
+    m.add(dir.multiplyScalar(1.2))
+    return m
+  }, [spark.from, spark.to])
+
+  useFrame(() => {
+    if (!meshRef.current) return
+    const t = spark.progress
+    // Quadratic Bezier: B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
+    const p0 = new Vector3(...spark.from)
+    const p1 = mid
+    const p2 = new Vector3(...spark.to)
+    const pos = new Vector3()
+    pos.x = (1 - t) ** 2 * p0.x + 2 * (1 - t) * t * p1.x + t ** 2 * p2.x
+    pos.y = (1 - t) ** 2 * p0.y + 2 * (1 - t) * t * p1.y + t ** 2 * p2.y
+    pos.z = (1 - t) ** 2 * p0.z + 2 * (1 - t) * t * p1.z + t ** 2 * p2.z
+    meshRef.current.position.copy(pos)
+    // Pulse size
+    const pulse = 0.5 + Math.sin(t * 20) * 0.3
+    meshRef.current.scale.setScalar(pulse)
+  })
+
   return (
-    <Grid
-      position={[0, -2.85, 0]}
-      args={[20, 20]}
-      cellSize={0.8}
-      cellThickness={0.6}
-      cellColor="#6b21a8"
-      sectionSize={4}
-      sectionThickness={1}
-      sectionColor={theme.primary}
-      fadeDistance={10}
-      fadeStrength={1.5}
-      infiniteGrid
-      followCamera={false}
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[0.06, 8, 8]} />
+      <meshBasicMaterial color={spark.color} transparent opacity={0.9} blending={AdditiveBlending} depthWrite={false} />
+    </mesh>
+  )
+}
+
+// ─── Camera Controller ─────────────────────────────────────────────────
+
+const DEFAULT_POSITION = new Vector3(0, 0, 9)
+const DEFAULT_TARGET = new Vector3(0, 0, 0)
+const CAMERA_LERP_SPEED = 0.035
+const CAMERA_SETTLE_THRESHOLD = 0.15
+
+function CameraController({
+  focusTargetRef,
+  activeAgent,
+}: {
+  focusTargetRef: MutableRefObject<Vector3 | null>
+  activeAgent: string | null
+}): JSX.Element {
+  const { camera } = useThree()
+  const controlsRef = useRef<any>(null!)
+  const animatingRef = useRef(false)
+
+  useFrame(() => {
+    const controls = controlsRef.current
+    if (!controls) return
+
+    if (activeAgent && focusTargetRef.current) {
+      animatingRef.current = true
+      controls.enabled = false
+      const targetPos = focusTargetRef.current
+      controls.target.lerp(targetPos, CAMERA_LERP_SPEED)
+      const offset = targetPos.clone().add(new Vector3(4, 0.5, 4))
+      camera.position.lerp(offset, CAMERA_LERP_SPEED)
+    } else if (animatingRef.current) {
+      controls.target.lerp(DEFAULT_TARGET, CAMERA_LERP_SPEED)
+      camera.position.lerp(DEFAULT_POSITION, CAMERA_LERP_SPEED)
+      const settled = camera.position.distanceTo(DEFAULT_POSITION) < CAMERA_SETTLE_THRESHOLD
+      if (settled) {
+        controls.enabled = true
+        animatingRef.current = false
+      }
+    }
+    controls.update()
+  })
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enablePan={false}
+      enableZoom={true}
+      minDistance={3}
+      maxDistance={25}
+      zoomSpeed={1.2}
+      rotateSpeed={0.8}
+      dampingFactor={0.08}
+      enableDamping
     />
   )
 }
 
-// ─── AI State Tooltip ─────────────────────────────────────────────────
+// ─── Agent Node ────────────────────────────────────────────────────────
 
-const STATE_LABELS: Record<string, string> = {
-  idle: 'Idle',
-  listening: 'Listening',
-  thinking: 'Thinking',
-  responding: 'Responding',
-  muted: 'Muted',
+function AgentNode({
+  node,
+  onSelect,
+  focusTargetRef,
+  isActive,
+  onContextMenu,
+  activeRadialMenu,
+  onCloseRadialMenu,
+  onRadialAction,
+}: {
+  node: AgentNodeData
+  onSelect: (label: string, worldPos: Vector3) => void
+  focusTargetRef: MutableRefObject<Vector3 | null>
+  isActive: boolean
+  onContextMenu: (label: string) => void
+  activeRadialMenu: string | null
+  onCloseRadialMenu: () => void
+  onRadialAction: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+}): JSX.Element {
+  const nodeRef = useRef<Mesh>(null!)
+  const glowRef = useRef<Mesh>(null!)
+  const startPos = useMemo(() => new Vector3(...node.position), [node.position])
+  const floatOffset = useRef(Math.random() * Math.PI * 2)
+  const [hovered, setHovered] = useState(false)
+  const hoveredRef = useRef(false)
+  const isRadialOpen = activeRadialMenu === node.label
+
+  const mid = useMemo(() => {
+    const start = new Vector3(0, 0, 0)
+    const end = new Vector3(...node.position)
+    const m = new Vector3().addVectors(start, end).multiplyScalar(0.5)
+    const dir = new Vector3().copy(end).normalize()
+    m.add(dir.multiplyScalar(1.2))
+    return m
+  }, [node.position])
+
+  useFrame((state) => {
+    const t = state.clock.elapsedTime
+    const float = Math.sin(t * 0.5 + floatOffset.current) * 0.2
+    const isHovered = hoveredRef.current
+    const pulseActive = isActive && !isHovered
+    const activePulse = pulseActive ? 1 + Math.sin(t * 3) * 0.2 : 0
+
+    if (nodeRef.current) {
+      nodeRef.current.position.y = startPos.y + float
+      const breath = Math.sin(t * 0.8 + floatOffset.current) * 0.08
+      nodeRef.current.scale.setScalar(1 + breath + (isHovered ? 0.6 : 0) + activePulse * 0.3)
+    }
+    if (glowRef.current) {
+      glowRef.current.position.y = startPos.y + float
+      const breath = Math.sin(t * 0.6 + floatOffset.current) * 0.15
+      glowRef.current.scale.setScalar(1 + breath + (isHovered ? 1.2 : 0) + activePulse * 1.0)
+      const mat = glowRef.current.material as MeshBasicMaterial
+      const baseOpacity = isActive ? 0.35 : 0.15
+      mat.opacity = isHovered ? 0.4 : baseOpacity + (pulseActive ? Math.sin(t * 3) * 0.15 : 0)
+    }
+  })
+
+  const handlePointerOver = useCallback(() => {
+    setHovered(true); hoveredRef.current = true; document.body.style.cursor = 'pointer'
+  }, [])
+  const handlePointerOut = useCallback(() => {
+    setHovered(false); hoveredRef.current = false; document.body.style.cursor = 'default'
+  }, [])
+  const handleClick = useCallback((e: any) => {
+    e.stopPropagation()
+    onCloseRadialMenu()
+    const worldPos = new Vector3()
+    e.object.getWorldPosition(worldPos)
+    focusTargetRef.current = worldPos
+    onSelect(node.label, worldPos)
+  }, [node.label, onSelect, focusTargetRef, onCloseRadialMenu])
+  const handleContextMenu = useCallback((e: any) => {
+    e.stopPropagation()
+    e.nativeEvent.preventDefault()
+    onContextMenu(node.label)
+  }, [node.label, onContextMenu])
+
+  useEffect(() => {
+    return () => { document.body.style.cursor = 'default' }
+  }, [])
+
+  return (
+    <group>
+      {/* Invisible hit area */}
+      <mesh
+        position={node.position}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+      >
+        <sphereGeometry args={[0.35, 8, 8]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* Glow */}
+      <mesh ref={glowRef} position={node.position}>
+        <sphereGeometry args={[0.25, 16, 16]} />
+        <meshBasicMaterial color={node.color} transparent opacity={0.15} depthWrite={false} />
+      </mesh>
+
+      {/* Node sphere */}
+      <mesh ref={nodeRef} position={node.position}>
+        <sphereGeometry args={[0.12, 16, 16]} />
+        <meshBasicMaterial color={node.color} transparent opacity={0.9} depthWrite={false} />
+      </mesh>
+
+      {/* Connecting line */}
+      <QuadraticBezierLine
+        start={[0, 0, 0]} end={node.position} mid={[mid.x, mid.y, mid.z]}
+        color={node.color} lineWidth={isActive ? 2.5 : hovered ? 2 : 1}
+        transparent opacity={isActive ? 0.85 : hovered ? 0.7 : 0.3} dashed={false}
+      />
+
+      {/* Label */}
+      <Html
+        position={[node.position[0] + 0.5, node.position[1] + 0.1, node.position[2]]}
+        center={false}
+        style={{
+          pointerEvents: 'none', userSelect: 'none',
+          transition: 'opacity 0.3s, transform 0.3s',
+          opacity: isActive ? 1 : hovered ? 1 : 0.85,
+          transform: isActive || hovered ? 'translateX(2px)' : 'translateX(0)',
+        }}
+        zIndexRange={[1, 10]}
+      >
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            style={{
+              backgroundColor: node.color,
+              boxShadow: isActive ? `0 0 20px ${node.color}` : hovered ? `0 0 12px ${node.color}` : `0 0 6px ${node.color}`,
+              transition: 'box-shadow 0.3s',
+            }}
+          />
+          <div className="flex flex-col">
+            <span className={`font-sans font-medium leading-tight tracking-wide ${isActive ? 'text-[14px]' : hovered ? 'text-[13px]' : 'text-[11px]'}`}
+              style={{
+                color: node.color,
+                textShadow: isActive ? `0 0 24px ${node.color}` : hovered ? `0 0 16px ${node.color}80` : `0 0 8px ${node.color}40`,
+                transition: 'text-shadow 0.3s, font-size 0.3s',
+              }}
+            >{node.label}</span>
+            <span className={`font-sans leading-tight ${isActive ? 'text-white/70 text-[10px]' : hovered ? 'text-white/60 text-[9px]' : 'text-white/40 text-[8px]'}`}
+              style={{ transition: 'color 0.3s, font-size 0.3s' }}
+            >{node.description}</span>
+          </div>
+        </div>
+      </Html>
+
+      {/* ── Radial Quick-Action Menu (right-click) ───────────────── */}
+      {isRadialOpen && (
+        <Html
+          position={[node.position[0], node.position[1] - 1.0, node.position[2]]}
+          center
+          zIndexRange={[10, 20]}
+        >
+          <div className="flex items-center gap-3">
+            {['Zap', 'FileText', 'Link'].map((icon, i) => (
+              <button
+                key={icon}
+                className="w-8 h-8 rounded-full backdrop-blur-md bg-white/5 border border-white/20 hover:bg-white/15 hover:border-white/40 flex items-center justify-center transition-all duration-200 text-white/60 hover:text-white/90 text-xs font-sans font-medium"
+                title={['Quick Execute', 'View Details', 'Share Link'][i]}
+                onClick={(e) => { e.stopPropagation(); onCloseRadialMenu(); onRadialAction(node.label, ['quick-execute', 'view-details', 'share-link'][i] as 'quick-execute' | 'view-details' | 'share-link') }}
+              >
+                {['⚡', '📄', '🔗'][i]}
+              </button>
+            ))}
+          </div>
+        </Html>
+      )}
+    </group>
+  )
 }
 
-const STATE_BADGE_COLORS: Record<string, string> = {
-  idle: 'border-purple-500/40 text-purple-300 bg-purple-500/10',
-  listening: 'border-amber-500/40 text-amber-300 bg-amber-500/10',
-  thinking: 'border-slate-400/40 text-slate-200 bg-slate-400/10',
-  responding: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10',
-  muted: 'border-red-500/40 text-red-300 bg-red-500/10',
+// ─── Node Constellation ────────────────────────────────────────────────
+
+function NodeConstellation({
+  onSelectAgent,
+  focusTargetRef,
+  activeAgent,
+  onContextMenu,
+  activeRadialMenu,
+  onCloseRadialMenu,
+  onRadialAction,
+}: {
+  onSelectAgent: (label: string) => void
+  focusTargetRef: MutableRefObject<Vector3 | null>
+  activeAgent: string | null
+  onContextMenu: (label: string) => void
+  activeRadialMenu: string | null
+  onCloseRadialMenu: () => void
+  onRadialAction: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+}): JSX.Element {
+  const groupRef = useRef<Group>(null!)
+
+  useFrame((state) => {
+    if (groupRef.current) {
+      groupRef.current.rotation.y = state.clock.elapsedTime * 0.1
+    }
+  })
+
+  return (
+    <group ref={groupRef}>
+      {AGENT_NODES.map((node) => (
+        <AgentNode
+          key={node.id}
+          node={node}
+          onSelect={onSelectAgent}
+          focusTargetRef={focusTargetRef}
+          isActive={activeAgent === node.label}
+          onContextMenu={onContextMenu}
+          activeRadialMenu={activeRadialMenu}
+          onCloseRadialMenu={onCloseRadialMenu}
+          onRadialAction={onRadialAction}
+        />
+      ))}
+    </group>
+  )
 }
 
-const STATE_DOT_COLORS: Record<string, string> = {
-  idle: 'bg-purple-400',
-  listening: 'bg-amber-400',
-  thinking: 'bg-slate-200',
-  responding: 'bg-emerald-400',
-  muted: 'bg-red-400',
-}
+// ─── Main Scene ────────────────────────────────────────────────────────
 
-const STATE_DESCRIPTIONS: Record<string, string> = {
-  idle: 'Awaiting input',
-  listening: 'Listening for speech',
-  thinking: 'Processing response',
-  responding: 'Speaking response',
-  muted: 'Microphone muted',
+function AgentNetworkScene({
+  activeAgent,
+  onSelectAgent,
+  focusTargetRef,
+  systemLoad,
+  activeTransfers,
+  onContextMenu,
+  activeRadialMenu,
+  onCloseRadialMenu,
+  onRadialAction,
+}: {
+  activeAgent: string | null
+  onSelectAgent: (label: string) => void
+  focusTargetRef: MutableRefObject<Vector3 | null>
+  systemLoad: number
+  activeTransfers: TransferSparkData[]
+  onContextMenu: (label: string) => void
+  activeRadialMenu: string | null
+  onCloseRadialMenu: () => void
+  onRadialAction: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+}): JSX.Element {
+  return (
+    <>
+      <CameraController focusTargetRef={focusTargetRef} activeAgent={activeAgent} />
+      <ambientLight intensity={0.5} />
+      <ParticleCore />
+      <ResourceRing systemLoad={systemLoad} />
+      <GoldRing />
+      <NodeConstellation
+        onSelectAgent={onSelectAgent}
+        focusTargetRef={focusTargetRef}
+        activeAgent={activeAgent}
+        onContextMenu={onContextMenu}
+        activeRadialMenu={activeRadialMenu}
+        onCloseRadialMenu={onCloseRadialMenu}
+        onRadialAction={onRadialAction}
+      />
+      {activeTransfers.map((spark) => (
+        <TransferSpark key={spark.id} spark={spark} />
+      ))}
+    </>
+  )
 }
 
 // ─── Main Export ────────────────────────────────────────────────────────
 
-export function ParticleSphere3D({ activeTheme = 'cyan', aiState = 'idle', audioAmplitude = 0, showGrid = false, micMuted = false, sttText = '', tokenBurst = 0 }: { activeTheme?: ThemeColor; aiState?: AIState; audioAmplitude?: number; showGrid?: boolean; micMuted?: boolean; sttText?: string; tokenBurst?: number }): JSX.Element {
-  // Track mouse position normalized to [-1, 1] relative to canvas center
-  const mouseTarget = useRef({ x: 0, y: 0 })
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [isHovered, setIsHovered] = useState(false)
-
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    // Normalize: -1 (left/top) to +1 (right/bottom)
-    mouseTarget.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-    mouseTarget.current.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
-  }, [])
-
-  const handleMouseEnter = useCallback(() => {
-    setIsHovered(true)
-  }, [])
-
-  const handleMouseLeave = useCallback(() => {
-    // Slowly spring back to center
-    mouseTarget.current.x = 0
-    mouseTarget.current.y = 0
-    setIsHovered(false)
-  }, [])
-
-  // Derive effective state for display (muted/idle → muted)
-  const effectiveState = aiState === 'idle' && micMuted ? 'muted' : aiState
-  const stateLabel = STATE_LABELS[effectiveState] ?? 'Idle'
-  const stateBadgeColor = STATE_BADGE_COLORS[effectiveState] ?? STATE_BADGE_COLORS.idle
-  const stateDotColor = STATE_DOT_COLORS[effectiveState] ?? STATE_DOT_COLORS.idle
-  const stateDescription = STATE_DESCRIPTIONS[effectiveState] ?? STATE_DESCRIPTIONS.idle
-
-  // CSS glow animation — replaces WebGL Bloom which causes context loss on Electron/macOS
-  const theme = THEMES[activeTheme]
-  useCSSGlow(containerRef, aiState, theme.primary, micMuted)
-
-  // Safety net for WebGL context loss (Electron/macOS GPU edge cases)
-  const handleCanvasCreated = useCallback((state: any) => {
-    const gl = state.gl
-    const canvas = gl.domElement as HTMLCanvasElement
-
-    const onContextLost = (e: Event) => {
-      e.preventDefault()
-    }
-
-    canvas.addEventListener('webglcontextlost', onContextLost)
-    return () => canvas.removeEventListener('webglcontextlost', onContextLost)
-  }, [])
-
+export function ParticleSphere3D({
+  activeTheme: _activeTheme,
+  aiState: _aiState,
+  audioAmplitude: _audioAmplitude,
+  showGrid: _showGrid,
+  micMuted: _micMuted,
+  sttText: _sttText,
+  tokenBurst: _tokenBurst,
+  activeAgent,
+  onSelectAgent,
+  focusTargetRef,
+  onReturnToCore,
+  systemLoad = 0,
+  activeTransfers = [],
+  onContextMenu,
+  activeRadialMenu = null,
+  onCloseRadialMenu,
+  onRadialAction,
+}: {
+  activeTheme?: string
+  aiState?: AIState
+  audioAmplitude?: number
+  showGrid?: boolean
+  micMuted?: boolean
+  sttText?: string
+  tokenBurst?: number
+  activeAgent: string | null
+  onSelectAgent: (label: string) => void
+  focusTargetRef: MutableRefObject<Vector3 | null>
+  onReturnToCore?: () => void
+  systemLoad?: number
+  activeTransfers?: TransferSparkData[]
+  onContextMenu?: (label: string) => void
+  activeRadialMenu?: string | null
+  onCloseRadialMenu?: () => void
+  onRadialAction?: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+}): JSX.Element {
   return (
-    <div className="relative flex items-center justify-center">
-      {/* Hover tooltip — appears above the sphere */}
-      <motion.div
-        initial={{ opacity: 0, y: 4, scale: 0.92 }}
-        animate={isHovered ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 4, scale: 0.92 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        className={`absolute -top-8 left-1/2 -translate-x-1/2 z-50 pointer-events-none
-          flex items-center gap-2 px-3 py-1.5 rounded-lg border backdrop-blur-sm
-          ${stateBadgeColor}`}
-      >
-        <span className={`w-1.5 h-1.5 rounded-full ${stateDotColor} shadow-[0_0_6px_currentColor]`} />
-        <span className="text-[10px] font-mono font-bold uppercase tracking-[0.15em]">
-          {stateLabel}
-        </span>
-        <span className="text-[8px] font-mono opacity-60">
-          {stateDescription}
-        </span>
-      </motion.div>
-
-      <div
-        ref={containerRef}
-        data-testid="sphere-container"
-        className="w-[420px] h-[420px] rounded-full"
-        style={{
-          maskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
-          WebkitMaskImage: 'radial-gradient(circle at center, black 80%, transparent 100%)',
-        }}
-        onMouseMove={handleMouseMove}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-      >
-        <CanvasErrorBoundary>
-          <Canvas
-            camera={{ position: [0, 0, 6.0], fov: 50 }}
-            dpr={[1, 1.5]}
-            gl={{
-              antialias: true,
-              alpha: false,
-              powerPreference: 'high-performance',
-              failIfMajorPerformanceCaveat: false,
-            }}
-            onCreated={handleCanvasCreated}
-            style={{ width: '100%', height: '100%' }}
-          >
-            <ParticleField activeTheme={activeTheme} aiState={aiState} audioAmplitude={audioAmplitude} mouseTarget={mouseTarget} micMuted={micMuted} sttText={sttText} tokenBurst={tokenBurst} />
-            <Rings activeTheme={activeTheme} aiState={aiState} micMuted={micMuted} />
-            {showGrid && <PerspectiveGrid activeTheme={activeTheme} />}
-          </Canvas>
-        </CanvasErrorBoundary>
-      </div>
+    <div className="w-full h-full">
+      <CanvasErrorBoundary>
+        <Canvas
+          camera={{ position: [0, 0, 9], fov: 45 }}
+          dpr={[1, 1.5]}
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance', failIfMajorPerformanceCaveat: false }}
+          style={{ width: '100%', height: '100%', background: 'transparent' }}
+          onPointerMissed={onReturnToCore}
+        >
+          <AgentNetworkScene
+            activeAgent={activeAgent}
+            onSelectAgent={onSelectAgent}
+            focusTargetRef={focusTargetRef}
+            systemLoad={systemLoad}
+            activeTransfers={activeTransfers}
+            onContextMenu={onContextMenu ?? (() => {})}
+            activeRadialMenu={activeRadialMenu}
+            onCloseRadialMenu={onCloseRadialMenu ?? (() => {})}
+            onRadialAction={onRadialAction ?? (() => {})}
+          />
+        </Canvas>
+      </CanvasErrorBoundary>
     </div>
   )
 }
+
+export type { AgentNodeData }
+export { AGENT_NODES }

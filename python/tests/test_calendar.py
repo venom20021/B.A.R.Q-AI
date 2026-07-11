@@ -2,9 +2,7 @@
 Tests for ContentCalendar — calendar views, scheduling, and stats.
 """
 
-import json
-from datetime import date, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from datetime import date, timedelta
 
 import pytest
 

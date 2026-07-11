@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, startTransition, useLayoutEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Cpu, HardDrive, Activity, Mic, Camera, Shield,
+  Cpu, Activity, Mic, Camera, Shield,
   Clock, Terminal, Zap, Radio, Wifi, Server,
-  ToggleLeft, ToggleRight, Lock, Unlock,
+  ToggleLeft, ToggleRight, Lock,
 } from 'lucide-react'
 
 // ─── Glowing Digital Clock ──────────────────────────────────────────────
@@ -434,13 +434,14 @@ export default function JarvisPage(): JSX.Element {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [micEnabled, setMicEnabled] = useState(true)
   const [cameraEnabled, setCameraEnabled] = useState(false)
-  const [cameraLocked, setCameraLocked] = useState(false)
+  const [cameraLocked] = useState(false)
   const logContainerRef = useRef<HTMLDivElement>(null)
   const logIdRef = useRef(0)
   const [aiStatus, setAiStatus] = useState<'ONLINE' | 'PROCESSING' | 'STANDBY'>('ONLINE')
 
   // Uptime tracker
-  const startTimeRef = useRef(Date.now())
+  const startTimeRef = useRef(0)
+  useLayoutEffect(() => { startTimeRef.current = Date.now() }, [])
   const [uptime, setUptime] = useState('00:14:32')
 
   // Seed initial logs and add new ones periodically
@@ -449,14 +450,14 @@ export default function JarvisPage(): JSX.Element {
     for (let i = 0; i < 12; i++) {
       initial.push(generateLogEntry(logIdRef.current++))
     }
-    setLogs(initial)
+    startTransition(() => setLogs(initial))
 
     const interval = setInterval(() => {
-      setLogs(prev => [...prev.slice(-80), generateLogEntry(logIdRef.current++)])
+      startTransition(() => setLogs(prev => [...prev.slice(-80), generateLogEntry(logIdRef.current++)]))
       // Occasionally toggle AI status
       if (Math.random() < 0.05) {
-        setAiStatus('PROCESSING')
-        setTimeout(() => setAiStatus('ONLINE'), 800)
+        startTransition(() => setAiStatus('PROCESSING'))
+        setTimeout(() => startTransition(() => setAiStatus('ONLINE')), 800)
       }
     }, 1500 + Math.random() * 1500)
 

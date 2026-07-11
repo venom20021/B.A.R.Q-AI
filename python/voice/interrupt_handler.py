@@ -19,17 +19,18 @@ from typing import Optional
 import numpy as np
 
 from config import get_settings as _cfg
-from .audio_device import resolve_output_device, resolve_input_device
+
+from .audio_device import resolve_output_device
 
 
 class InterruptHandler:
     """Detects when the user speaks over BARQ's audio response."""
 
-    def __init__(self, energy_threshold: float = 300.0):
+    def __init__(self, energy_threshold: float = 160.0):
         self.is_playing = False
         self.should_stop = False
         self._pending_interrupt_task: Optional[asyncio.Task] = None
-        self.energy_threshold = energy_threshold  # RMS threshold for speech detection
+        self.energy_threshold = energy_threshold  # RMS threshold for speech detection (lower = more sensitive)
 
     # ── File-based playback (legacy) ────────────────────────────────
 
@@ -116,6 +117,9 @@ class InterruptHandler:
         """Play audio file through speakers. Supports WAV and MP3.
 
         MP3 files are decoded to WAV via ffplay/ffmpeg before playback.
+        ``sd.wait()`` is run in a thread executor so it does not block the
+        event loop — this allows the interrupt detection task to run
+        concurrently.
         """
         try:
             import sounddevice as sd
@@ -143,7 +147,7 @@ class InterruptHandler:
                     if result.returncode == 0:
                         audio_path = wav_path
                     else:
-                        print(f"[Interrupt] ffmpeg decode failed")
+                        print("[Interrupt] ffmpeg decode failed")
                         return
                 except FileNotFoundError:
                     print("[Interrupt] ffmpeg not found — cannot play MP3 audio")
@@ -159,9 +163,10 @@ class InterruptHandler:
                 )
                 rate = wf.getframerate()
 
-            # Play via sounddevice
+            # Play via sounddevice — sd.wait() in executor to keep event loop free
             sd.play(audio_data, rate, device=output_device)
-            sd.wait()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sd.wait)
 
             # Cleanup temp WAV file if it was a converted MP3
             if wav_path_to_cleanup:
@@ -176,13 +181,20 @@ class InterruptHandler:
             self.is_playing = False
 
     async def _play_pcm(self, audio_data: np.ndarray, sample_rate: int):
-        """Play raw PCM audio data directly via sounddevice — no file I/O."""
+        """Play raw PCM audio data directly via sounddevice — no file I/O.
+
+        ``sd.wait()`` is run in a thread executor so it does not block the event
+        loop — this allows the interrupt detection task to run concurrently.
+        """
         try:
             import sounddevice as sd
 
             output_device = resolve_output_device(_cfg().audio_output_device)
             sd.play(audio_data, sample_rate, device=output_device)
-            sd.wait()
+            # Run sd.wait() in a thread executor so the event loop stays free
+            # for the interrupt detection task to process mic input.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sd.wait)
         except asyncio.CancelledError:
             sd.stop()
         except Exception as e:
@@ -198,10 +210,11 @@ class InterruptHandler:
         If mic RMS exceeds the threshold, speech is detected and this returns.
         """
         try:
-            import sounddevice as sd
             import numpy as np
+            import sounddevice as sd
 
             from config import get_settings as _cfg
+
             from .audio_device import resolve_input_device
             input_device = resolve_input_device(_cfg().audio_input_device)
 
@@ -209,7 +222,7 @@ class InterruptHandler:
                 device=input_device,
                 samplerate=16000,
                 channels=1,
-                dtype='int16',
+                dtype="int16",
                 blocksize=1024,
             )
             stream.start()

@@ -4,7 +4,6 @@ Career analytics - tracks the funnel from jobs scanned to interviews and offers.
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
-import json
 
 from config import get_settings
 

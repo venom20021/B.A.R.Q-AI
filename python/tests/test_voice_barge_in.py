@@ -15,7 +15,8 @@ Barge-in scenarios covered:
   5. Barge-in edge cases (interrupted state transitions)
 """
 
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 

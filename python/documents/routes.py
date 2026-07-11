@@ -2,10 +2,8 @@
 FastAPI routes for document generation: PowerPoint, Excel, and PDF.
 """
 
-import json
 import os
 from pathlib import Path
-from typing import Optional, Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -39,9 +37,8 @@ async def generate_presentation(request: PresentationRequest):
     """Generate a PowerPoint presentation from structured data."""
     try:
         from pptx import Presentation
-        from pptx.util import Inches, Pt
-        from pptx.enum.text import PP_ALIGN
         from pptx.dml.color import RGBColor
+        from pptx.util import Inches, Pt
 
         prs = Presentation()
         prs.slide_width = Inches(13.33)
@@ -49,7 +46,6 @@ async def generate_presentation(request: PresentationRequest):
 
         # Title slide
         slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
-        from pptx.util import Inches, Pt
 
         # Title
         txBox = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(11), Inches(1.5))
@@ -123,7 +119,7 @@ async def generate_spreadsheet(request: SpreadsheetRequest):
     """Generate an Excel spreadsheet from structured data."""
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.styles import Alignment, Font, PatternFill
 
         wb = Workbook()
 
@@ -191,8 +187,8 @@ async def generate_pdf(request: PDFRequest):
     try:
         # Try WeasyPrint first, fall back to reportlab
         try:
-            from weasyprint import HTML
             import markdown
+            from weasyprint import HTML
 
             html_content = markdown.markdown(request.content, extensions=["extra", "codehilite"])
 
@@ -224,8 +220,8 @@ async def generate_pdf(request: PDFRequest):
         except ImportError:
             # Fallback to reportlab
             from reportlab.lib.pagesizes import letter
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
             from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
             output_dir = Path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "generated"))
             output_dir.mkdir(exist_ok=True)

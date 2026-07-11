@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Globe, Music, TrendingUp, CloudSun, Map, Image as ImageIcon, Search, Loader2, ExternalLink } from 'lucide-react'
+import { Globe, Music, TrendingUp, CloudSun, Map, Image as ImageIcon, Loader2, ExternalLink } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export function WebPage(): JSX.Element {

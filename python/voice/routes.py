@@ -4,19 +4,38 @@ Handles wake word detection, speech transcription, TTS,
 multi-turn conversation state, sensitivity control, and command history.
 """
 
+import asyncio
 import re
-import time
 from datetime import datetime, timezone
 from typing import Any, Optional
+
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from config import get_settings
+
 from ai.responder import BARQResponder
-from . import WakeWordDetector, SpeechProcessor, play_command_accepted_sound, set_sound_enabled, get_sound_settings
+from config import get_settings
+from database import analytics_dao, db_connection, settings_dao
+from system_control.command_whitelist import (
+    DANGEROUS,
+    SAFE,
+    WARN,
+    approve_command,
+    classify_command,
+    describe_classification,
+    get_custom_rules,
+    is_approved,
+)
+
+from . import (
+    SpeechProcessor,
+    WakeWordDetector,
+    get_sound_settings,
+    play_command_accepted_sound,
+    set_sound_enabled,
+)
+from .action_log import DANGER as ACTION_DANGER
+from .action_log import INFO, WARNING, get_recent_actions, log_action
 from .conversation_listener import ConversationListener
-from database import analytics_dao, settings_dao, db_connection
-from system_control.command_whitelist import SAFE, WARN, DANGEROUS, classify_command, describe_classification, approve_command, is_approved, get_custom_rules
-from .action_log import log_action, get_recent_actions, INFO, WARNING, DANGER as ACTION_DANGER
 
 router = APIRouter()
 
@@ -24,8 +43,13 @@ router = APIRouter()
 wake_word_detector: WakeWordDetector | None = None
 speech_processor = SpeechProcessor()
 responder = BARQResponder()
-conversation_listener = ConversationListener(stt=speech_processor, responder=responder)
+
+conversation_listener = ConversationListener(
+    stt=speech_processor,
+    responder=responder,
+)
 # on_stop is set after _on_conversation_stopped is defined (below)
+# parse_command and execute_command are set after _parse_and_route is defined
 
 # Auto-start flag — set to True after first start
 _auto_started = False
@@ -50,9 +74,10 @@ def _play_mp3_via_sounddevice(mp3_path: str):
     goes through the BARQ-selected output device instead of the OS default.
     """
     import os
+    import subprocess
     import tempfile
     import wave
-    import subprocess
+
     import numpy as np
 
     # Find ffmpeg via imageio-ffmpeg (bundled with moviepy)
@@ -78,14 +103,16 @@ def _play_mp3_via_sounddevice(mp3_path: str):
             timeout=60,
         )
         if result.returncode != 0:
-            err = result.stderr.decode(errors='replace')[:200]
+            err = result.stderr.decode(errors="replace")[:200]
             print(f"[Audio] ffmpeg conversion failed: {err}")
             return
 
         # Read WAV and play through sounddevice with configured output device
         import sounddevice as sd
-        from .audio_device import resolve_output_device
+
         from config import get_settings as _cfg
+
+        from .audio_device import resolve_output_device
 
         output_device = resolve_output_device(_cfg().audio_output_device)
 
@@ -155,8 +182,9 @@ async def _speak_wake_greeting():
 
         # 3. Weather (if API key is configured — uses saved city from DB or 'London' as fallback)
         try:
-            import httpx
             import os as _os
+
+            import httpx
             api_key = _os.getenv("OPENWEATHER_API_KEY", "")
             if api_key:
                 # Try to get saved city from user settings
@@ -367,32 +395,67 @@ async def _speak_wake_greeting():
         else:
             greeting = "Hello! How can I help you?"
 
-        print(f"[WakeGreeting] {greeting}")
-
-        # Synthesize and play greeting via TTS
+        print(f"[WakeGreeting] {greeting}")                # Synthesize and play greeting via speech processor PCM (no ffmpeg needed)
+        # Force English TTS voice so the greeting is always spoken clearly in
+        # English, regardless of the current auto-detected language setting.
         try:
-            import edge_tts
-            import tempfile
-            from pathlib import Path
+            pcm, sample_rate = await responder.speech.synthesize_pcm(
+                greeting, voice="en-US-JennyNeural",
+            )
 
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                tmp_path = f.name
+            import sounddevice as sd
 
-            communicate = edge_tts.Communicate(greeting, _tts_voice)
-            await communicate.save(tmp_path)
+            from .audio_device import resolve_output_device
+            output_device = resolve_output_device(get_settings().audio_output_device)
 
-            # Play through sounddevice with configured output device
             responder.is_speaking = True
             try:
-                _play_mp3_via_sounddevice(tmp_path)
+                # Use interrupt handler so the user can barge-in during greeting
+                await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
+                    pcm, sample_rate, listen_for_interrupt=True,
+                )
+                print("[WakeGreeting] Greeting played with barge-in support")
             finally:
                 responder.is_speaking = False
 
-            # Cleanup temp file after playback
-            Path(tmp_path).unlink(missing_ok=True)
-
         except Exception as e:
-            print(f"[WakeGreeting] TTS playback error: {e}")
+            print(f"[WakeGreeting] PCM playback error: {e}")
+            # Fallback: try edge-tts → file → ffmpeg path
+            # Force English TTS voice for the fallback too
+            try:
+                import tempfile
+                from pathlib import Path
+
+                import edge_tts
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    tmp_path = f.name
+
+                communicate = edge_tts.Communicate(greeting, "en-US-JennyNeural")
+                await communicate.save(tmp_path)
+
+                # Play directly via sounddevice (WAV format — no ffmpeg needed)
+                import wave as _wav
+
+                import numpy as np
+                import sounddevice as sd
+
+                output_device = resolve_output_device(get_settings().audio_output_device)
+
+                responder.is_speaking = True
+                try:
+                    with _wav.open(tmp_path, "rb") as wf:
+                        data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+                        rate = wf.getframerate()
+                    sd.play(data, rate, device=output_device)
+                    sd.wait()
+                finally:
+                    responder.is_speaking = False
+
+                Path(tmp_path).unlink(missing_ok=True)
+
+            except Exception as e2:
+                print(f"[WakeGreeting] All playback paths failed: {e2}")
 
         # Log the wake greeting activity
         await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected with greeting")
@@ -457,15 +520,20 @@ def _on_detected_language_change(language: str):
 speech_processor.on_language_detected = _on_detected_language_change
 
 
-def _on_wake_word_callback():
+def _on_wake_word_callback(utterance: str = ""):
     """Callback fired when wake word is detected by the background listener.
 
-    Immediately pauses the wake word detector to release the microphone stream,
-    then speaks a greeting with system/job/weather/stocks/news info (if enabled),
-    and starts conversation mode (if hands-free is also enabled).
+    Immediately pauses the wake word detector to release the microphone stream.
+    If the utterance contains additional text beyond the wake word (e.g.
+    "computer how are you" → "how are you"), that text is extracted and fed
+    directly to the LLM as the first conversation turn — no need to wait for
+    another utterance.
 
     When the conversation ends, ``_on_conversation_stopped`` is called which
     resumes the wake word detector so the user can trigger a new conversation.
+
+    Args:
+        utterance: The full Vosk recognition text (wake word + any following command).
     """
     global _hands_free_mode
     global _wake_greeting_enabled
@@ -478,10 +546,14 @@ def _on_wake_word_callback():
     else:
         print("[Voice] No wake word detector to pause")
 
+    # ── Step 2: Extract command text beyond the wake word ──────────────
+    command_text = _extract_command_after_wake_word(utterance)
+    if command_text:
+        print(f"[Voice] Extracted command from wake utterance: '{command_text}'")
+
     if not _wake_greeting_enabled:
         if not _hands_free_mode:
-            print("[Voice] Hands-free mode disabled — skipping wake greeting")
-            # We still need to resume the detector since we paused it
+            print("[Voice] Wake greeting disabled & hands-free off — resuming detector")
             _on_conversation_stopped()
             return
         print("[Voice] Wake greeting disabled — skipping greeting, starting conversation")
@@ -489,8 +561,7 @@ def _on_wake_word_callback():
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(conversation_listener.start_conversation())
-            # Keep the loop alive for conversation mode
+            loop.run_until_complete(_start_conversation_with_command(command_text))
             if conversation_listener.is_active:
                 conversation_listener._managed_loop = loop
                 loop.run_forever()
@@ -499,17 +570,27 @@ def _on_wake_word_callback():
         except Exception as e:
             print(f"[Voice] Conversation start error: {e}")
         return
+
     if not _hands_free_mode:
-        print("[Voice] Hands-free mode disabled — skipping wake greeting")
-        # Resume the detector since we paused it but aren't starting conversation
+        print("[Voice] Hands-free mode disabled — wake word detected, resuming detector")
         _on_conversation_stopped()
         return
+
     print("[Voice] Wake word detected — speaking greeting and starting conversation")
     try:
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(_speak_wake_greeting())
+
+        # If there's a command after the wake word, feed it directly to the LLM
+        # instead of first speaking a long greeting + waiting for another utterance.
+        if command_text:
+            loop.run_until_complete(
+                _speak_greeting_and_feed_command(command_text)
+            )
+        else:
+            loop.run_until_complete(_speak_wake_greeting())
+
         # Keep the loop alive so the conversation loop task can continue
         if conversation_listener.is_active:
             conversation_listener._managed_loop = loop
@@ -526,6 +607,157 @@ def _on_conversation_trigger():
     the wake word callback, so this is intentionally a no-op.
     """
     pass
+
+
+async def _preload_whisper_model():
+    """Preload the faster-whisper model at server startup.
+
+    This removes the multi-second loading delay from the first transcription.
+    The model stays resident in RAM for the lifetime of the server process.
+    """
+    try:
+        from faster_whisper import WhisperModel
+        model_size = get_settings().whisper_model
+        print(f"[Voice] Preloading faster-whisper model '{model_size}'...")
+        speech_processor._whisper_model = WhisperModel(
+            model_size,
+            device="cpu",
+            compute_type="int8",
+        )
+        print("[Voice] faster-whisper model preloaded at startup")
+    except Exception as e:
+        print(f"[Voice] Failed to preload faster-whisper model: {e}")
+        print("[Voice] Will load model lazily on first use instead")
+
+
+def _extract_command_after_wake_word(utterance: str) -> str:
+    """Extract the command text that follows the wake word in an utterance.
+
+    Handles common patterns:
+    - "computer how are you" → "how are you"
+    - "hey barq what's the weather" → "what's the weather"
+    - "computer" → "" (just the wake word, no command)
+
+    Args:
+        utterance: The full Vosk recognition text.
+
+    Returns:
+        The command text after the wake word, stripped and lowercased.
+        Empty string if only the wake word was spoken.
+    """
+    import re
+    if not utterance or not utterance.strip():
+        return ""
+
+    text = utterance.strip().lower()
+    cfg = get_settings()
+    wake_word = cfg.wake_word.lower().strip()
+
+    # Try to remove the wake word prefix
+    # Common wake word prefixes: "computer", "ok computer", "hey barq", "wake up barq"
+    # Try exact wake word match at the start
+    if text.startswith(wake_word):
+        rest = text[len(wake_word):].strip()
+        if rest:
+            return rest
+        return ""
+
+    # Try "hey" prefix variations
+    wake_parts = wake_word.split()
+    primary = wake_parts[-1] if wake_parts else wake_word
+
+    # "hey <primary>"
+    hey_patterns = [rf"^hey\s+{re.escape(primary)}\s+(.+)$", rf"^ok\s+{re.escape(primary)}\s+(.+)$", rf"^wake\s+up\s+{re.escape(primary)}\s+(.+)$"]
+
+    for pattern in hey_patterns:
+        m = re.match(pattern, text)
+        if m:
+            return m.group(1).strip()
+
+    # If none of the patterns matched but the utterance contains the wake
+    # word somewhere, just return everything after it
+    if primary in text:
+        idx = text.index(primary) + len(primary)
+        rest = text[idx:].strip()
+        if rest:
+            return rest
+
+    return ""
+
+
+async def _start_conversation_with_command(command_text: str):
+    """Process the command text, then start conversation mode for follow-ups.
+
+    Used when the wake greeting is disabled but the utterance contains
+    additional text beyond the wake phrase (e.g. "computer how are you").
+
+    The command is processed FIRST (text-only, no audio), then the
+    conversation loop is started so the user can ask follow-up questions
+    without re-triggering the wake word.
+    """
+    if command_text:
+        result = await responder.respond_text_only(command_text)
+        if result:
+            print(f"[Voice] Direct command response: {result[:100]}...")
+    await conversation_listener.start_conversation()
+
+
+async def _speak_greeting_and_feed_command(command_text: str):
+    """Speak a brief acknowledgment + LLM response, then enter conversation mode.
+
+    When the user says something like "computer how are you", we skip the
+    10-info-point greeting and just acknowledge + respond to the command.
+
+    The conversation loop for follow-up questions is started AFTER the
+    streaming response completes, so there is no mic contention between
+    the TTS playback and the conversation loop's STT.
+    """
+    responder.is_processing = True
+    try:
+        # Step 1: Quick audible acknowledgment via interrupt handler
+        # (supports barge-in even during the ack)
+        try:
+            pcm, sample_rate = await responder.speech.synthesize_pcm(
+                "On it!", voice="en-US-JennyNeural",
+            )
+            responder.is_speaking = True
+            await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
+                pcm, sample_rate, listen_for_interrupt=True,
+            )
+        except Exception:
+            pass
+        finally:
+            responder.is_speaking = False
+
+        # Step 2: Feed the command to the LLM for a streaming response
+        #         (TTS plays via the interrupt handler with barge-in support)
+        try:
+            if command_text:
+                async for chunk in responder.stream_respond(command_text):
+                    audio_pcm = chunk.get("audio_pcm")
+                    if audio_pcm is not None:
+                        pcm_array, sr = audio_pcm
+                        try:
+                            responder.is_speaking = True
+                            await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
+                                pcm_array, sr, listen_for_interrupt=True,
+                            )
+                        finally:
+                            responder.is_speaking = False
+        except Exception as e:
+            print(f"[Voice] Stream respond error (continuing to conversation mode): {e}")
+
+        # Step 3: Always enter conversation mode for follow-up questions,
+        #         even if the streaming response failed. This ensures the
+        #         user can speak again without re-triggering the wake word.
+        #         The conversation loop's STT opens its own mic stream here
+        #         — no contention because the TTS playback has finished.
+        await conversation_listener.start_conversation()
+
+    except Exception as e:
+        print(f"[Voice] Greeting+command error: {e}")
+    finally:
+        responder.is_processing = False
 
 
 async def load_sound_settings():
@@ -705,6 +937,10 @@ async def start_listening():
     global _auto_started
     # Ensure sound preferences are loaded before detection starts
     await load_sound_settings()
+
+    # Preload faster-whisper model at startup (runs once, stays in RAM)
+    await _preload_whisper_model()
+
     detector = get_wake_word_detector()
     # Apply the loaded sensitivity (from load_sound_settings) to the detector
     detector.set_sensitivity(_sensitivity)
@@ -774,7 +1010,7 @@ async def set_language(request: LanguageRequest):
     success = detector.set_language(request.language)
 
     if not success:
-        raise HTTPException(status_code=400, detail=f"Hindi model not available. Download vosk-model-small-hi-0.22")
+        raise HTTPException(status_code=400, detail="Hindi model not available. Download vosk-model-small-hi-0.22")
 
     # Auto-switch TTS voice to match the language
     if request.language == "hi":
@@ -858,8 +1094,12 @@ async def set_tts_voice(request: TTSVoiceRequest):
 
 @router.get("/tts-voices")
 async def list_tts_voices():
-    """List available TTS voices."""
-    voices = [
+    """List available TTS voices.
+
+    Returns both Edge TTS voices and Piper TTS voice models.
+    """
+    # Edge TTS voices
+    edge_voices = [
         # English
         {"id": "en-US-JennyNeural", "name": "Jenny", "gender": "Female", "locale": "en-US"},
         {"id": "en-US-GuyNeural", "name": "Guy", "gender": "Male", "locale": "en-US"},
@@ -871,7 +1111,93 @@ async def list_tts_voices():
         {"id": "hi-IN-SwaraNeural", "name": "Swara", "gender": "Female", "locale": "hi-IN"},
         {"id": "hi-IN-MadhurNeural", "name": "Madhur", "gender": "Male", "locale": "hi-IN"},
     ]
-    return {"voices": voices, "current": _tts_voice}
+
+    # Check if Piper models are available
+    piper_models = []
+    try:
+        piper_engine = speech_processor.get_piper_engine()
+        piper_models = piper_engine.list_available_models()
+    except Exception:
+        pass
+
+    return {
+        "voices": edge_voices,
+        "current": _tts_voice,
+        "piper_models": piper_models,
+    }
+
+
+@router.get("/tts-backend")
+async def get_tts_backend():
+    """Get the current TTS backend and available options."""
+    backend = speech_processor.tts_backend
+
+    piper_available = False
+    piper_models = []
+    try:
+        piper_engine = speech_processor.get_piper_engine()
+        piper_available = piper_engine.is_available
+        piper_models = piper_engine.list_available_models()
+    except Exception:
+        pass
+
+    return {
+        "backend": backend,
+        "available_backends": ["edge", "piper"],
+        "piper_available": piper_available,
+        "piper_models": piper_models,
+        "current_piper_model": speech_processor.get_piper_engine().model_name if piper_available else "",
+    }
+
+
+class TTSBackendRequest(BaseModel):
+    backend: str  # "edge" or "piper"
+    piper_model: Optional[str] = None  # optional Piper model name to switch to
+
+
+@router.post("/tts-backend")
+async def set_tts_backend(request: TTSBackendRequest):
+    """Switch the TTS backend between Edge TTS and Piper TTS.
+
+    Args:
+        backend: "edge" or "piper"
+        piper_model: Optional — switch to a specific Piper voice model
+    """
+    if request.backend not in ("edge", "piper"):
+        raise HTTPException(status_code=400, detail="Backend must be 'edge' or 'piper'")
+
+    if request.backend == "piper":
+        # Validate Piper is available
+        piper_engine = speech_processor.get_piper_engine()
+        if not piper_engine.is_available:
+            raise HTTPException(
+                status_code=400,
+                detail="Piper TTS not available. No voice models found in models/piper/. "
+                       "Download one with: python -m piper.download_voices en_US-lessac-medium "
+                       "--download-dir models/piper",
+            )
+        # Switch to a specific Piper model if provided
+        if request.piper_model:
+            piper_engine.model_name = request.piper_model
+            if not piper_engine.is_available:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Piper model '{request.piper_model}' not found in models/piper/",
+                )
+
+    speech_processor.tts_backend = request.backend
+    print(f"[Voice] TTS backend switched to: {request.backend}")
+
+    await analytics_dao.log_activity(
+        "voice", "tts_backend",
+        f"TTS backend set to {request.backend}",
+    )
+
+    return {
+        "status": "set",
+        "backend": request.backend,
+        "piper_model": request.piper_model or "",
+    }
 
 
 @router.get("/history")
@@ -970,6 +1296,20 @@ async def process_command(request: CommandRequest):
 
     result = await _parse_and_route(command, is_follow_up, last_intent)
 
+    # ─── Execute agent tasks directly when triggered via API ───────────
+    if result.get("action") == "agent_task":
+        goal = result.get("goal", command)
+        try:
+            from agent.agent_executor import AgentExecutor
+            executor = AgentExecutor()
+            task_result = await executor.execute(goal=goal)
+            result["status"] = "completed"
+            result["result"] = task_result
+        except Exception as e:
+            print(f"[Voice] Agent task error: {e}")
+            result["status"] = "error"
+            result["error"] = str(e)
+
     # Log every parsed command to the floating action log
     action = result.get("action", "unknown")
     if action != "unknown":
@@ -1056,8 +1396,8 @@ async def voice_execute_approved_command(request: CommandRequest):
         }
 
     # Execute via the system terminal endpoint
-    from system_control.routes import run_command as system_run_command
     from system_control.routes import CommandRequest as SysCommandRequest
+    from system_control.routes import run_command as system_run_command
 
     sys_request = SysCommandRequest(command=cmd_text, cwd=None)
     result = await system_run_command(sys_request)
@@ -1489,8 +1829,123 @@ async def _parse_and_route(command: str, is_follow_up: bool = False, last_intent
     if "help" in command or "commands" in command:
         return {"action": "help", "status": "triggered"}
 
+    # ─── Agent Task (complex multi-step goals) ───────────────────────
+    # When the user asks for multi-step work like "research X and save to file",
+    # "find flights to Y", "plan a trip", etc., we route to the agent system.
+
+    # Check for complex task patterns
+    agent_patterns = [
+        r"research\s+.+(?:and|then)\s+.+",      # "research X and save to file"
+        r"find\s+.+(?:and|then)\s+.+",           # "find information about X and summarize"
+        r"plan\s+.+(?:trip|vacation|itinerary)",  # "plan a trip to Paris"
+        r"analyze\s+.+(?:and|then)\s+.+",         # "analyze this data and create a report"
+        r"compare\s+.+(?:and|then)\s+.+",         # "compare these products and save"
+        r"create\s+a\s+(?:report|summary|analysis)\s+of",  # "create a summary of..."
+        r"could you (?:research|find|analyze|look up|investigate)",  # "could you research X..."
+        r"I need you to",  # "I need you to find X and save it" — multi-step
+    ]
+
+    for pattern in agent_patterns:
+        if re.search(pattern, command, re.IGNORECASE):
+            return {
+                "action": "agent_task",
+                "goal": command,
+                "status": "triggered",
+            }
+
     # ─── Fallback ────────────────────────────────────────────────────
     return {"action": "unknown", "command": command}
+
+
+# ── Command execution helper (used by conversation_listener) ────────────
+
+async def _execute_command_action(text: str, parsed: dict) -> str:
+    """Execute a parsed voice command and return a spoken confirmation.
+
+    Routes to the appropriate system action based on ``parsed["action"]``.
+    Returns a short confirmation string that will be spoken back.
+    """
+    import platform as _platform
+    import subprocess
+
+    action = parsed.get("action", "")
+    target = parsed.get("target", "")
+    command_text = parsed.get("command", "")
+
+    try:
+        if action == "launch_app":
+            # Use the existing system_control launch_app logic
+            from system_control.routes import AppAction
+            from system_control.routes import launch_app as _launch_app
+            await _launch_app(AppAction(app_name=target))
+            return f"Opening {target}."
+
+        elif action == "close_app":
+            system = _platform.system().lower()
+            if system == "windows":
+                subprocess.run(["taskkill", "/f", "/im", f"{target}.exe"], capture_output=True, timeout=10)
+            else:
+                subprocess.run(["pkill", "-f", target], capture_output=True, timeout=10)
+            return f"Closing {target}."
+
+        elif action == "run_command":
+            result = subprocess.run(command_text, shell=True, capture_output=True, text=True, timeout=30)
+            output = (result.stdout or "").strip()[:200]
+            if result.returncode == 0:
+                return f"Command executed. {output}" if output else "Command completed."
+            return "Command returned error."
+
+        elif action == "web_search":
+            query = parsed.get("query", command_text)
+            import urllib.parse
+            import webbrowser
+            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+            return f"Searching for {query}."
+
+        elif action == "open_url":
+            url = parsed.get("target", "")
+            if not url.startswith("http"):
+                url = f"https://{url}"
+            import webbrowser
+            webbrowser.open(url)
+            return f"Opening {url}."
+
+        elif action == "show_desktop":
+            system = _platform.system().lower()
+            if system == "windows":
+                import ctypes
+                ctypes.windll.user32.keybd_event(0x5B, 0, 0, 0)  # Win key down
+                ctypes.windll.user32.keybd_event(0x44, 0, 0, 0)  # D down
+                ctypes.windll.user32.keybd_event(0x44, 0, 2, 0)  # D up
+                ctypes.windll.user32.keybd_event(0x5B, 0, 2, 0)  # Win key up
+            else:
+                import subprocess
+                subprocess.run(["osascript", "-e", 'tell app "Finder" to activate'], capture_output=True, timeout=5)
+            return "Showing desktop."
+
+        elif action == "navigate":
+            return "Navigating."
+
+        elif action in ("screenshot", "ocr", "check_trends", "get_weather", "get_stock"):
+            return f"Processing {action.replace('_', ' ')}."
+
+        elif action == "voice_stop":
+            return "Stopping voice."
+
+        elif action == "voice_start":
+            return "Starting voice."
+
+        else:
+            return f"{action.replace('_', ' ')}." if action else "Done."
+
+    except Exception as e:
+        print(f"[Voice] Command execution error ({action}): {e}")
+        return "Sorry, I couldn't do that."
+
+
+# Wire up command callbacks for the conversation listener
+conversation_listener._parse_command = _parse_and_route
+conversation_listener._execute_command = _execute_command_action
 
 
 @router.post("/transcribe")
@@ -1523,9 +1978,8 @@ async def chat_stream(request: ChatRequest):
     from fastapi.responses import StreamingResponse
 
     async def event_generator():
-        import asyncio as _asyncio
-        import json as _json
         import base64 as _base64
+        import json as _json
 
         try:
             # Stream from Ollama's native streaming API token-by-token
@@ -1604,10 +2058,10 @@ async def list_audio_devices():
     output_device = None
     import sounddevice as sd
     try:
-        default_input = sd.query_devices(kind='input')
-        default_output = sd.query_devices(kind='output')
-        input_device = default_input['name'] if default_input else None
-        output_device = default_output['name'] if default_output else None
+        default_input = sd.query_devices(kind="input")
+        default_output = sd.query_devices(kind="output")
+        input_device = default_input["name"] if default_input else None
+        output_device = default_output["name"] if default_output else None
     except Exception:
         pass
     return {
@@ -1737,20 +2191,40 @@ async def set_conversation_mode(request: ConversationModeRequest):
 @router.websocket("/ws/status")
 async def voice_status_ws(websocket: WebSocket):
     """WebSocket endpoint for real-time voice status updates.
-    Pushes full status + mic level every 100ms — no polling needed."""
+    Pushes full status + mic level every 100ms — no polling needed.
+
+    Events:
+        ``voice_status``: Periodic status snapshot (every 100ms) with
+                         ``stt_text``, ``response_text``, and current state.
+        ``ai_response_token``: Fired as AI generates response tokens
+                              (real-time). Contains ``text`` (new tokens),
+                              ``full_text`` (accumulated), and ``is_final``.
+    """
     await websocket.accept()
+
+    # Track last-known values to fire typed events only on changes
+    _last_stt = ""
+    _last_response_len = 0
+
     try:
         while True:
             detector = get_wake_word_detector()
             is_running = detector._running if detector else False
 
-            # During active conversations the wake detector is paused,
-            # so read the live mic level from the speech processor's STT stream instead.
+            # During conversations, read from the speech processor which keeps
+            # _current_mic_level updated via the background mic monitor (between
+            # STT turns) or transcribe_streaming() (during active STT).
+            # When not in a conversation, fall back to the wake word detector's
+            # own mic level reading.
             if responder.conversation.is_active:
                 mic_level = speech_processor.get_mic_level()
             else:
                 mic_level = detector.get_mic_level() if detector else 0.0
 
+            current_stt = getattr(responder, "stt_text", "")
+            current_response = getattr(responder, "response_text", "")
+
+            # Send combined status snapshot (100ms polling)
             await websocket.send_json({
                 "type": "voice_status",
                 "is_listening": is_running,
@@ -1759,13 +2233,50 @@ async def voice_status_ws(websocket: WebSocket):
                 "is_processing": responder.is_processing,
                 "conversation_turns": responder.conversation.turn_count,
                 "mic_level": round(mic_level, 4),
-                "stt_text": getattr(responder, 'stt_text', ''),
-                "stt_confidence": getattr(responder, 'stt_confidence', 0.0),
+                "stt_text": current_stt,
+                "stt_confidence": getattr(responder, "stt_confidence", 0.0),
+                "response_text": current_response,
                 "language": _language,
                 "tts_voice": _tts_voice,
                 "last_detected_language": _last_detected_language,
                 "last_detected_at": _last_detected_at,
             })
+
+            # ── Fire typed events for the live-captions frontend ─────
+
+            # Fire user-speech-transcript when a final utterance is captured
+            # (STT transitions from non-empty back to empty = utterance done)
+            if _last_stt and not current_stt:
+                await websocket.send_json({
+                    "type": "user-speech-transcript",
+                    "text": _last_stt,
+                    "is_final": True,
+                })
+            _last_stt = current_stt if current_stt else _last_stt
+            if not current_stt:
+                _last_stt = ""
+
+            # Fire ai-response-token events when response_text grows
+            if current_response and len(current_response) > _last_response_len:
+                new_tokens = current_response[_last_response_len:]
+                await websocket.send_json({
+                    "type": "ai_response_token",
+                    "text": new_tokens,
+                    "full_text": current_response,
+                    "is_final": not responder.is_speaking and not responder.is_processing,
+                })
+                _last_response_len = len(current_response)
+
+            # Reset tracking when response is cleared (turn ends)
+            if not current_response and _last_response_len > 0:
+                await websocket.send_json({
+                    "type": "ai_response_token",
+                    "text": "",
+                    "full_text": "",
+                    "is_final": True,
+                })
+                _last_response_len = 0
+
             await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         pass
@@ -1795,7 +2306,8 @@ async def voice_status():
         "wake_word": cfg.wake_word,
         "language": language,
         "stt_model": "whisper",
-        "tts_model": "edge-tts",
+        "tts_model": f"{'piper' if speech_processor.tts_backend == 'piper' else 'edge-tts'}",
+        "tts_backend": speech_processor.tts_backend,
         "tts_voice": _tts_voice,
         "last_detected_language": _last_detected_language,
         "last_detected_at": _last_detected_at,

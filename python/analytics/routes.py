@@ -4,7 +4,8 @@ Uses database DAOs for aggregating career, social, and revenue data.
 """
 
 from fastapi import APIRouter, HTTPException
-from database import analytics_dao, jobs_dao, social_dao
+
+from database import analytics_dao, social_dao
 
 router = APIRouter()
 

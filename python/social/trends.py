@@ -5,10 +5,10 @@ Trend research pulling from Twitter/X, Reddit, Google Trends, etc.
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
+
 import httpx
 
 from config import get_settings
-
 
 TREND_SOURCES = [
     "twitter",
@@ -135,7 +135,6 @@ class TrendResearch:
     async def _fetch_product_hunt(self, niche: str) -> list[dict[str, Any]]:
         """Fetch trending products from Product Hunt."""
         try:
-            url = "https://api.producthunt.com/v2/api/graphql"
             # Product Hunt requires a token, but we can use their public RSS
             rss_url = "https://www.producthunt.com/feed"
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -177,7 +176,7 @@ class TrendResearch:
             trends = []
 
             for topic in topics[:3]:
-                url = f"https://api.github.com/search/repositories"
+                url = "https://api.github.com/search/repositories"
                 resp = await self.client.get(
                     url,
                     params={

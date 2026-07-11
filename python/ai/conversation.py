@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-
 # Default persona that defines BARQ's speaking style
 DEFAULT_PERSONA = """You are BARQ, a voice-first AI desktop assistant.
 
@@ -170,8 +169,6 @@ class ConversationManager:
         """Keep history within max_history by removing oldest non-system messages."""
         if len(self.history) <= self.max_history:
             return
-        # Count system messages, which we want to preserve
-        system_count = sum(1 for m in self.history if m["role"] == "system")
         # Remove oldest user/assistant messages until under limit
         while len(self.history) > self.max_history:
             for i, msg in enumerate(self.history):

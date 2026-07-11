@@ -7,10 +7,11 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Any
+
 import httpx
 from bs4 import BeautifulSoup
-from config import get_settings
 
+from config import get_settings
 
 # Supported job boards and their base URLs
 JOB_BOARDS = {
@@ -124,7 +125,6 @@ class JobScanner:
         board_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for board_idx, board_result in enumerate(board_results):
-            board_name = list(JOB_BOARDS.keys())[board_idx]
             if isinstance(board_result, list):
                 results.extend(board_result)
                 _scan_progress["boards_scanned"] += 1
@@ -198,79 +198,6 @@ class JobScanner:
         await asyncio.sleep(10)
         if _scan_progress["status"] == "complete":
             _scan_progress["status"] = "idle"
-
-    async def _scan_board(
-        self, board: str, keywords: list[str], location: str
-    ) -> list[dict[str, Any]]:
-        """Scan a single job board."""
-        url = JOB_BOARDS.get(board)
-        if not url:
-            return []
-
-        query = "+".join(keywords)
-        params = {"q": query, "l": location, "sort": "date"}
-
-        try:
-            response = await self.client.get(url, params=params)
-            response.raise_for_status()
-
-            jobs = self._parse_listings(board, response.text)
-            print(f"[Scanner] Found {len(jobs)} jobs on {board}")
-            return jobs
-
-        except httpx.HTTPError as e:
-            print(f"[Scanner] HTTP error on {board}: {e}")
-            return []
-        except Exception as e:
-            print(f"[Scanner] Error scanning {board}: {e}")
-            return []
-
-    async def _scan_board(
-        self, board: str, keywords: list[str], location: str
-    ) -> list[dict[str, Any]]:
-        """Scan a single job board."""
-        url = JOB_BOARDS.get(board)
-        if not url:
-            return []
-
-        # Free API-based sources (no keys needed)
-        if board == "remotive":
-            return await self._scan_remotive(keywords)
-        if board == "remoteok":
-            return await self._scan_remoteok()
-        if board == "hn_algolia":
-            return await self._scan_hackernews(keywords)
-        if board == "greenhouse":
-            return await self._scan_greenhouse(keywords)
-        if board == "ashby":
-            return await self._scan_ashby(keywords)
-        if board == "lever":
-            return await self._scan_lever(keywords)
-        if board == "bamboohr":
-            return await self._scan_bamboohr(keywords)
-
-        # Playwright-based for Workday
-        if board == "workday":
-            return await self._scan_workday(keywords)
-
-        # HTML scraping sources
-        query = "+".join(keywords)
-        params = {"q": query, "l": location, "sort": "date"}
-
-        try:
-            response = await self.client.get(url, params=params)
-            response.raise_for_status()
-
-            jobs = self._parse_listings(board, response.text)
-            print(f"[Scanner] Found {len(jobs)} jobs on {board}")
-            return jobs
-
-        except httpx.HTTPError as e:
-            print(f"[Scanner] HTTP error on {board}: {e}")
-            return []
-        except Exception as e:
-            print(f"[Scanner] Error scanning {board}: {e}")
-            return []
 
     # ─── Free API-based scrapers ───────────────────────────────────────
 
@@ -451,7 +378,7 @@ class JobScanner:
     async def _scan_lever(self, keywords: list[str]) -> list[dict[str, Any]]:
         """Scrape Lever API for job listings."""
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
+            keyword_str = " ".join(k.lower() for k in keywords)  # noqa: F841
             jobs = []
             # Lever has per-company posting APIs
             # Search common company posting pages
@@ -580,10 +507,11 @@ class JobScanner:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
 
-                keyword_str = " ".join(k.lower() for k in keywords)
+                keyword_str = " ".join(k.lower() for k in keywords)  # noqa: F841
                 jobs = []
 
                 # Search Google for Workday job listings
+
                 search_query = "+".join(keywords) + "+site:myworkdayjobs.com"
                 await page.goto(
                     f"https://www.google.com/search?q={search_query}&num=30",
@@ -761,13 +689,23 @@ class JobScanner:
         if not url:
             return []
 
-        # Free API-based sources
+        # Free API-based sources (no keys needed)
         if board == "remotive":
             return await self._scan_remotive(keywords)
         if board == "remoteok":
             return await self._scan_remoteok()
         if board == "hn_algolia":
             return await self._scan_hackernews(keywords)
+        if board == "greenhouse":
+            return await self._scan_greenhouse(keywords)
+        if board == "ashby":
+            return await self._scan_ashby(keywords)
+        if board == "lever":
+            return await self._scan_lever(keywords)
+        if board == "bamboohr":
+            return await self._scan_bamboohr(keywords)
+        if board == "workday":
+            return await self._scan_workday(keywords)
 
         # Try Playwright first for LinkedIn/Indeed, fall back to HTTP
         if board in ("linkedin", "indeed"):

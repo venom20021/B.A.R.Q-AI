@@ -170,10 +170,16 @@ interface ArcMonitorPanelProps {
 export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanelProps): JSX.Element {
   const subsystems = side === 'left' ? SUBSYSTEMS_LEFT : SUBSYSTEMS_RIGHT
 
-  // Hooks must be called unconditionally
-  const leftValues = SUBSYSTEMS_LEFT.map((_, i) => useFakeSensor(i, 10, 100, 15))
-  const rightValues = SUBSYSTEMS_RIGHT.map((_, i) => useFakeSensor(i + 10, 5, 100, 12))
-  const allValues = [...leftValues, ...rightValues]
+  // Call hooks directly (not inside Array.map) to satisfy rules-of-hooks
+  const s0 = useFakeSensor(0, 10, 100, 15)
+  const s1 = useFakeSensor(1, 10, 100, 15)
+  const s2 = useFakeSensor(2, 10, 100, 15)
+  const s3 = useFakeSensor(3, 10, 100, 15)
+  const s4 = useFakeSensor(10, 5, 100, 12)
+  const s5 = useFakeSensor(11, 5, 100, 12)
+  const s6 = useFakeSensor(12, 5, 100, 12)
+  const s7 = useFakeSensor(13, 5, 100, 12)
+  const allValues = [s0, s1, s2, s3, s4, s5, s6, s7]
 
   // ── Status line ──
   const allOk = allValues.every((v, i) => {
