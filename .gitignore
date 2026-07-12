@@ -26,6 +26,7 @@ Thumbs.db
 *.log
 
 # Python generated files
+python/config/api_keys.json
 python/barq.db
 python/barq.db-shm
 python/barq.db-wal
