@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { api } from '../utils/api'
 import { Smartphone, Camera, Battery, FileUp, FileDown, Clipboard, ToggleLeft, Package, ScanLine, Loader2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -11,7 +12,7 @@ export function PhonePage(): JSX.Element {
   const scanDevices = useCallback(async () => {
     setScanning(true)
     try {
-      const resp = await window.barq?.python.request('/system/status')
+      const resp = await api('/system/status')
       if (resp && typeof resp === 'object') {
         const info = resp as { platform?: string; hostname?: string }
         if (info.platform) setDevices([`${info.hostname || 'localhost'} (${info.platform})`])
@@ -26,11 +27,7 @@ export function PhonePage(): JSX.Element {
     setOcrLoading(true)
     setOcrText('')
     try {
-      const resp = await window.barq?.python.request('/desktop/ocr/capture', {
-        method: 'POST',
-        body: JSON.stringify({}),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const resp = await api('/desktop/ocr/capture', {})
       if (resp && typeof resp === 'object') {
         const data = resp as { text?: string; status?: string }
         setOcrText(data.text || data.status || 'No text found')
@@ -43,11 +40,7 @@ export function PhonePage(): JSX.Element {
 
   const sendKey = useCallback(async (action: string, text?: string) => {
     try {
-      await window.barq?.python.request('/desktop/keyboard', {
-        method: 'POST',
-        body: JSON.stringify({ action, text: text || action, key: action === 'press_key' ? text : undefined }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/desktop/keyboard', { action, text: text || action, key: action === 'press_key' ? text : undefined })
     } catch { /* ignore */ }
   }, [])
 

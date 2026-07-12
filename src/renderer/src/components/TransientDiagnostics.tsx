@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Cpu, HardDrive, Monitor, Activity, X } from 'lucide-react'
+import { api } from '../utils/api'
 
 interface DiagnosticsData {
   cpu_percent: number
@@ -29,14 +30,11 @@ export function TransientDiagnostics(): JSX.Element {
 
   const fetchAndShow = useCallback(async () => {
     try {
-      const resp = await window.barq?.python.request('/system/status')
-      if (resp && typeof resp === 'object') {
-        const result = resp as { success: boolean; data?: DiagnosticsData }
-        if (result.data) {
-          setData(result.data)
-          setVisible(true)
-          setTimeout(() => setVisible(false), 12000)
-        }
+      const data = await api<DiagnosticsData>('/system/status')
+      if (data) {
+        setData(data)
+        setVisible(true)
+        setTimeout(() => setVisible(false), 12000)
       }
     } catch { /* ignore */ }
   }, [])
@@ -59,8 +57,7 @@ export function TransientDiagnostics(): JSX.Element {
           initial={{ opacity: 0, y: 30, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 20, scale: 0.95 }}
-          transition={{ duration: 0.3, ease: 'easeOut' }}
-          className="fixed bottom-6 left-6 z-40 w-72 rounded-xl border border-cyan-500/15 bg-void-900/85 backdrop-blur-xl shadow-2xl overflow-hidden"
+          transition={{ duration: 0.3, ease: 'easeOut' }}          className="fixed bottom-6 left-6 z-40 w-72 overflow-hidden rounded-xl bg-void-900/80 backdrop-blur-2xl border border-white/[0.06] shadow-2xl"
         >
           {/* Header bar with glow */}
           <div className="h-1 bg-gradient-to-r from-cyan-400 via-cyan-500 to-cyan-400 shadow-glow-cyan-sm" />

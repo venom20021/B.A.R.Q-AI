@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { api } from '../utils/api'
 import {
   BrainCircuit, Cpu, Eye, ListTodo, Send, Loader2, CheckCircle, XCircle,
   Trash2, Camera, Monitor, Maximize, Search, Layers, Box,
@@ -130,11 +131,8 @@ function TaskQueuePanel(): JSX.Element {
 
   const fetchTasks = useCallback(async () => {
     try {
-      const resp = await window.barq?.python.request('/agent/queue')
-      if (resp && typeof resp === 'object') {
-        const data = resp as { tasks?: TaskItem[] }
-        setTasks(data.tasks ?? [])
-      }
+      const resp = await api<{ tasks?: TaskItem[] }>('/agent/queue')
+      if (resp) setTasks(resp.tasks ?? [])
     } catch { /* ignore */    }
     setLoading(false)
   }, [])
@@ -153,11 +151,7 @@ function TaskQueuePanel(): JSX.Element {
     setSubmitting(true)
     setError('')
     try {
-      await window.barq?.python.request('/agent/execute', {
-        method: 'POST',
-        body: JSON.stringify({ goal: goal.trim(), priority }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/agent/execute', { goal: goal.trim(), priority })
       setGoal('')
       await fetchTasks()
     } catch (e) {
@@ -168,9 +162,7 @@ function TaskQueuePanel(): JSX.Element {
 
   const cancelTask = useCallback(async (taskId: string) => {
     try {
-      await window.barq?.python.request(`/agent/queue/${taskId}/cancel`, {
-        method: 'POST',
-      })
+      await api(`/agent/queue/${taskId}/cancel`, {})
       await fetchTasks()
     } catch { /* ignore */ }
   }, [fetchTasks])
@@ -332,11 +324,8 @@ function MemoryViewerPanel(): JSX.Element {
   const fetchMemory = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await window.barq?.python.request('/agent/memory')
-      if (resp && typeof resp === 'object') {
-        const data = resp as { memory?: MemoryData }
-        setMemory(data.memory ?? null)
-      }
+      const resp = await api<{ memory?: MemoryData }>('/agent/memory')
+      if (resp) setMemory(resp.memory ?? null)
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
@@ -348,11 +337,7 @@ function MemoryViewerPanel(): JSX.Element {
     if (!newKey.trim() || !newValue.trim()) return
     setSaving(true)
     try {
-      await window.barq?.python.request('/agent/memory', {
-        method: 'POST',
-        body: JSON.stringify({ key: newKey.trim(), value: newValue.trim(), category: newCategory }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/agent/memory', { key: newKey.trim(), value: newValue.trim(), category: newCategory })
       setNewKey('')
       setNewValue('')
       await fetchMemory()
@@ -362,9 +347,7 @@ function MemoryViewerPanel(): JSX.Element {
 
   const deleteMemory = useCallback(async (cat: string, key: string) => {
     try {
-      await window.barq?.python.request(`/agent/memory/${cat}/${encodeURIComponent(key)}`, {
-        method: 'DELETE',
-      })
+      await api(`/agent/memory/${cat}/${encodeURIComponent(key)}`, { method: 'DELETE' })
       await fetchMemory()
     } catch { /* ignore */ }
   }, [fetchMemory])
@@ -568,13 +551,8 @@ function VisionPanel(): JSX.Element {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await window.barq?.python.request('/vision/check')
-        if (resp && typeof resp === 'object') {
-          const data = resp as { capabilities?: Capabilities }
-          if (data.capabilities) {
-            setCaps(data.capabilities)
-          }
-        }
+        const resp = await api<{ capabilities?: Capabilities }>('/vision/check')
+        if (resp?.capabilities) setCaps(resp.capabilities)
       } catch { /* ignore */ }
     })()
   }, [])
@@ -610,11 +588,7 @@ function VisionPanel(): JSX.Element {
     setResult(null)
     setSetupRequired(false)
     try {
-      const resp = await window.barq?.python.request('/vision/screen', {
-        method: 'POST',
-        body: JSON.stringify({ prompt: prompt.trim() || "What's on my screen?" }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const resp = await api<VisionResult>('/vision/screen', { prompt: prompt.trim() || "What's on my screen?" })
       handleResponse(resp)
     } catch (e) {
       handleError(e)
@@ -628,11 +602,7 @@ function VisionPanel(): JSX.Element {
     setResult(null)
     setSetupRequired(false)
     try {
-      const resp = await window.barq?.python.request('/vision/camera', {
-        method: 'POST',
-        body: JSON.stringify({ prompt: prompt.trim() || "What do you see?" }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const resp = await api<VisionResult>('/vision/camera', { prompt: prompt.trim() || "What do you see?" })
       handleResponse(resp)
     } catch (e) {
       handleError(e)
@@ -747,14 +717,9 @@ function PlannerPanel(): JSX.Element {
     setError('')
     setPlan(null)
     try {
-      const resp = await window.barq?.python.request('/agent/plan', {
-        method: 'POST',
-        body: JSON.stringify({ goal: goal.trim() }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const data = resp as unknown as typeof plan
-        setPlan(data)
+      const data = await api('/agent/plan', { goal: goal.trim() })
+      if (data && typeof data === 'object') {
+        setPlan(data as unknown as typeof plan)
       }
     } catch (e) {
       setError(String(e))

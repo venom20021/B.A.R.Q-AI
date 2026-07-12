@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Terminal as TerminalIcon, GitBranch, Globe, Play, Code, Loader2, ExternalLink } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 export function DevPage(): JSX.Element {
   const [terminalCmd, setTerminalCmd] = useState('')
@@ -16,13 +17,8 @@ export function DevPage(): JSX.Element {
     setRunning(true)
     setTerminalOutput((prev) => [...prev, `$ ${command}`])
     try {
-      const resp = await window.barq?.python.request('/system/terminal/run', {
-        method: 'POST',
-        body: JSON.stringify({ command, cwd: '.' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { output?: string; return_code?: number; status?: string }
+      const data = await api<{ output?: string; return_code?: number; status?: string }>('/system/terminal/run', { command, cwd: '.' })
+      if (data) {
         const output = data.output || 'No output'
         const lines = output.split('\n').filter(Boolean)
         setTerminalOutput((prev) => [...prev, ...lines])
@@ -40,13 +36,8 @@ export function DevPage(): JSX.Element {
     if (!tunnelPort.trim()) return
     setTunneling(true)
     try {
-      const resp = await window.barq?.python.request('/system/tunnel/expose', {
-        method: 'POST',
-        body: JSON.stringify({ port: parseInt(tunnelPort) }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { url?: string; status?: string; message?: string }
+      const data = await api<{ url?: string; status?: string; message?: string }>('/system/tunnel/expose', { port: parseInt(tunnelPort) })
+      if (data) {
         setTunnelUrl(data.url || data.message || 'Tunnel unavailable')
       }
     } catch {

@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
+import { api } from '../utils/api'
 import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye } from 'lucide-react'
+import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 import { motion, AnimatePresence } from 'framer-motion'
 
 interface SettingsSection {
@@ -47,6 +49,43 @@ const LANGUAGE_OPTIONS = [
 ]
 
 const SENSITIVITY_LEVELS = ['low', 'medium', 'high']
+
+// ── Accent Color Picker (module-level component, not created during render) ──
+
+function AccentColorPicker(): JSX.Element {
+  const { accent, setAccent } = useTheme()
+
+  const colorMap: Record<AccentColor, { hex: string; label: string }> = {
+    cyan: { hex: '#06b6d4', label: 'Cyan' },
+    purple: { hex: '#a855f7', label: 'Purple' },
+    amber: { hex: '#f59e0b', label: 'Amber' },
+    red: { hex: '#ef4444', label: 'Red' },
+  }
+
+  return (
+    <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+      <div>
+        <p className="text-sm font-rajdhani font-semibold text-ghost">Accent Color</p>
+        <p className="text-xs font-exo text-dim-400">Primary highlight color</p>
+      </div>
+      <div className="flex gap-2">
+        {(Object.entries(colorMap) as [AccentColor, { hex: string; label: string }][]).map(([color, meta]) => (
+          <button
+            key={color}
+            onClick={() => setAccent(color)}
+            title={meta.label}
+            className={`w-5 h-5 rounded-full border-2 transition-all ${
+              accent === color ? 'border-white scale-110 shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'border-transparent hover:border-white/40'
+            }`}
+            style={{ backgroundColor: meta.hex }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Main Settings Page Component ──────────────────────────────────────────
 
 export function SettingsPage(): JSX.Element {
   const [activeSection, setActiveSection] = useState('voice')
@@ -131,7 +170,7 @@ export function SettingsPage(): JSX.Element {
   const fetchVoiceStatus = useCallback(async () => {
     setVoiceLoading(true)
     try {
-      const resp = await window.barq?.python.request('/voice/status')
+      const resp = await api('/voice/status')
       if (resp && typeof resp === 'object') {
         const data = resp as unknown as VoiceStatus & { language?: string; tts_voice?: string; last_detected_language?: string; last_detected_at?: string; tts_backend?: string }
         setVoiceStatus(data)
@@ -164,7 +203,7 @@ export function SettingsPage(): JSX.Element {
 
   const fetchTtsBackend = useCallback(async () => {
     try {
-      const resp = await window.barq?.python.request('/voice/tts-backend')
+      const resp = await api('/voice/tts-backend')
       if (resp && typeof resp === 'object') {
         const data = resp as Record<string, unknown>
         if (typeof data.backend === 'string') setTtsBackend(data.backend)
@@ -177,11 +216,7 @@ export function SettingsPage(): JSX.Element {
     setTtsBackend(backend)
     setTtsBackendUpdating(true)
     try {
-      await window.barq?.python.request('/voice/tts-backend', {
-        method: 'POST',
-        body: JSON.stringify({ backend }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/tts-backend', { backend })
     } catch (err) {
       console.error('[Settings] TTS backend switch failed:', err)
     }
@@ -191,18 +226,14 @@ export function SettingsPage(): JSX.Element {
   const handleWeatherCityChange = useCallback(async (city: string) => {
     setWeatherCity(city)
     try {
-      await window.barq?.python.request('/voice/weather-city', {
-        method: 'POST',
-        body: JSON.stringify({ city }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/weather-city', { city })
     } catch { /* ignore */ }
   }, [])
 
   const fetchVadSettings = useCallback(async () => {
     setVadSettingsLoading(true)
     try {
-      const resp = await window.barq?.python.request('/voice/vad-settings')
+      const resp = await api('/voice/vad-settings')
       if (resp && typeof resp === 'object') {
         const data = resp as Record<string, unknown>
         if (typeof data.silence_timeout === 'number') {
@@ -217,11 +248,7 @@ export function SettingsPage(): JSX.Element {
     const clamped = Math.round(Math.max(0.1, Math.min(3.0, value)) * 100) / 100
     setVadSilenceTimeout(clamped)
     try {
-      await window.barq?.python.request('/voice/vad-settings', {
-        method: 'POST',
-        body: JSON.stringify({ silence_timeout: clamped }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/vad-settings', { silence_timeout: clamped })
     } catch { /* ignore */ }
   }, [])
 
@@ -229,11 +256,7 @@ export function SettingsPage(): JSX.Element {
     const newVal = !wakeGreetingEnabled
     setWakeGreetingEnabled(newVal)
     try {
-      await window.barq?.python.request('/voice/wake-greeting-mode', {
-        method: 'POST',
-        body: JSON.stringify({ enabled: newVal }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/wake-greeting-mode', { enabled: newVal })
     } catch { /* ignore */ }
   }, [wakeGreetingEnabled])
 
@@ -241,9 +264,9 @@ export function SettingsPage(): JSX.Element {
     setTogglingVoice(true)
     try {
       if (voiceStatus?.is_listening) {
-        await window.barq?.python.request('/voice/stop', { method: 'POST' })
+        await api('/voice/stop', {})
       } else {
-        await window.barq?.python.request('/voice/start', { method: 'POST' })
+        await api('/voice/start', {})
       }
       await fetchVoiceStatus()
     } catch { /* ignore */ }
@@ -263,11 +286,7 @@ export function SettingsPage(): JSX.Element {
     setSelectedLanguage(lang)
     setLanguageUpdating(true)
     try {
-      await window.barq?.python.request('/voice/language', {
-        method: 'POST',
-        body: JSON.stringify({ language: lang }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/language', { language: lang })
     } catch (err) {
       console.error('[Settings] Language switch failed:', err)
     }
@@ -285,9 +304,7 @@ export function SettingsPage(): JSX.Element {
     const newVal = !wakeSoundEnabled
     setWakeSoundEnabled(newVal)
     try {
-      await window.barq?.python.request('/voice/sound-settings', {
-        wake_sound_enabled: newVal,
-      })
+      await api('/voice/sound-settings', { wake_sound_enabled: newVal })
     } catch { /* ignore */ }
   }, [wakeSoundEnabled])
 
@@ -295,16 +312,14 @@ export function SettingsPage(): JSX.Element {
     const newVal = !commandSoundEnabled
     setCommandSoundEnabled(newVal)
     try {
-      await window.barq?.python.request('/voice/sound-settings', {
-        command_sound_enabled: newVal,
-      })
+      await api('/voice/sound-settings', { command_sound_enabled: newVal })
     } catch { /* ignore */ }
   }, [commandSoundEnabled])
 
   const fetchSoundSettings = useCallback(async () => {
     setVadSettingsLoading(true)
     try {
-      const resp = await window.barq?.python.request('/voice/sound-settings')
+      const resp = await api('/voice/sound-settings')
       if (resp && typeof resp === 'object') {
         const data = resp as Record<string, unknown>
         if (typeof data.wake_sound_enabled === 'boolean') setWakeSoundEnabled(data.wake_sound_enabled)
@@ -317,7 +332,7 @@ export function SettingsPage(): JSX.Element {
   const fetchSettings = useCallback(async () => {
     try {
       // Fetch notification settings
-      const notifResp = await window.barq?.python.request('/notifications/settings')
+      const notifResp = await api('/notifications/settings')
       if (notifResp && typeof notifResp === 'object') {
         const respData = notifResp as Record<string, unknown>
         // Python API returns flat settings dict directly (no {success, data} wrapper)
@@ -339,11 +354,7 @@ export function SettingsPage(): JSX.Element {
   const updateNotifSetting = useCallback(async (key: string, value: boolean) => {
     setNotifSettings(prev => ({ ...prev, [key]: value }))
     try {
-      await window.barq?.python.request('/notifications/settings', {
-        method: 'POST',
-        body: JSON.stringify({ [key]: value }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/notifications/settings', { [key]: value })
     } catch { /* ignore */ }
   }, [])
 
@@ -808,7 +819,7 @@ export function SettingsPage(): JSX.Element {
                     </div>
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => window.barq?.python.request('/voice/sound-preview', { profile: 'wake' })}
+                        onClick={() => api('/voice/sound-preview', { profile: 'wake' })}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all"
                       >
                         <Play className="w-3 h-3" /> Preview
@@ -844,7 +855,7 @@ export function SettingsPage(): JSX.Element {
                     </div>
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => window.barq?.python.request('/voice/sound-preview', { profile: 'command_accepted' })}
+                        onClick={() => api('/voice/sound-preview', { profile: 'command_accepted' })}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 transition-all"
                       >
                         <Play className="w-3 h-3" /> Preview
@@ -1453,24 +1464,7 @@ export function SettingsPage(): JSX.Element {
                     { value: 'cyber', label: 'Cyberpunk' },
                   ], (v) => setAppearanceSettings(prev => ({ ...prev, theme: v })))}
                 </div>
-                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
-                  <div>
-                    <p className="text-sm font-rajdhani font-semibold text-ghost">Accent Color</p>
-                    <p className="text-xs font-exo text-dim-400">Primary highlight color</p>
-                  </div>
-                  <div className="flex gap-2">
-                    {['cyan', 'emerald', 'violet', 'amber', 'rose'].map(color => (
-                      <button
-                        key={color}
-                        onClick={() => setAppearanceSettings(prev => ({ ...prev, accent: color }))}
-                        className={`w-5 h-5 rounded-full border-2 transition-all ${
-                          appearanceSettings.accent === color ? 'border-white scale-110' : 'border-transparent'
-                        }`}
-                        style={{ backgroundColor: color === 'cyan' ? '#06b6d4' : color === 'emerald' ? '#10b981' : color === 'violet' ? '#8b5cf6' : color === 'amber' ? '#f59e0b' : '#f43f5e' }}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <AccentColorPicker />
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Font Scale</p>

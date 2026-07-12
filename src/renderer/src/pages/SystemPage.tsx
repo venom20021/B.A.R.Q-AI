@@ -7,6 +7,7 @@ import {
   ArrowUpDown, HardDrive, LayoutGrid,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { api } from '../utils/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -148,11 +149,7 @@ export function SystemPage(): JSX.Element {
 function WindowManagement(): JSX.Element {
   const windowAction = useCallback(async (action: string) => {
     try {
-      await window.barq?.python.request('/system/window/control', {
-        method: 'POST',
-        body: JSON.stringify({ action }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/system/window/control', { action })
     } catch { /* ignore */ }
   }, [])
 
@@ -195,13 +192,11 @@ function WallpaperPanel(): JSX.Element {
     setApplying(true)
     setStatus('Generating...')
     try {
-      const resp = await window.barq?.python.request('/desktop/wallpaper/set', {
-        method: 'POST',
-        body: JSON.stringify({ description: prompt, source: 'auto' }),
-        headers: { 'Content-Type': 'application/json' },
+      const data = await api<{ status?: string; image_url?: string }>('/desktop/wallpaper/set', {
+        description: prompt,
+        source: 'auto',
       })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { status?: string; image_url?: string }
+      if (data) {
         setStatus(data.status || 'Applied')
         if (data.image_url) setUrl(data.image_url)
       }
@@ -252,7 +247,7 @@ const DEFAULT_PROTOCOLS = [
 function ProtocolsPanel(): JSX.Element {
   const activateProtocol = useCallback(async (name: string) => {
     try {
-      await window.barq?.python.request(`/desktop/protocols/activate/${encodeURIComponent(name)}`, { method: 'POST' })
+      await api(`/desktop/protocols/activate/${encodeURIComponent(name)}`, {})
     } catch { /* ignore */ }
   }, [])
 
@@ -789,10 +784,9 @@ function MonitorPanel(): JSX.Element {
 
   const moveToMonitor = useCallback(async (monitorIndex: number) => {
     try {
-      await window.barq?.python.request('/system/window/control', {
-        method: 'POST',
-        body: JSON.stringify({ action: 'move_to_monitor', monitor_index: monitorIndex }),
-        headers: { 'Content-Type': 'application/json' },
+      await api('/system/window/control', {
+        action: 'move_to_monitor',
+        monitor_index: monitorIndex,
       })
     } catch { /* ignore */ }
   }, [])
@@ -858,13 +852,8 @@ function TerminalPanel(): JSX.Element {
     setLoading(true)
     setOutput('')
     try {
-      const resp = await window.barq?.python.request('/system/terminal/run', {
-        method: 'POST',
-        body: JSON.stringify({ command }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { output?: string; return_code?: number }
+      const data = await api<{ output?: string; return_code?: number }>('/system/terminal/run', { command })
+      if (data) {
         const out = data.output || '(no output)'
         setOutput(`${out}\n\nExit code: ${data.return_code ?? -1}`)
       }
@@ -919,15 +908,15 @@ function SystemInfoPanel(): JSX.Element {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await window.barq?.python.request('/system/status')
-        if (resp && typeof resp === 'object') {
-          const data = resp as Record<string, unknown>
+        const data = await api('/system/status')
+        if (data && typeof data === 'object') {
+          const statusData = data as Record<string, unknown>
           setStatus({
-            platform: String(data.platform || ''),
-            hostname: String(data.hostname || ''),
-            python_version: String(data.python_version || ''),
-            cpus: Number(data.cpus || 0),
-            cpu_percent: Number(data.cpu_percent || 0),
+            platform: String(statusData.platform || ''),
+            hostname: String(statusData.hostname || ''),
+            python_version: String(statusData.python_version || ''),
+            cpus: Number(statusData.cpus || 0),
+            cpu_percent: Number(statusData.cpu_percent || 0),
             memory: data.memory as SystemStatus['memory'],
             disk: data.disk as SystemStatus['disk'],
           })
@@ -941,11 +930,11 @@ function SystemInfoPanel(): JSX.Element {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const resp = await window.barq?.python.request('/voice/mic-level')
-        if (resp && typeof resp === 'object') {
-          const data = resp as Record<string, unknown>
-          setMicLevel(Number(data.level || 0))
-          setIsListening(Boolean(data.is_listening))
+        const data = await api('/voice/mic-level')
+        if (data && typeof data === 'object') {
+          const d = data as Record<string, unknown>
+          setMicLevel(Number(d.level || 0))
+          setIsListening(Boolean(d.is_listening))
         }
       } catch { /* ignore */ }
     }, 1000)

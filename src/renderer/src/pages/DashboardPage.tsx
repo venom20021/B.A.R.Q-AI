@@ -3,10 +3,12 @@ import type { MutableRefObject } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Cloud, Mic, MicOff, Bot, User, ArrowLeft, Send, Loader2,
+  Crosshair, MapPin, LocateFixed,
 } from 'lucide-react'
 import { Vector3 } from 'three'
 
 import { LiveCaptions } from '../components/LiveCaptions'
+import { api } from '../utils/api'
 
 // ─── User Name ─────────────────────────────────────────────────────────
 
@@ -25,18 +27,16 @@ const ParticleSphere3D = lazy(() =>
 
 // ─── Real Weather Data ─────────────────────────────────────────────────
 
-interface WeatherData { city: string; temperature_c: number; feels_like_c: number; humidity: number; description: string }
+interface WeatherData { city: string; temperature_c: number; feels_like_c: number; humidity: number; description: string; source: 'auto' | 'manual' | 'default' }
 
 const DEFAULT_WEATHER_CITY = 'London'
 const WEATHER_RETRY_MS = [1000, 3000, 8000] // backoff intervals
 
-async function fetchWeatherFromBridge(city: string): Promise<WeatherData | null> {
-  const resp = await window.barq?.python.request(
+async function fetchWeatherFromBridge(city: string): Promise<Omit<WeatherData, 'source'> | null> {
+  const w = await api<Record<string, unknown>>(
     `/web/weather?city=${encodeURIComponent(city)}`,
   )
-  if (!resp || typeof resp !== 'object') return null
-
-  const w = resp as Record<string, unknown>
+  if (!w || typeof w !== 'object') return null
 
   // Backend unavailable responses
   if (w.status === 'unconfigured' || w.status === 'unavailable') {
@@ -59,9 +59,59 @@ async function fetchWeatherFromBridge(city: string): Promise<WeatherData | null>
   }
 }
 
+// ─── Device Location Detection ────────────────────────────────────────
+
+const LOCATION_ATTEMPTED_KEY = 'barq_geo_attempted'
+
+async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  try {
+    const resp = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`,
+      { headers: { 'User-Agent': 'BARQ/2.0' } },
+    )
+    if (!resp.ok) return null
+    const data = await resp.json()
+    const addr = data.address || {}
+    return addr.city || addr.town || addr.village || addr.municipality || addr.county || null
+  } catch (err) {
+    console.warn('[Weather] Reverse geocode failed:', err)
+    return null
+  }
+}
+
+async function detectDeviceLocation(): Promise<string | null> {
+  if (localStorage.getItem(LOCATION_ATTEMPTED_KEY)) {
+    return null // already attempted this session — don't re-prompt
+  }
+
+  try {
+    return await new Promise<string | null>((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const city = await reverseGeocode(
+            position.coords.latitude,
+            position.coords.longitude,
+          )
+          resolve(city)
+        },
+        () => {
+          console.log('[Weather] Geolocation permission denied or unavailable')
+          resolve(null)
+        },
+        { timeout: 8000, maximumAge: 600_000 }, // 8s timeout, 10min cache
+      )
+    })
+  } catch (err) {
+    console.warn('[Weather] Geolocation not supported:', err)
+    return null
+  }
+}
+
 function useWeatherData(): WeatherData | null {
   const [data, setData] = useState<WeatherData | null>(null)
   const cityRef = useRef<string>(DEFAULT_WEATHER_CITY)
+  const sourceRef = useRef<'auto' | 'manual' | 'default'>('default')
+  const locationAttemptedRef = useRef(false)
 
   useEffect(() => {
     let mounted = true
@@ -70,28 +120,56 @@ function useWeatherData(): WeatherData | null {
 
     const attemptFetch = async () => {
       try {
-        // 1. Resolve city from voice status (fallback to DEFAULT)
+        // 1. Resolve city — try voice status first (respects manual Settings/voice changes),
+        //    then fall back to device location for first-time users
         let city = DEFAULT_WEATHER_CITY
+        let source: 'auto' | 'manual' | 'default' = 'default'
+
         try {
-          const statusResp = await window.barq?.python.request('/voice/status')
+          const statusResp = await api('/voice/status')
           if (statusResp && typeof statusResp === 'object') {
             const s = statusResp as { weather_city?: string }
-            if (s.weather_city) city = s.weather_city
+            if (s.weather_city && s.weather_city !== DEFAULT_WEATHER_CITY) {
+              city = s.weather_city // user has already set a city — use it
+              source = 'manual'
+            }
           }
         } catch (err) {
-          console.warn('[Weather] Failed to get city from voice status, using default:', DEFAULT_WEATHER_CITY, err)
+          console.warn('[Weather] Failed to get city from voice status:', err)
+        }
+
+        // Only try geolocation if no city has been configured yet
+        if (city === DEFAULT_WEATHER_CITY && !locationAttemptedRef.current) {
+          locationAttemptedRef.current = true
+          const detected = await detectDeviceLocation()
+          if (detected && mounted) {
+            city = detected
+            source = 'auto'
+            // Persist to backend so subsequent loads use this city
+            try {
+              await api('/voice/weather-city', { city })
+              console.log('[Weather] Device location detected & saved:', city)
+            } catch {
+              // Backend unreachable — use detected city for this session only
+            }
+          }
+          // Mark as attempted in localStorage to avoid re-prompting across sessions
+          if (!localStorage.getItem(LOCATION_ATTEMPTED_KEY)) {
+            localStorage.setItem(LOCATION_ATTEMPTED_KEY, 'true')
+          }
         }
 
         cityRef.current = city // store for interval refresh
+        sourceRef.current = source
 
         // 2. Fetch weather data
         const weatherData = await fetchWeatherFromBridge(city)
         if (!mounted) return
 
         if (weatherData) {
-          setData(weatherData)
+          setData({ ...weatherData, source })
           retryCount = 0 // success — reset retries
-          console.log('[Weather] Loaded:', weatherData.city, weatherData.temperature_c + '°C', weatherData.description)
+          console.log('[Weather] Loaded:', weatherData.city, weatherData.temperature_c + '°C', weatherData.description, `(${source})`)
         } else {
           // No data — schedule retry if we haven't exhausted attempts
           if (retryCount < WEATHER_RETRY_MS.length) {
@@ -121,7 +199,7 @@ function useWeatherData(): WeatherData | null {
         const city = cityRef.current
         const weatherData = await fetchWeatherFromBridge(city)
         if (mounted && weatherData) {
-          setData(weatherData)
+          setData({ ...weatherData, source: sourceRef.current })
         }
       } catch {
         // silent on interval — retry next cycle
@@ -133,7 +211,6 @@ function useWeatherData(): WeatherData | null {
       clearInterval(interval)
       if (retryTimer) clearTimeout(retryTimer)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return data
@@ -229,7 +306,7 @@ export function DashboardPage(): JSX.Element {
     setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'user' as const, content: text }] }))
     setAgentLoading(true)
     try {
-      const resp = await window.barq?.python.request('/agent/execute', { goal: `[${activeAgent}] ${text}` })
+      const resp = await api('/agent/execute', { goal: `[${activeAgent}] ${text}` })
       const result = resp && typeof resp === 'object' ? (resp as Record<string, unknown>).result ?? (resp as Record<string, unknown>).detail ?? 'No response' : String(resp ?? 'No response')
       setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'assistant' as const, content: String(result) }] }))
     } catch {
@@ -238,6 +315,66 @@ export function DashboardPage(): JSX.Element {
   }, [activeAgent, agentLoading])
 
   const weather = useWeatherData()
+  const [weatherInput, setWeatherInput] = useState('')
+  const [editingCity, setEditingCity] = useState(false)
+  const weatherInputRef = useRef<HTMLInputElement>(null!)
+
+  const startEditCity = useCallback(() => {
+    setWeatherInput(weather?.city ?? '')
+    setEditingCity(true)
+  }, [weather?.city])
+
+  useEffect(() => {
+    if (editingCity && weatherInputRef.current) {
+      weatherInputRef.current.focus()
+    }
+  }, [editingCity])
+
+  const commitCity = useCallback(async () => {
+    const city = weatherInput.trim()
+    if (!city) { setEditingCity(false); return }
+    try {
+      setEditingCity(false)
+      await api('/voice/weather-city', { city })
+      console.log('[Weather] City set to:', city)
+      window.location.reload()
+    } catch (err) {
+      console.error('[Weather] Failed to set city:', err)
+      window.location.reload()
+    }
+  }, [weatherInput])
+
+  const handleCityKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') commitCity()
+    if (e.key === 'Escape') setEditingCity(false)
+  }, [commitCity])
+
+  const retryWeather = useCallback(() => {
+    window.location.reload()
+  }, [])
+
+  // ── Detect location button handler ──────────────────────────────
+  const [detectingLocation, setDetectingLocation] = useState(false)
+
+  const handleDetectLocation = useCallback(async () => {
+    setDetectingLocation(true)
+    try {
+      // Clear the attempted flag so geolocation will run
+      localStorage.removeItem(LOCATION_ATTEMPTED_KEY)
+      const city = await detectDeviceLocation()
+      if (city) {
+        await api('/voice/weather-city', { city })
+        console.log('[Weather] Location detected:', city)
+        window.location.reload()
+      } else {
+        console.warn('[Weather] Location detection returned no city')
+        setDetectingLocation(false)
+      }
+    } catch (err) {
+      console.error('[Weather] Location detection failed:', err)
+      setDetectingLocation(false)
+    }
+  }, [])
 
   // ── Listen for profile updates ───────────────────────────────────
   useEffect(() => {
@@ -255,8 +392,8 @@ export function DashboardPage(): JSX.Element {
     const wasRunning = detectorRunning
     setDetectorRunning(!detectorRunning)
     try {
-      if (wasRunning) await window.barq?.python.request('/voice/stop', { method: 'POST' })
-      else await window.barq?.python.request('/voice/start', { method: 'POST' })
+      if (wasRunning) await api('/voice/stop', {})
+      else await api('/voice/start', {})
     } catch { setDetectorRunning(wasRunning) }
   }, [detectorRunning])
 
@@ -285,7 +422,7 @@ export function DashboardPage(): JSX.Element {
       if (httpPollTimer) return
       const poll = async () => {
         if (!mounted) return
-        try { const resp = await window.barq?.python.request('/voice/status'); if (resp && typeof resp === 'object' && !mounted) return; if (resp && typeof resp === 'object') applyStatus(resp as Record<string, unknown>) } catch { /* */ }
+        try { const d = await api('/voice/status'); if (d && typeof d === 'object' && !mounted) return; if (d && typeof d === 'object') applyStatus(d as Record<string, unknown>) } catch { /* */ }
         if (mounted) httpPollTimer = setTimeout(poll, 2000)
       }
       poll()
@@ -351,7 +488,6 @@ export function DashboardPage(): JSX.Element {
       requestAnimationFrame(animFrame)
     }, 4000)
     return () => clearInterval(interval)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ── Radial menu handlers ─────────────────────────────────────────
@@ -380,7 +516,7 @@ export function DashboardPage(): JSX.Element {
     if (action === 'quick-execute') {
       const prompt = QUICK_PROMPTS[label] ?? `Quick action for ${label}`
       try {
-        const resp = await window.barq?.python.request('/agent/execute', { goal: `[${label}] ${prompt}` })
+        const resp = await api('/agent/execute', { goal: `[${label}] ${prompt}` })
         const result = resp && typeof resp === 'object'
           ? ((resp as Record<string, unknown>).result ?? JSON.stringify(resp))
           : String(resp ?? 'No response')
@@ -392,7 +528,7 @@ export function DashboardPage(): JSX.Element {
 
     if (action === 'view-details') {
       try {
-        const resp = await window.barq?.python.request('/agent/plan', { goal: `Show capabilities and context for agent ${label}`, context: `${label} agent` })
+        const resp = await api('/agent/plan', { goal: `Show capabilities and context for agent ${label}`, context: `${label} agent` })
         if (resp && typeof resp === 'object') {
           const plan = (resp as Record<string, unknown>).plan ?? (resp as Record<string, unknown>).steps ?? JSON.stringify(resp)
           console.log(`📄 ${label}:`, String(plan).slice(0, 200))
@@ -416,13 +552,6 @@ export function DashboardPage(): JSX.Element {
   // ── Drag-and-drop handlers ───────────────────────────────────────
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setIsDraggingFile(true)
-  }, [])
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); e.stopPropagation()
-    // Only hide if leaving the overlay, not entering a child
-    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
-      setIsDraggingFile(false)
-    }
   }, [])
   const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation() }, [])
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -532,6 +661,11 @@ export function DashboardPage(): JSX.Element {
                     />
                     <button onClick={sendAgentMessage} disabled={!agentInput.trim() || agentLoading}
                       className="flex items-center justify-center w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200 shrink-0 mt-0.5"
+                      style={{
+                        boxShadow: agentInput.trim() && !agentLoading
+                          ? `0 0 12px ${activeAgentColor}30`
+                          : 'none',
+                      }}
                     >
                       {agentLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                     </button>
@@ -557,10 +691,54 @@ export function DashboardPage(): JSX.Element {
             {weather ? (
               <span className="text-lg font-sans font-light text-white/80 tracking-wide tabular-nums">{Math.round(weather.temperature_c)}°<span className="text-white/40 text-sm">C</span></span>
             ) : (
-              <span className="text-lg font-sans font-light text-white/40">--°</span>
+              <span className="text-lg font-sans font-light text-white/40 cursor-pointer hover:text-white/60 transition-colors duration-200" onClick={retryWeather} title="Click to retry">--°</span>
             )}
             <span className="w-px h-4 bg-white/10" />
-            <span className="text-[10px] font-sans text-white/40 uppercase tracking-[0.15em] font-medium">{weather?.city ?? 'Loading...'}</span>
+            {editingCity ? (
+              <input
+                ref={weatherInputRef}
+                value={weatherInput}
+                onChange={(e) => setWeatherInput(e.target.value)}
+                onKeyDown={handleCityKeyDown}
+                onBlur={commitCity}
+                className="w-20 bg-white/5 border border-white/20 rounded px-1.5 py-0.5 text-[10px] font-sans text-white/80 uppercase tracking-[0.15em] font-medium outline-none focus:border-cyan-400/50"
+                placeholder="City..."
+              />
+            ) : (
+              <>
+                {/* Location source indicator */}
+                {weather && weather.source === 'auto' && (
+                  <span title="Auto-detected from your location">
+                    <Crosshair className="w-3 h-3 text-emerald-400/70 shrink-0" />
+                  </span>
+                )}
+                {weather && weather.source === 'manual' && (
+                  <span title="Manually set by you">
+                    <MapPin className="w-3 h-3 text-cyan-400/70 shrink-0" />
+                  </span>
+                )}
+                <span
+                  className="text-[10px] font-sans text-white/40 uppercase tracking-[0.15em] font-medium cursor-pointer hover:text-cyan-300/80 transition-colors duration-200"
+                  onClick={startEditCity}
+                  title="Click to change city"
+                >{weather?.city ?? (weather === null ? 'Unavailable' : 'Loading...')}</span>
+                {/* Detect location button */}
+                {weather && !editingCity && (
+                  <button
+                    onClick={handleDetectLocation}
+                    disabled={detectingLocation}
+                    className="flex items-center justify-center w-4 h-4 text-white/30 hover:text-cyan-300/80 transition-all duration-200 disabled:opacity-50"
+                    title="Detect my location"
+                  >
+                    {detectingLocation ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <LocateFixed className="w-3 h-3" />
+                    )}
+                  </button>
+                )}
+              </>
+            )}
           </div>
           <div className="mt-2">
             <h1 className="text-4xl font-sans font-bold text-white/90 tracking-tight leading-none">{greeting}</h1>
@@ -608,11 +786,10 @@ export function DashboardPage(): JSX.Element {
         isSpeaking={aiState === 'responding'}
         isProcessing={aiState === 'thinking'}
         conversationActive={voiceListening && detectorRunning}
-        isListening={detectorRunning}
       />
 
       {/* ═══ BOTTOM-CENTER: Voice Pill ═══ */}
-      <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10">
+      <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.2, ease: 'easeOut' }}
           className="flex items-center gap-4 px-5 py-3 rounded-2xl backdrop-blur-md bg-white/5 border border-white/10 shadow-xl"
         >
@@ -661,31 +838,29 @@ export function DashboardPage(): JSX.Element {
         <span className="text-[9px] font-mono text-white/30 tabular-nums">{Math.round(systemLoad)}%</span>
       </div>
 
-      {/* ═══ CONTEXT DROP ZONE (full-screen overlay) ═══ */}
+      {/* ═══ CONTEXT DROP ZONE (viewport-scaled orbital ring) ═══ */}
       <AnimatePresence>
         {isDraggingFile && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-xl bg-slate-950/60"
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
+            transition={{ duration: 0.3 }}
+            className="fixed inset-0 z-50 pointer-events-none"
           >
-            <div className="relative flex items-center justify-center w-80 h-80">
-              {/* Outer dashed ring */}
-              <div className="absolute inset-0 rounded-full border-2 border-dashed border-cyan-400/40 animate-[spin_8s_linear_infinite]" />
-              {/* Inner pulsing ring */}
-              <div className="absolute inset-4 rounded-full border border-cyan-400/20 animate-ping" style={{ animationDuration: '3s' }} />
-              {/* Center text */}
-              <div className="text-center">
-                <p className="text-lg font-sans font-bold text-white/80 tracking-[0.2em] uppercase">DROP TO</p>
-                <p className="text-lg font-sans font-bold text-cyan-300/90 tracking-[0.2em] uppercase">INGEST INTO</p>
-                <p className="text-lg font-sans font-bold text-white/80 tracking-[0.2em] uppercase">MEMORY</p>
-              </div>
+            {/* Viewport-scaled dashed orbital ring — tracks 3D core footprint */}
+            <div
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-[1px] border-dashed border-cyan-400/30 animate-[spin_12s_linear_infinite]"
+              style={{ width: '82vmin', height: '82vmin' }}
+            />
+            {/* Faint secondary ring */}
+            <div
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/10 animate-ping"
+              style={{ width: '72vmin', height: '72vmin', animationDuration: '4s' }}
+            />
+            {/* Center text */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1">
+              <p className="text-[10px] font-sans tracking-[0.3em] font-light text-cyan-400/70">DROP TO INGEST</p>
             </div>
           </motion.div>
         )}

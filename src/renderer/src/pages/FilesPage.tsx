@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FolderOpen, Search, Upload, Download, SortAsc, Loader2, File as FileIcon, FileText, Image as ImageIcon, FileCode } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 const extIcons: Record<string, typeof FileIcon> = {
   txt: FileText,
@@ -40,11 +41,8 @@ export function FilesPage(): JSX.Element {
 
   const fetchSystemInfo = useCallback(async () => {
     try {
-      const resp = await window.barq?.python.request('/system/status')
-      if (resp && typeof resp === 'object') {
-        const info = resp as { cwd?: string; platform?: string; hostname?: string }
-        if (info.cwd) setCwd(info.cwd)
-      }
+      const info = await api<{ cwd?: string; platform?: string; hostname?: string }>('/system/status')
+      if (info?.cwd) setCwd(info.cwd)
     } catch { /* ignore */ }
   }, [])
 
@@ -52,11 +50,8 @@ export function FilesPage(): JSX.Element {
     if (!searchQuery.trim()) return
     setSearching(true)
     try {
-      const resp = await window.barq?.python.request(`/system/file/search?query=${encodeURIComponent(searchQuery)}&directory=${encodeURIComponent(cwd || '.')}`)
-      if (resp && typeof resp === 'object') {
-        const data = resp as { results?: { name: string; path: string; size_bytes: number; modified_at: number }[] }
-        setFiles(data.results ?? [])
-      }
+      const data = await api<{ results?: { name: string; path: string; size_bytes: number; modified_at: number }[] }>(`/system/file/search?query=${encodeURIComponent(searchQuery)}&directory=${encodeURIComponent(cwd || '.')}`)
+      if (data?.results) setFiles(data.results)
     } catch { /* ignore */ }
     setSearching(false)
   }, [searchQuery, cwd])

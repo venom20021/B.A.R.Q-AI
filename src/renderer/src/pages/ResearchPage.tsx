@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Search, Building2, BrainCircuit, Globe, Loader2 } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 export function ResearchPage(): JSX.Element {
   const [query, setQuery] = useState('')
@@ -13,8 +14,8 @@ export function ResearchPage(): JSX.Element {
 
   const fetchRagStatus = useCallback(async () => {
     try {
-      const resp = await window.barq?.python.request('/memory/rag/status')
-      if (resp && typeof resp === 'object') setRagStatus(resp as typeof ragStatus)
+      const data = await api('/memory/rag/status')
+      if (data && typeof data === 'object') setRagStatus(data as typeof ragStatus)
     } catch { /* ignore */ }
   }, [])
 
@@ -23,11 +24,7 @@ export function ResearchPage(): JSX.Element {
     setResearching(true)
     setResults([])
     try {
-      const resp = await window.barq?.python.request('/memory/rag/query', {
-        method: 'POST',
-        body: JSON.stringify({ query, collection: 'default' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const resp = await api('/memory/rag/query', { query, collection: 'default' })
       if (resp && typeof resp === 'object') {
         const data = resp as { results?: { snippet?: string; source?: string }[] }
         const snippets = (data.results ?? []).map((r) => `[${r.source || 'source'}] ${r.snippet || ''}`)
@@ -44,11 +41,7 @@ export function ResearchPage(): JSX.Element {
     setCompanyLoading(true)
     setCompanyResult('')
     try {
-      const resp = await window.barq?.python.request('/memory/rag/query', {
-        method: 'POST',
-        body: JSON.stringify({ query: `Company research: ${companyName}`, collection: 'default' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const resp = await api('/memory/rag/query', { query: `Company research: ${companyName}`, collection: 'default' })
       if (resp && typeof resp === 'object') {
         const data = resp as { results?: { snippet?: string }[] }
         setCompanyResult(data.results?.[0]?.snippet || 'No company data found. Try ingesting company documents.')

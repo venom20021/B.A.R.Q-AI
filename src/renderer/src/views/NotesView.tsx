@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { motion } from 'framer-motion'
 import { StickyNote, Search, Plus, Trash2, Pin } from 'lucide-react'
+import { api } from '../utils/api'
 
 interface Note {
   id: number
@@ -20,29 +21,22 @@ export default function NotesView({ glassPanel }: { glassPanel: string }): JSX.E
   const fetchNotes = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await window.barq?.python.request('/notes')
-      if (resp && typeof resp === 'object') {
-        const d = resp as { notes?: Note[] }
-        if (d.notes) setNotes(d.notes)
-      }
+      const resp = await api<{ notes?: Note[] }>('/notes')
+      if (resp?.notes) setNotes(resp.notes)
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
 
   const createNote = useCallback(async () => {
     try {
-      await window.barq?.python.request('/notes', {
-        method: 'POST',
-        body: JSON.stringify({ title: 'New Note', content: '', tags: [] }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/notes', { title: 'New Note', content: '', tags: [] })
       await fetchNotes()
     } catch { /* ignore */ }
   }, [fetchNotes])
 
   const deleteNote = useCallback(async (id: number) => {
     try {
-      await window.barq?.python.request(`/notes/${id}`, { method: 'DELETE' })
+      await api(`/notes/${id}`, { method: 'DELETE' })
       await fetchNotes()
     } catch { /* ignore */ }
   }, [fetchNotes])

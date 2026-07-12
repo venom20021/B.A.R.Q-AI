@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { MessageSquare, Mic, Send, Loader2 } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 interface ChatMessage {
   role: 'user' | 'barq'
@@ -19,10 +20,8 @@ export function ChatPage(): JSX.Element {
   }, [messages])
 
   const fetchVoiceStatus = useCallback(async () => {
-    try {
-      const resp = await window.barq?.python.request('/voice/status')
-      if (resp && typeof resp === 'object') setVoiceStatus(resp as typeof voiceStatus)
-    } catch { /* ignore */ }
+    const data = await api('/voice/status')
+    if (data && typeof data === 'object') setVoiceStatus(data as typeof voiceStatus)
   }, [])
 
   const sendMessage = useCallback(async () => {
@@ -32,7 +31,6 @@ export function ChatPage(): JSX.Element {
     setMessages((prev) => [...prev, { role: 'user', text }])
     setSending(true)
 
-    try {
       // Friendly response mapping for known command actions
       const FRIENDLY_RESPONSES: Record<string, string> = {
         show_diagnostics: 'Showing system diagnostics',
@@ -44,13 +42,8 @@ export function ChatPage(): JSX.Element {
       }
 
       // Try AI chat first for natural conversation
-      const resp = await window.barq?.python.request('/voice/chat/text', {
-        method: 'POST',
-        body: JSON.stringify({ message: text, language: 'en' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { text?: string; action?: string }
+      const data = await api<{ text?: string; action?: string }>('/voice/chat/text', { message: text, language: 'en' })
+      if (data) {
         const friendlyText = data.action ? FRIENDLY_RESPONSES[data.action] : undefined
         const responseText = data.text || friendlyText || 'Command processed.'
 
@@ -65,9 +58,6 @@ export function ChatPage(): JSX.Element {
       } else {
         setMessages((prev) => [...prev, { role: 'barq', text: 'Command processed.' }])
       }
-    } catch {
-      setMessages((prev) => [...prev, { role: 'barq', text: 'Failed to process command.' }])
-    }
     setSending(false)
   }, [input])
 

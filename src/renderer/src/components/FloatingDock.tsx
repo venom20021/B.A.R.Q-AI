@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { GlassPanel } from './GlassPanel'
 import {
   LayoutDashboard, Briefcase, Video, BarChart3, FolderOpen,
   Search, Settings,
@@ -32,8 +33,9 @@ export function FloatingDock(): JSX.Element {
       initial={{ y: 24, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ delay: 0.6, duration: 0.5, ease: [0.25, 0.1, 0.25, 1] }}
-      className="fixed bottom-0 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3.5 py-2.5 rounded-t-2xl luxury-glass-strong depth-blur shadow-2xl border border-[#00E5FF]/10 border-b-0"
-    >
+      className="fixed bottom-0 left-1/2 -translate-x-1/2 z-30"
+>
+      <GlassPanel className="flex items-center gap-1.5 px-3.5 py-2.5 !rounded-t-2xl !rounded-b-none border-b-0 !bg-white/5 !backdrop-blur-md !border-white/10 !shadow-xl">
       {dockItems.map((item, i) => {
         const isActive = location.pathname === item.path
         const Icon = item.icon
@@ -79,6 +81,7 @@ export function FloatingDock(): JSX.Element {
           </motion.button>
         )
       })}
+      </GlassPanel>
     </motion.div>
   )
 }

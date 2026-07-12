@@ -221,7 +221,7 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
         onClick={() => setIsOpen((p) => !p)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
-        className="fixed bottom-6 right-6 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-[#00E5FF] text-black shadow-[0_0_20px_rgba(0,229,255,0.3)] hover:shadow-[0_0_30px_rgba(0,229,255,0.5)] transition-shadow duration-300"
+        className="fixed bottom-6 right-6 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-[var(--a400)] text-black shadow-[0_0_20px_rgba(var(--a400-rgb),0.3)] hover:shadow-[0_0_30px_rgba(var(--a400-rgb),0.5)] transition-shadow duration-300"
       >
         {isOpen ? <X className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
       </motion.button>
@@ -234,12 +234,12 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.95 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="fixed bottom-24 right-6 z-40 w-[380px] h-[520px] luxury-glass rounded-2xl flex flex-col overflow-hidden border border-[#00E5FF]/20 shadow-2xl"
+            className="fixed bottom-24 right-6 z-40 w-[380px] h-[520px] luxury-glass rounded-2xl flex flex-col overflow-hidden border border-[var(--a400)]/20 shadow-2xl"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#00E5FF]/10">
               <div className="flex items-center gap-2.5">
-                <div className="w-2 h-2 rounded-full bg-[#00E5FF] shadow-[0_0_8px_rgba(0,229,255,0.6)] animate-pulse" />
+                <div className="w-2 h-2 rounded-full bg-[var(--a400)] shadow-[0_0_8px_rgba(var(--a400-rgb),0.6)] animate-pulse" />
                 <span className="text-xs font-rajdhani font-semibold text-[#E2E8F0]/80 tracking-wider uppercase">AI Interface</span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -256,17 +256,17 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
                   <span>{isMuted ? 'Muted' : 'Voice'}</span>
                 </button>
-                <button onClick={() => setIsOpen(false)} className="p-1 rounded-lg hover:bg-[#00E5FF]/10 transition-colors">
+                <button onClick={() => setIsOpen(false)} className="p-1 rounded-lg hover:bg-[var(--a400)]/10 transition-colors">
                   <X className="w-3.5 h-3.5 text-[#E2E8F0]/30" />
                 </button>
               </div>
             </div>
 
             {/* Audio waveform */}
-            <div className="relative flex items-center justify-center py-2 border-b border-[#00E5FF]/5 bg-[#00E5FF]/2">
+            <div className="relative flex items-center justify-center py-2 border-b border-[var(--a400)]/5 bg-[var(--a400)]/2">
               {micAnalyser.error && (
                 <div className="absolute inset-0 flex items-center justify-center bg-[#0A0A0F]/80 backdrop-blur-sm z-10">
-                  <span className="text-[10px] font-share-tech text-[#00E5FF]/60 uppercase tracking-wider">
+                  <span className="text-[10px] font-share-tech text-[var(--a400)]/60 uppercase tracking-wider">
                     {micAnalyser.error}
                   </span>
                 </div>
@@ -293,8 +293,8 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   >
                     <div className={`max-w-[85%] px-3 py-2 rounded-xl text-xs font-rajdhani leading-relaxed ${
                       msg.role === 'user'
-                        ? 'bg-[#00E5FF]/15 text-[#E2E8F0]/90 border border-[#00E5FF]/20'
-                        : 'bg-[#0D0D15]/60 text-[#E2E8F0]/70 border border-[#00E5FF]/8'
+                        ? 'bg-[var(--a400)]/15 text-[#E2E8F0]/90 border border-[var(--a400)]/20'
+                        : 'bg-[#0D0D15]/60 text-[#E2E8F0]/70 border border-[var(--a400)]/8'
                     }`}>
                       {msg.text}
                     </div>
@@ -309,9 +309,9 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   className="flex justify-start"
                 >
-                  <div className="max-w-[85%] px-3 py-2 rounded-xl bg-[#0D0D15]/60 text-[#E2E8F0]/70 border border-[#00E5FF]/8">
+                  <div className="max-w-[85%] px-3 py-2 rounded-xl bg-[#0D0D15]/60 text-[#E2E8F0]/70 border border-[var(--a400)]/8">
                     <span className="text-xs font-rajdhani leading-relaxed">{streamingDisplay}</span>
-                    <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-[#00E5FF]/60 animate-pulse align-text-bottom" />
+                    <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-[var(--a400)]/60 animate-pulse align-text-bottom" />
                   </div>
                 </motion.div>
               )}
@@ -323,11 +323,11 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   animate={{ opacity: 1, y: 0 }}
                   className="flex justify-start"
                 >
-                  <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[#0D0D15]/60 border border-[#00E5FF]/12">
+                  <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-[#0D0D15]/60 border border-[var(--a400)]/12">
                     {[0, 1, 2].map((i) => (
                       <motion.span
                         key={i}
-                        className="w-1.5 h-1.5 rounded-full bg-[#00E5FF]/60"
+                        className="w-1.5 h-1.5 rounded-full bg-[var(--a400)]/60"
                         animate={{
                           y: [0, -4, 0],
                           opacity: [0.4, 1, 0.4],
@@ -347,17 +347,17 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
             </div>
 
             {/* Input area */}
-            <div className="p-3 border-t border-[#00E5FF]/10">
+            <div className="p-3 border-t border-[var(--a400)]/10">
               <div className="flex items-center gap-2">
                 {/* Mic indicator — active when panel is open */}
                 <div className={`relative flex items-center justify-center w-9 h-9 rounded-lg transition-all ${
                   transcript
                     ? 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
-                    : 'bg-[#00E5FF]/15 text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                    : 'bg-[var(--a400)]/15 text-[var(--a400)] shadow-[0_0_12px_rgba(var(--a400-rgb),0.15)]'
                 }`}>
                   <Mic className="w-4 h-4" />
                   {!transcript && (
-                    <span className="absolute inset-0 rounded-lg animate-ping bg-[#00E5FF]/10" />
+                    <span className="absolute inset-0 rounded-lg animate-ping bg-[var(--a400)]/10" />
                   )}
                 </div>
                 <input
@@ -367,13 +367,13 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && void handleSend()}
                   placeholder="Type command or speak..."
-                  className="flex-1 bg-[#0D0D15]/60 border border-[#00E5FF]/10 rounded-lg px-3 py-2 text-xs font-rajdhani text-[#E2E8F0]/70 placeholder-[#E2E8F0]/20 outline-none focus:border-[#00E5FF]/30 transition-all duration-200"
+                  className="flex-1 bg-[#0D0D15]/60 border border-[var(--a400)]/10 rounded-lg px-3 py-2 text-xs font-rajdhani text-[#E2E8F0]/70 placeholder-[#E2E8F0]/20 outline-none focus:border-[var(--a400)]/30 transition-all duration-200"
                 />
                 <motion.button
                   onClick={() => void handleSend()}
                   whileTap={{ scale: 0.9 }}
                   disabled={!input.trim() || isProcessing}
-                  className="flex items-center justify-center w-9 h-9 rounded-lg bg-[#00E5FF]/20 text-[#00E5FF] hover:bg-[#00E5FF]/30 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200"
+                  className="flex items-center justify-center w-9 h-9 rounded-lg bg-[var(--a400)]/20 text-[var(--a400)] hover:bg-[var(--a400)]/30 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200"
                 >
                   <Send className="w-4 h-4" />
                 </motion.button>

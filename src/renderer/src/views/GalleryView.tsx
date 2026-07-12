@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { ImageIcon, Sparkles, Loader2 } from 'lucide-react'
+import { api } from '../utils/api'
 
 const SAMPLE_GALLERY = [
   { id: 1, prompt: 'Neon cyberpunk city', url: 'https://image.pollinations.ai/prompt/Neon%20cyberpunk%20city%20dark%20aesthetic', date: '2026-07-04' },
@@ -17,17 +18,10 @@ export default function GalleryView(): JSX.Element {
     if (!prompt.trim() || generating) return
     setGenerating(true)
     try {
-      const resp = await window.barq?.python.request('/web/images/generate', {
-        method: 'POST',
-        body: JSON.stringify({ prompt: prompt.trim(), style: 'auto' }),
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp && typeof resp === 'object') {
-        const d = resp as { image_url?: string }
-        if (d.image_url) {
-          setImages(prev => [{ id: Date.now(), prompt: prompt.trim(), url: d.image_url!, date: new Date().toISOString().slice(0, 10) }, ...prev])
-          setPrompt('')
-        }
+      const d = await api<{ image_url?: string }>('/web/images/generate', { prompt: prompt.trim(), style: 'auto' })
+      if (d?.image_url) {
+        setImages(prev => [{ id: Date.now(), prompt: prompt.trim(), url: d.image_url!, date: new Date().toISOString().slice(0, 10) }, ...prev])
+        setPrompt('')
       }
     } catch { /* ignore */ }
     setGenerating(false)

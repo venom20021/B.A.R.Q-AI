@@ -4,7 +4,7 @@
 
 Built with **Python (FastAPI)** for the backend and **Electron + React** for the desktop UI, BARQ runs on **macOS** and **Windows**.
 
-![BARQ Dashboard](screenshots/dashboard.png)
+![BARQ Dashboard](screenshot.png)
 
 ---
 

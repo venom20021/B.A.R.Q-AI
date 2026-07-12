@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Clock, TrendingUp, Calculator, Code, Wand2, Globe, CheckCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 const widgetDefs = [
   { icon: Clock, accent: 'text-neural', title: 'Floating Timer', desc: 'Countdown / stopwatch widget', action: 'timer' },
@@ -17,14 +18,10 @@ export function WidgetsPage(): JSX.Element {
     setSpawning(true)
     setSpawnStatus(`Spawning ${title}...`)
     try {
-      await window.barq?.python.request('/desktop/protocols/create', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: `widget_${action}`,
-          steps: [{ action: 'open_url', target: `http://127.0.0.1:8970/docs` }],
-          trigger_phrase: `spawn ${action} widget`,
-        }),
-        headers: { 'Content-Type': 'application/json' },
+      await api('/desktop/protocols/create', {
+        name: `widget_${action}`,
+        steps: [{ action: 'open_url', target: `http://127.0.0.1:8970/docs` }],
+        trigger_phrase: `spawn ${action} widget`,
       })
       setSpawnStatus(`${title} spawned`)
     } catch {

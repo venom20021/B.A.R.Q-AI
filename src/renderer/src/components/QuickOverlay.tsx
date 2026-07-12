@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Command, Mic, History, ArrowUpRight } from 'lucide-react'
+import { GlassPanel } from './GlassPanel'
 
 interface QuickOverlayProps {
   isVisible: boolean
@@ -66,20 +67,19 @@ export function QuickOverlay({
             top: Math.min(position.y, window.innerHeight - 450),
           }}
         >
-          {/* Unified dark void glass panel */}
-          <div className="relative bg-void-800/90 backdrop-blur-2xl border border-cyan-500/10 shadow-glass holo-border">
+          <GlassPanel className="!bg-white/5 !backdrop-blur-md !border-white/10 !shadow-xl">
             {/* Glowing top border accent */}
-            <div className="absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-cyan-400/40 to-transparent" />
+            <div className="absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
-            {/* Scanline overlay */}
+            {/* Subtle scanline texture */}
             <div className="absolute inset-0 pointer-events-none opacity-[0.015]"
               style={{
-                backgroundImage: 'repeating-linear-gradient(transparent 0px, transparent 2px, rgba(0,240,255,0.03) 2px, rgba(0,240,255,0.03) 4px)',
+                backgroundImage: 'repeating-linear-gradient(transparent 0px, transparent 2px, rgba(255,255,255,0.03) 2px, rgba(255,255,255,0.03) 4px)',
               }}
             />
 
             {/* Input section */}
-            <div className="relative p-4 border-b border-cyan-500/10">
+            <div className="relative p-4 border-b border-white/[0.06]">
             <div className="flex items-center gap-3">
               <Command className="w-5 h-5 text-cyan-300 flex-shrink-0" />
               <input
@@ -132,7 +132,7 @@ export function QuickOverlay({
             )}
 
             {/* Quick hints */}
-            <div className="pt-2 border-t border-cyan-500/8">
+            <div className="pt-2 border-t border-white/[0.05]">
               <div className="grid grid-cols-2 gap-1.5">
                 {[
                   { label: 'Scan Jobs', cmd: 'scan jobs' },
@@ -174,7 +174,7 @@ export function QuickOverlay({
               <span className="text-hud font-share-tech text-dim-500">close</span>
             </div>
           </div>
-          </div>
+          </GlassPanel>
         </motion.div>
       </motion.div>
     </AnimatePresence>

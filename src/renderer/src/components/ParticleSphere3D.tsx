@@ -1,4 +1,5 @@
 import { useRef, useMemo, useState, useCallback, useEffect, Component } from 'react'
+import { Zap, FileText, Link } from 'lucide-react'
 import type { ReactNode, MutableRefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import type { Group, Mesh, Points } from 'three'
@@ -220,27 +221,29 @@ function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
 
   useFrame((state) => {
     if (!ringRef.current || !matRef.current) return
-    // Higher load = faster spin, brighter/cyan shift
+    // Higher load = faster spin, slightly brighter
     const normalizedLoad = systemLoad / 100 // 0-1
-    const speed = 0.05 + normalizedLoad * 0.02
+    const speed = 0.025 + normalizedLoad * 0.025
     ringRef.current.rotation.y += speed
-    ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.1) * 0.08
+    ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.08) * 0.06
 
-    const opacity = 0.15 + normalizedLoad * 0.6
-    matRef.current.opacity = opacity
+    // Opacity stays within a very faint 0.1–0.3 range
+    const opacity = 0.1 + normalizedLoad * 0.2
+    matRef.current.opacity = Math.min(opacity, 0.3)
 
-    // Shift color from blue to cyan/yellow as load increases
-    const r = 0.1 + normalizedLoad * 0.8
-    const g = 0.5 + normalizedLoad * 0.4
-    const b = 1.0 - normalizedLoad * 0.6
+    // Shift color from cool blue to faint warm cyan as load increases
+    const r = 0.05 + normalizedLoad * 0.5
+    const g = 0.3 + normalizedLoad * 0.5
+    const b = 0.8 - normalizedLoad * 0.4
     matRef.current.color.setRGB(r, g, b)
   })
 
   return (
     <group ref={ringRef}>
+      {/* Ultra-thin orbital trajectory — tube={0.005} or smaller */}
       <mesh rotation={[Math.PI / 2.2, 0, 0]}>
-        <torusGeometry args={[SPHERE_RADIUS * 1.65, 0.025, 24, 80]} />
-        <meshBasicMaterial ref={matRef} color="#4FC3F7" transparent opacity={0.2} side={DoubleSide} depthWrite={false} />
+        <torusGeometry args={[SPHERE_RADIUS * 1.65, 0.005, 16, 80]} />
+        <meshBasicMaterial ref={matRef} color="#4FC3F7" transparent opacity={0.15} side={DoubleSide} depthWrite={false} />
       </mesh>
     </group>
   )
@@ -501,15 +504,14 @@ function AgentNode({
           center
           zIndexRange={[10, 20]}
         >
-          <div className="flex items-center gap-3">
-            {['Zap', 'FileText', 'Link'].map((icon, i) => (
+          <div className="flex items-center gap-4">              {([Zap, FileText, Link] as const).map((Icon, i) => (
               <button
-                key={icon}
-                className="w-8 h-8 rounded-full backdrop-blur-md bg-white/5 border border-white/20 hover:bg-white/15 hover:border-white/40 flex items-center justify-center transition-all duration-200 text-white/60 hover:text-white/90 text-xs font-sans font-medium"
+                key={['Zap', 'FileText', 'Link'][i]}
+                className="w-7 h-7 flex items-center justify-center text-white/40 hover:bg-white/5 hover:text-cyan-300 rounded-full transition-all duration-200"
                 title={['Quick Execute', 'View Details', 'Share Link'][i]}
                 onClick={(e) => { e.stopPropagation(); onCloseRadialMenu(); onRadialAction(node.label, ['quick-execute', 'view-details', 'share-link'][i] as 'quick-execute' | 'view-details' | 'share-link') }}
               >
-                {['⚡', '📄', '🔗'][i]}
+                <Icon className="w-3.5 h-3.5" />
               </button>
             ))}
           </div>

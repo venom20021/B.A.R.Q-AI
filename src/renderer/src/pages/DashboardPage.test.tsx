@@ -72,7 +72,7 @@ vi.stubGlobal('barq', {
 // ─── Mock framer-motion ────────────────────────────────────────────
 vi.mock('framer-motion', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function PlainTag({ children, className, style, title, ...rest }: Record<string, any>) {
+  function PlainTag({ children, className, style, title }: Record<string, any>) {
     return (
       <div
         className={className as string}
