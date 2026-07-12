@@ -24,6 +24,7 @@ Thumbs.db
 
 # Logs
 *.log
+test-results/
 
 # Python generated files
 python/config/api_keys.json
