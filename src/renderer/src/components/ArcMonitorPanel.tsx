@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
+import { GlassPanel } from './GlassPanel'
 
 /* ─── Mock Data Generators ──────────────────────────────────────────── */
 
@@ -203,7 +204,7 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
       `}
     >
       {/* Main monitor panel */}
-      <div className="border border-[#00E5FF]/10 rounded bg-[#050D15]/80 backdrop-blur-sm p-3">
+      <GlassPanel className="p-3">
         {/* Header */}
         <div className="flex items-center justify-between mb-2.5 pb-1.5 border-b border-[#00E5FF]/8">
           <span className="text-[8px] font-share-tech tracking-[0.2em] text-[#00E5FF]/40">
@@ -255,19 +256,19 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
             ))}
           </span>
         </div>
-      </div>
+      </GlassPanel>
 
       {/* Quick-action stats section */}
       {quickActions && quickActions.length > 0 && (
-        <div className="border border-[#00E5FF]/10 rounded bg-[#050D15]/80 backdrop-blur-sm p-2.5">
-          <div className="text-[7px] font-share-tech tracking-[0.2em] text-[#00E5FF]/30 uppercase mb-2">
+        <GlassPanel className="p-2.5">
+          <div className="text-[7px] font-share-tech tracking-[0.2em] text-white/30 uppercase mb-2">
             {side === 'left' ? 'SYSTEM STATS' : 'TASK STATS'}
           </div>
           <div className="grid grid-cols-2 gap-1.5">
             {quickActions.map((action) => (
               <div
                 key={action.label}
-                className="border border-[#00E5FF]/10 rounded bg-[#00E5FF]/[0.02] px-2 py-1.5"
+                className="border border-white/[0.05] rounded bg-white/[0.02] px-2 py-1.5"
               >
                 <div className="text-[6px] font-share-tech tracking-[0.15em] text-[#00E5FF]/35 uppercase mb-0.5">
                   {action.label}
@@ -347,8 +348,8 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
                             action.onAction!()
                           }}
                           className="text-[6px] font-share-tech tracking-wider uppercase px-1.5 py-0.5 rounded
-                            border border-[#00E5FF]/25 text-[#00E5FF]/60
-                            hover:bg-[#00E5FF]/10 hover:text-[#00E5FF] hover:border-[#00E5FF]/40
+                            border border-white/20 text-white/60
+                            hover:bg-white/10 hover:text-white hover:border-white/40
                             transition-all duration-200"
                         >
                           SCAN NOW
@@ -363,17 +364,17 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
               </div>
             ))}
           </div>
-        </div>
+        </GlassPanel>
       )}
 
       {/* Weather section (right panel only) */}
       {side === 'right' && weather && (
-        <div className="border border-[#00E5FF]/10 rounded bg-[#050D15]/80 backdrop-blur-sm p-2.5">
+        <GlassPanel className="p-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-[7px] font-share-tech tracking-[0.2em] text-[#00E5FF]/30 uppercase">
+            <span className="text-[7px] font-share-tech tracking-[0.2em] text-white/30 uppercase">
               WEATHER
             </span>
-            <span className="text-[7px] font-share-tech tabular-nums text-[#00E5FF]/40">
+            <span className="text-[7px] font-share-tech tabular-nums text-white/40">
               London
             </span>
           </div>
@@ -396,7 +397,7 @@ export function ArcMonitorPanel({ side, quickActions, weather }: ArcMonitorPanel
               </div>
             </div>
           </div>
-        </div>
+        </GlassPanel>
       )}
     </motion.div>
   )

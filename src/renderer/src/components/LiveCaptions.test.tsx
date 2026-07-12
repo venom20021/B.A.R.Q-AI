@@ -42,7 +42,6 @@ const defaultProps = {
   isSpeaking: false,
   isProcessing: false,
   conversationActive: false,
-  isListening: false,
 }
 
 beforeEach(() => {
@@ -407,9 +406,9 @@ describe('edge cases', () => {
     expect(screen.getByText((content) => content.startsWith('A.'))).toBeInTheDocument()
   })
 
-  it('handles isListening prop without conversation (no display)', () => {
-    const { container } = render(<LiveCaptions {...defaultProps} isListening={true} />)
-    // isListening alone shouldn't show anything
+  it('handles listening state without conversation (no display)', () => {
+    const { container } = render(<LiveCaptions {...defaultProps} />)
+    // Without any content, nothing should render
     expect(container.innerHTML).toBe('')
   })
 

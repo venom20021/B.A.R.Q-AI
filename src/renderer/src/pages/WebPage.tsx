@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Globe, Music, TrendingUp, CloudSun, Map, Image as ImageIcon, Loader2, ExternalLink } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 export function WebPage(): JSX.Element {
   const [url, setUrl] = useState('')
@@ -20,13 +21,11 @@ export function WebPage(): JSX.Element {
     if (!url.trim()) return
     setBrowsing(true)
     try {
-      const resp = await window.barq?.python.request('/web/browse', {
-        method: 'POST',
-        body: JSON.stringify({ url: url.startsWith('http') ? url : `https://${url}`, action: 'navigate' }),
-        headers: { 'Content-Type': 'application/json' },
+      const data = await api<{ title?: string; body_text?: string; status?: string }>('/web/browse', {
+        url: url.startsWith('http') ? url : `https://${url}`,
+        action: 'navigate',
       })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { title?: string; body_text?: string; status?: string }
+      if (data) {
         setBrowseResult(data.title || data.body_text || data.status || 'No content')
       }
     } catch {
@@ -40,8 +39,8 @@ export function WebPage(): JSX.Element {
     setStockLoading(true)
     setStockData(null)
     try {
-      const resp = await window.barq?.python.request(`/web/stocks/${encodeURIComponent(ticker.toUpperCase())}`)
-      if (resp && typeof resp === 'object') setStockData(resp as typeof stockData)
+      const data = await api(`/web/stocks/${encodeURIComponent(ticker.toUpperCase())}`)
+      if (data && typeof data === 'object') setStockData(data as typeof stockData)
     } catch { /* ignore */ }
     setStockLoading(false)
   }, [ticker])
@@ -51,8 +50,8 @@ export function WebPage(): JSX.Element {
     setWeatherLoading(true)
     setWeather(null)
     try {
-      const resp = await window.barq?.python.request(`/web/weather?city=${encodeURIComponent(city)}`)
-      if (resp && typeof resp === 'object') setWeather(resp as typeof weather)
+      const data = await api(`/web/weather?city=${encodeURIComponent(city)}`)
+      if (data && typeof data === 'object') setWeather(data as typeof weather)
     } catch { /* ignore */ }
     setWeatherLoading(false)
   }, [city])
@@ -62,15 +61,11 @@ export function WebPage(): JSX.Element {
     setGenerating(true)
     setImageUrl('')
     try {
-      const resp = await window.barq?.python.request('/web/images/generate', {
-        method: 'POST',
-        body: JSON.stringify({ prompt: imagePrompt, style: 'auto' }),
-        headers: { 'Content-Type': 'application/json' },
+      const data = await api<{ image_url?: string; status?: string }>('/web/images/generate', {
+        prompt: imagePrompt,
+        style: 'auto',
       })
-      if (resp && typeof resp === 'object') {
-        const data = resp as { image_url?: string; status?: string }
-        if (data.image_url) setImageUrl(data.image_url)
-      }
+      if (data?.image_url) setImageUrl(data.image_url)
     } catch { /* ignore */ }
     setGenerating(false)
   }, [imagePrompt])
@@ -102,7 +97,7 @@ export function WebPage(): JSX.Element {
           <p className="text-xs font-exo text-dim-400 mb-3">Say: &quot;Play some music&quot; or &quot;Skip track&quot;</p>
           <div className="flex gap-2">
             {['play', 'pause', 'skip'].map((action) => (
-              <button key={action} onClick={async () => { await window.barq?.python.request('/web/spotify', { method: 'POST', body: JSON.stringify({ action }), headers: { 'Content-Type': 'application/json' } }) }} className="btn-ghost-cyan text-xs capitalize">{action}</button>
+              <button key={action} onClick={async () => { await api('/web/spotify', { action }) }} className="btn-ghost-cyan text-xs capitalize">{action}</button>
             ))}
           </div>
         </motion.div>

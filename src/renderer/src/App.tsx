@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
+import { api } from './utils/api'
 import {
   MemoryRouter, Routes, Route, useNavigate, useLocation,
 } from 'react-router-dom'
@@ -173,7 +174,7 @@ function AppContent(): JSX.Element {
   useEffect(() => {
     const check = async () => {
       try {
-        const resp = await window.barq?.python.request('/health')
+        const resp = await api('/health')
         setIsConnected(resp !== undefined)
       } catch {
         setIsConnected(false)
@@ -313,7 +314,7 @@ function AppContent(): JSX.Element {
           {/* Sidebar is fixed-position, add left padding to main content */}
           <Sidebar currentRoute={location.pathname} onNavigate={navigate} />
 
-          <main className="flex-1 flex flex-col overflow-hidden ml-16">
+          <main className="flex-1 flex flex-col overflow-hidden pb-16">
             <div className="flex-1 overflow-y-auto relative">
               {/* Scanline overlay */}
               <div

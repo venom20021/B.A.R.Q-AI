@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, startTransition } from 'react'
 import { Search, FileText, Plus, Loader2, Trash2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
+import { api } from '../utils/api'
+
 interface MemoryItem {
   key: string
   value: string
@@ -28,11 +30,8 @@ export function MemoryPage(): JSX.Element {
   const fetchMemories = useCallback(async () => {
     setLoadingMemories(true)
     try {
-      const resp = await window.barq?.python.request('/memory/memory')
-      if (resp && typeof resp === 'object') {
-        const data = resp as { items?: MemoryItem[] }
-        setMemories(data.items ?? [])
-      }
+      const resp = await api<{ items?: MemoryItem[] }>('/memory/memory')
+      if (resp) setMemories(resp.items ?? [])
     } catch { setMemories([]) }
     setLoadingMemories(false)
   }, [])
@@ -40,11 +39,8 @@ export function MemoryPage(): JSX.Element {
   const fetchNotes = useCallback(async () => {
     setLoadingNotes(true)
     try {
-      const resp = await window.barq?.python.request('/memory/notes')
-      if (resp && typeof resp === 'object') {
-        const data = resp as { notes?: Note[] }
-        setNotes(data.notes ?? [])
-      }
+      const resp = await api<{ notes?: Note[] }>('/memory/notes')
+      if (resp) setNotes(resp.notes ?? [])
     } catch { setNotes([]) }
     setLoadingNotes(false)
   }, [])
@@ -56,18 +52,15 @@ export function MemoryPage(): JSX.Element {
     }
     setSearching(true)
     try {
-      const resp = await window.barq?.python.request(`/memory/memory/search?query=${encodeURIComponent(searchQuery)}`)
-      if (resp && typeof resp === 'object') {
-        const data = resp as { results?: MemoryItem[] }
-        setSearchResults(data.results ?? [])
-      }
+      const resp = await api<{ results?: MemoryItem[] }>(`/memory/memory/search?query=${encodeURIComponent(searchQuery)}`)
+      if (resp) setSearchResults(resp.results ?? [])
     } catch { setSearchResults([]) }
     setSearching(false)
   }, [searchQuery])
 
   const deleteMemory = useCallback(async (key: string) => {
     try {
-      await window.barq?.python.request(`/memory/memory/${encodeURIComponent(key)}`, { method: 'DELETE' })
+      await api(`/memory/memory/${encodeURIComponent(key)}`, { method: 'DELETE' })
       setMemories((prev) => prev.filter((m) => m.key !== key))
     } catch { /* ignore */ }
   }, [])

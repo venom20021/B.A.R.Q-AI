@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
+import { api } from '../utils/api'
 import {
   Search, Filter, ExternalLink, CheckCircle,
   Loader2, Activity, BarChart3, Mail, Send, RefreshCw,
@@ -174,7 +175,7 @@ function JobListings(): JSX.Element {
   const fetchJobs = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await window.barq?.python.request('/jobs/matches?limit=50')
+      const resp = await api('/jobs/matches?limit=50')
       const data = (resp as { success?: boolean; data?: { matches?: Record<string, unknown>[] } })?.data
       const matches = data?.matches ?? []
       setJobs(matches.map((m) => {
@@ -217,7 +218,7 @@ function JobListings(): JSX.Element {
     if (pollRef.current) clearInterval(pollRef.current)
     pollRef.current = setInterval(async () => {
       try {
-        const resp = await window.barq?.python.request('/jobs/scan/progress')
+        const resp = await api('/jobs/scan/progress')
         if (resp && typeof resp === 'object') {
           const p = resp as Record<string, unknown>
           setProgress({
@@ -255,7 +256,7 @@ function JobListings(): JSX.Element {
       message: 'Starting scan (13 boards)...', started_at: Date.now() / 1000, elapsed_seconds: 0,
     })
     try {
-      await window.barq?.python.request('/jobs/scan')
+      await api('/jobs/scan')
       startPolling()
       setTimeout(() => {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; setScanning(false); fetchJobs() }

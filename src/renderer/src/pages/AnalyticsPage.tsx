@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
+import { api } from '../utils/api'
 import {
   TrendingUp,
   Users,
@@ -38,44 +39,38 @@ export function AnalyticsPage(): JSX.Element {
   }[]>([])
 
   const fetchAnalytics = useCallback(async () => {
-    try {
-      const [careerResp, socialResp] = await Promise.allSettled([
-        window.barq?.python.request('/analytics/career') ?? Promise.resolve(undefined),
-        window.barq?.python.request('/analytics/social') ?? Promise.resolve(undefined),
-      ])
+    const [careerResp, socialResp] = await Promise.all([
+      api<{ funnel?: Record<string, number> }>('/analytics/career'),
+      api<{ overview?: { platforms?: { platform: string; followers: number; views: number; revenue: number; engagement?: number }[]; total_revenue?: number } }>('/analytics/social'),
+    ])
 
-      // Parse career data
-      const career = (careerResp.status === 'fulfilled' ? careerResp.value : undefined) as
-        { success?: boolean; data?: { funnel?: Record<string, number> } } | undefined
-      const funnel = career?.data?.funnel
+    // Parse career data
+    const funnel = careerResp?.funnel
+    if (funnel) {
       setCareerData({
-        jobsScanned: funnel?.['jobs_scanned'] ?? 0,
-        matchesFound: funnel?.['matches_found'] ?? 0,
-        applications: funnel?.['applications'] ?? 0,
-        interviews: funnel?.['interviews'] ?? 0,
-        offers: funnel?.['offers'] ?? 0,
+        jobsScanned: funnel['jobs_scanned'] ?? 0,
+        matchesFound: funnel['matches_found'] ?? 0,
+        applications: funnel['applications'] ?? 0,
+        interviews: funnel['interviews'] ?? 0,
+        offers: funnel['offers'] ?? 0,
       })
-
-      // Parse social data
-      const social = (socialResp.status === 'fulfilled' ? socialResp.value : undefined) as
-        { success?: boolean; data?: { overview?: { platforms?: { platform: string; followers: number; views: number; revenue: number; engagement?: number }[]; total_revenue?: number } } } | undefined
-      const overview = social?.data?.overview
-      const plats = overview?.platforms ?? []
-      setSocialData({
-        totalViews: plats.reduce((s, p) => s + (p.views ?? 0), 0),
-        totalEngagement: plats.reduce((s, p) => s + (p.engagement ?? 0), 0),
-        followersGained: plats.reduce((s, p) => s + (p.followers ?? 0), 0),
-        revenue: overview?.total_revenue ?? 0,
-      })
-      setPlatforms(plats.map((p) => ({
-        name: p.platform,
-        followers: p.followers ?? 0,
-        views: p.views ?? 0,
-        revenue: p.revenue ?? 0,
-      })))
-    } catch {
-      // Backend unavailable — keep default empty state
     }
+
+    // Parse social data
+    const overview = socialResp?.overview
+    const plats = overview?.platforms ?? []
+    setSocialData({
+      totalViews: plats.reduce((s, p) => s + (p.views ?? 0), 0),
+      totalEngagement: plats.reduce((s, p) => s + (p.engagement ?? 0), 0),
+      followersGained: plats.reduce((s, p) => s + (p.followers ?? 0), 0),
+      revenue: overview?.total_revenue ?? 0,
+    })
+    setPlatforms(plats.map((p) => ({
+      name: p.platform,
+      followers: p.followers ?? 0,
+      views: p.views ?? 0,
+      revenue: p.revenue ?? 0,
+    })))
   }, [])
 
   useEffect(() => {

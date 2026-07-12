@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Bell, CheckCheck, X, AlertTriangle, Info, Zap } from 'lucide-react'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 
@@ -185,18 +186,24 @@ export function NotificationCenter(): JSX.Element {
         )}
       </button>
 
-      {/* Dropdown Panel */}
-      {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 overflow-hidden z-50">
-          {/* Void backdrop with glass morphism */}
-          <div className="relative rounded-xl bg-void-800/90 backdrop-blur-2xl border border-cyan-500/10 shadow-glass shadow-2xl shadow-black/50">
+      {/* Dropdown Panel — glassmorphism matching navbar & dock */}
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 6 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            className="absolute right-0 bottom-full mb-2 w-80 sm:w-96 overflow-hidden z-50"
+          >
+          <div className="relative rounded-xl bg-void-900/80 backdrop-blur-2xl border border-white/[0.06] shadow-2xl">
             {/* Glowing top border accent */}
-            <div className="absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-cyan-400/40 to-transparent" />
+            <div className="absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
-            {/* Scanline overlay */}
+            {/* Subtle scanline texture */}
             <div className="absolute inset-0 pointer-events-none opacity-[0.015]"
               style={{
-                backgroundImage: 'repeating-linear-gradient(transparent 0px, transparent 2px, rgba(0,240,255,0.03) 2px, rgba(0,240,255,0.03) 4px)',
+                backgroundImage: 'repeating-linear-gradient(transparent 0px, transparent 2px, rgba(255,255,255,0.03) 2px, rgba(255,255,255,0.03) 4px)',
               }}
             />
 
@@ -273,8 +280,9 @@ export function NotificationCenter(): JSX.Element {
             )}
             </div>
           </div>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   )
 }

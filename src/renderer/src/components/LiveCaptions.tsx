@@ -13,9 +13,9 @@ interface LiveCaptionsProps {
   isProcessing: boolean
   /** Whether conversation mode is active */
   conversationActive: boolean
-  /** Whether the voice detector is running */
-  isListening: boolean
 }
+
+// Note: `isListening` prop is accepted by callers but unused internally (kept for API consistency)
 
 /**
  * LiveCaptions — a sleek glassmorphic overlay floating at the bottom-center
@@ -34,7 +34,6 @@ export function LiveCaptions({
   isSpeaking,
   isProcessing,
   conversationActive,
-  isListening,
 }: LiveCaptionsProps): JSX.Element {
   const [visible, setVisible] = useState(false)
   const [displayStt, setDisplayStt] = useState('')

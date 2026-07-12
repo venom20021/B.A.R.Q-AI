@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  LayoutDashboard, Briefcase, Video, BarChart3, Settings, Mic,
+  LayoutDashboard, Briefcase, Video, BarChart3, Settings,
   FolderOpen, Terminal, Monitor, Globe, Smartphone, Search,
-  FileText, MessageSquare, Palette, ChevronDown, PanelRightOpen,
+  FileText, MessageSquare, Palette, PanelRightOpen,
   BrainCircuit, Cpu, Eye,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -60,166 +60,196 @@ const navSections: { label: string; items: NavItemDef[] }[] = [
   },
 ]
 
-export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element {
-  const [expanded, setExpanded] = useState(false)
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+// ─── Dock size presets ──────────────────────────────────────────────
 
-  const toggleSection = (label: string): void => {
-    setCollapsedSections((prev) => {
-      const next = new Set(prev)
-      if (next.has(label)) next.delete(label)
-      else next.add(label)
+type DockSize = 'sm' | 'md' | 'lg'
+
+const DOCK_SIZE_KEY = 'barq_dock_size'
+
+const DOCK_SIZES: Record<DockSize, { btn: string; icon: string; px: string; py: string }> = {
+  sm: { btn: 'w-6 h-6', icon: 'w-2.5 h-2.5', px: 'px-1.5', py: 'py-0.5' },
+  md: { btn: 'w-8 h-8', icon: 'w-3.5 h-3.5', px: 'px-2', py: 'py-1' },
+  lg: { btn: 'w-10 h-10', icon: 'w-4 h-4', px: 'px-3', py: 'py-1.5' },
+}
+
+const SIZE_LABELS: Record<DockSize, string> = { sm: 'S', md: 'M', lg: 'L' }
+
+function getStoredDockSize(): DockSize {
+  try {
+    const stored = localStorage.getItem(DOCK_SIZE_KEY)
+    if (stored === 'sm' || stored === 'md' || stored === 'lg') return stored
+  } catch { /* ignore */ }
+  return 'md'
+}
+
+export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [dockSize, setDockSize] = useState<DockSize>(getStoredDockSize)
+  const [isVisible, setIsVisible] = useState(true)
+  const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const startupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isOverDockRef = useRef(false)
+  const size = DOCK_SIZES[dockSize]
+
+  // ── Auto-hide after 3s on initial load (guarantees hide even without mouse movement) ─
+  useEffect(() => {
+    startupTimerRef.current = setTimeout(() => {
+      setIsVisible(false)
+    }, 3000)
+    return () => {
+      if (startupTimerRef.current) clearTimeout(startupTimerRef.current)
+    }
+  }, [])
+
+  // ── Broadcast visibility changes so the navbar can intensify its blur ─
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent('barq:dock-visibility', { detail: { visible: isVisible } }),
+    )
+  }, [isVisible])
+
+  // ── macOS-style auto-hide: show when mouse nears bottom edge ─────
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      const nearBottom = window.innerHeight - e.clientY <= 10
+      if (nearBottom) {
+        // Cancel startup timer on first interaction
+        if (startupTimerRef.current) {
+          clearTimeout(startupTimerRef.current)
+          startupTimerRef.current = null
+        }
+        if (hideTimeoutRef.current) {
+          clearTimeout(hideTimeoutRef.current)
+          hideTimeoutRef.current = null
+        }
+        setIsVisible(true)
+      } else if (!isOverDockRef.current) {
+        if (!hideTimeoutRef.current) {
+          hideTimeoutRef.current = setTimeout(() => {
+            setIsVisible(false)
+            hideTimeoutRef.current = null
+          }, 800)
+        }
+      }
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current)
+    }
+  }, [])
+
+  const handleMouseEnter = useCallback(() => {
+    isOverDockRef.current = true
+    // Cancel startup timer if user hovers dock before 3s elapses
+    if (startupTimerRef.current) {
+      clearTimeout(startupTimerRef.current)
+      startupTimerRef.current = null
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current)
+      hideTimeoutRef.current = null
+    }
+    setIsVisible(true)
+  }, [])
+
+  const handleMouseLeave = useCallback(() => {
+    isOverDockRef.current = false
+    hideTimeoutRef.current = setTimeout(() => {
+      setIsVisible(false)
+      hideTimeoutRef.current = null
+    }, 400)
+  }, [])
+
+  // ── Cycle dock size ───────────────────────────────────────────────
+  const cycleDockSize = useCallback(() => {
+    setDockSize((prev) => {
+      const next: DockSize = prev === 'sm' ? 'md' : prev === 'md' ? 'lg' : 'sm'
+      try { localStorage.setItem(DOCK_SIZE_KEY, next) } catch { /* ignore */ }
       return next
     })
-  }
+  }, [])
 
-  // Use transform for expand/collapse to avoid layout reflow
-  const sidebarWidth = 64 // w-16 in px
-  const expandedWidth = 224 // w-56 in px
+  // Flatten all nav items
+  const flattenedItems: NavItemDef[] = []
+  navSections.forEach((section) => {
+    section.items.forEach((item) => {
+      flattenedItems.push(item)
+    })
+  })
 
   return (
-    <aside
-      className={`fixed left-0 top-0 h-full flex flex-col bg-void-800/90 backdrop-blur-xl border-r border-cyan-500/10 transition-transform duration-200 ease-out z-40 ${
-        expanded ? 'shadow-2xl' : ''
-      }`}
-      style={{
-        width: `${expandedWidth}px`,
-        transform: expanded ? 'translateX(0)' : `translateX(-${expandedWidth - sidebarWidth}px)`,
-      }}
-      onMouseEnter={() => setExpanded(true)}
-      onMouseLeave={() => setExpanded(false)}
-    >
-      {/* Left-edge glow line */}
-      <div className="absolute left-0 top-0 bottom-0 w-px bg-gradient-to-b from-transparent via-cyan-400/30 to-transparent" />
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 max-w-[calc(100vw-32px)]">
+      <AnimatePresence>
+        {isVisible && (
+          <motion.div
+            initial={{ opacity: 0, y: 40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 40 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
+            className={`flex items-center gap-0.5 ${size.px} ${size.py} rounded-xl backdrop-blur-2xl bg-void-900/70 border border-white/[0.06] shadow-2xl`}
+          >
+            {/* Nav items */}
+            <div
+              ref={scrollRef}
+              className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
+            >
+              {flattenedItems.map((item) => {
+                const isActive = currentRoute === item.path
+                const Icon = item.icon
 
-      {/* Logo */}
-      <div className={`h-10 flex items-center border-b border-cyan-500/10 ${expanded ? 'px-4 justify-start' : 'px-2 justify-end'}`}>
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center shadow-glow-cyan-sm">
-            <Mic className="w-3.5 h-3.5 text-[#0A0A0F]" />
-          </div>
-          <AnimatePresence>
-            {expanded && (
-              <motion.div
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                className="flex items-center gap-1.5 overflow-hidden"
-              >
-                <span className="text-sm font-orbitron font-bold text-cyan-300 tracking-wider">
-                  BARQ
-                </span>
-                <span className="text-[8px] font-share-tech text-holographic bg-holographic/10 px-1 py-0.5 rounded">
-                  v2
-                </span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      {/* Navigation */}
-      <nav className="flex-1 py-3 overflow-y-auto scroll-cyan">
-        {navSections.map((section) => {
-          const isCollapsed = collapsedSections.has(section.label)
-          return (
-            <div key={section.label} className="mb-1">
-              {/* Section header */}
-              <AnimatePresence>
-                {expanded && (
-                  <motion.button
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    onClick={() => toggleSection(section.label)}
-                    className="flex w-full items-center justify-between px-4 py-1"
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => onNavigate(item.path)}
+                    className={`relative flex items-center justify-center ${size.btn} rounded-lg transition-all duration-150 group`}
+                    title={item.label}
                   >
-                    <span className="text-hud font-share-tech text-dim-400 uppercase tracking-[0.15em]">
-                      {section.label}
-                    </span>
-                    <ChevronDown
-                      className={`w-2.5 h-2.5 text-dim-500 transition-transform ${
-                        isCollapsed ? '-rotate-90' : ''
+                    <Icon
+                      className={`${size.icon} transition-all duration-200 ${
+                        isActive
+                          ? 'text-cyan-300 drop-shadow-[0_0_6px_rgba(34,211,238,0.4)]'
+                          : 'text-white/30 group-hover:text-white/60'
                       }`}
                     />
-                  </motion.button>
-                )}
-              </AnimatePresence>
-              <ul className="space-y-0.5 px-1.5">
-                {section.items.map((item) => {
-                  const isActive = currentRoute === item.path
-                  const Icon = item.icon
-                  return (
-                    <li key={item.path}>
-                      <button
-                        onClick={() => onNavigate(item.path)}
-                        className={`w-full flex items-center gap-3 rounded-lg transition-all duration-150 group ${
-                          expanded ? 'px-3 py-2' : 'px-2 py-2 justify-end'
-                        } ${
-                          isActive
-                            ? 'bg-cyan-500/10 text-cyan-300'
-                            : 'text-dim-400 hover:text-ghost hover:bg-void-600/50'
-                        }`}
-                        title={item.label}
-                      >
-                        <div className="relative flex-shrink-0">
-                          <Icon className={`w-4 h-4 transition-all duration-200 ${
-                            isActive ? 'text-cyan-300' : 'group-hover:text-cyan-300/60'
-                          }`} />
-                          {isActive && (
-                            <span className="absolute -left-3 top-1/2 -translate-y-1/2 w-1 h-5 rounded-r-full bg-cyan-400 shadow-glow-cyan-sm" />
-                          )}
-                        </div>
-                        <AnimatePresence>
-                          {expanded && (
-                            <motion.span
-                              initial={{ opacity: 0, x: -5 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, x: -5 }}
-                              className={`text-sm font-rajdhani font-semibold whitespace-nowrap ${
-                                isActive ? 'text-cyan-300' : ''
-                              }`}
-                            >
-                              {item.label}
-                            </motion.span>
-                          )}
-                        </AnimatePresence>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-          )
-        })}
-      </nav>
 
-      {/* Bottom status */}
-      <div className="p-3 border-t border-cyan-500/8">
-        <div className={`flex items-center ${expanded ? 'justify-between' : 'justify-end gap-2'}`}>
-          <AnimatePresence>
-            {expanded && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex items-center gap-2"
+                    {/* Active glow */}
+                    {isActive && (
+                      <motion.span
+                        layoutId="dock-active-glow"
+                        className="absolute inset-0 rounded-lg bg-cyan-400/10 shadow-[0_0_12px_rgba(34,211,238,0.15)]"
+                      />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Status area */}
+            <div className="flex items-center gap-0.5 pl-2 ml-0.5 border-l border-white/[0.05] shrink-0">
+              <PythonHealthBadge />
+              <NotificationCenter />
+              {/* Dock size cycle */}
+              <button
+                onClick={cycleDockSize}
+                className="p-1 rounded-lg text-white/25 hover:text-cyan-300 hover:bg-white/5 transition-all text-[9px] font-mono font-semibold tracking-wide"
+                title={`Dock size: ${SIZE_LABELS[dockSize]} — click to change`}
               >
-                <PythonHealthBadge />
-              </motion.div>
-            )}
-          </AnimatePresence>
-          <div className="flex items-center gap-0.5">
-            <NotificationCenter />
-            <button
-              className="p-1.5 rounded-lg text-dim-400 hover:text-cyan-300 hover:bg-cyan-500/5 transition-colors"
-              title="Quick Overlay (Ctrl+Shift+I)"
-            >
-              <PanelRightOpen className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </aside>
+                {SIZE_LABELS[dockSize]}
+              </button>
+              <button
+                className="p-1 rounded-lg text-white/25 hover:text-cyan-300 hover:bg-white/5 transition-all"
+                title="Quick Overlay (Ctrl+Shift+I)"
+              >
+                <PanelRightOpen className="w-3 h-3" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }

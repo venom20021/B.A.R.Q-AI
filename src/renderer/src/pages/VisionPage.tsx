@@ -5,6 +5,7 @@ import {
   ChevronDown, ChevronUp, Trash2, Clock,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { api } from '../utils/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -81,13 +82,8 @@ export function VisionPage(): JSX.Element {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await window.barq?.python.request('/vision/check')
-        if (resp && typeof resp === 'object') {
-          const data = resp as { capabilities?: Capabilities }
-          if (data.capabilities) {
-            setCaps(data.capabilities)
-          }
-        }
+        const data = await api<{ capabilities?: Capabilities }>('/vision/check')
+        if (data?.capabilities) setCaps(data.capabilities)
       } catch { /* ignore */ }
     })()
   }, [])
@@ -132,15 +128,9 @@ export function VisionPage(): JSX.Element {
       : { prompt: trimmedPrompt, camera_index: cameraIndex }
 
     try {
-      const resp = await window.barq?.python.request(endpoint, {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      const data = await api<VisionResponse>(endpoint, body)
 
-      if (resp && typeof resp === 'object') {
-        const data = resp as VisionResponse
-
+      if (data) {
         if (data.status === 'unavailable') {
           const msg = String(data.message || 'Vision service unavailable')
           setError(msg)
@@ -198,19 +188,14 @@ export function VisionPage(): JSX.Element {
     const trimmedPrompt = prompt.trim() || "What do you see? Be concise."
 
     try {
-      const resp = await window.barq?.python.request('/vision/analyze', {
-        method: 'POST',
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          angle: source,
-          camera_index: cameraIndex,
-          voice_response: true,
-        }),
-        headers: { 'Content-Type': 'application/json' },
+      const data = await api<VisionResponse>('/vision/analyze', {
+        prompt: trimmedPrompt,
+        angle: source,
+        camera_index: cameraIndex,
+        voice_response: true,
       })
 
-      if (resp && typeof resp === 'object') {
-        const data = resp as VisionResponse
+      if (data) {
         if (data.status === 'unavailable') {
           setError(String(data.message || 'Voice vision unavailable'))
           detectApiKeyMissing(String(data.message || ''))

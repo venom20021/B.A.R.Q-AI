@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ShieldOff, AlertTriangle, Check, X, Terminal } from 'lucide-react'
+import { api } from '../utils/api'
 
 interface PendingApproval {
   command: string
@@ -26,17 +27,9 @@ export function ApprovalModal(): JSX.Element {
     setIsResolving(true)
     try {
       // Approve via the command approve endpoint
-      await window.barq?.python.request('/voice/command/approve', {
-        method: 'POST',
-        body: JSON.stringify({ command: pending.command, tier: pending.tier }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/command/approve', { command: pending.command, tier: pending.tier })
       // Execute the approved command
-      await window.barq?.python.request('/voice/command/execute', {
-        method: 'POST',
-        body: JSON.stringify({ command: pending.command }),
-        headers: { 'Content-Type': 'application/json' },
-      })
+      await api('/voice/command/execute', { command: pending.command })
     } catch { /* ignore */ }
     setIsResolving(false)
     setPending(null)

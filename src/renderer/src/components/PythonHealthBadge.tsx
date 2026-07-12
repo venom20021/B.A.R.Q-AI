@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
+import { api } from '../utils/api'
 
 type HealthStatus = 'checking' | 'healthy' | 'unhealthy'
 
@@ -12,7 +13,7 @@ export function PythonHealthBadge(): JSX.Element {
 
     const check = async (): Promise<void> => {
       try {
-        const resp = await window.barq?.python.request('/health')
+        const resp = await api('/health')
         if (!mountedRef.current) return
 
         if (resp && typeof resp === 'object' && 'status' in (resp as Record<string, unknown>) && (resp as Record<string, unknown>).status === 'ok') {

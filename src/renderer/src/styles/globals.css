@@ -38,18 +38,22 @@
 
 @layer components {
   .glass {
-    @apply bg-void-700/60 backdrop-blur-xl border border-cyan-500/10 shadow-glass;
+    @apply bg-void-900/70 backdrop-blur-xl border border-white/[0.06] shadow-lg;
   }
 
   .glass-strong {
-    @apply bg-void-700/80 backdrop-blur-2xl border border-cyan-500/20 shadow-glass;
+    @apply bg-void-900/80 backdrop-blur-2xl border border-white/[0.08] shadow-2xl;
   }
 
   .glass-panel {
-    @apply bg-void-700/50 backdrop-blur-lg border border-cyan-500/10 shadow-glass rounded-xl;
+    @apply bg-void-900/80 backdrop-blur-2xl border border-white/[0.06] rounded-xl shadow-lg;
   }
 
   .glass-card {
+    @apply glass-panel p-5 transition-all duration-300 hover:border-cyan-500/20 hover:shadow-glow-cyan-sm hover:-translate-y-0.5;
+  }
+
+  .glass-card-hover {
     @apply glass-panel p-5 transition-all duration-300 hover:border-cyan-500/20 hover:shadow-glow-cyan-sm hover:-translate-y-0.5;
   }
 

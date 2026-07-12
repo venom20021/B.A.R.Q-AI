@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { api } from '../utils/api'
 import {
   Video, Lightbulb, FileText, Globe, Play, CheckCircle, Loader2,
   Calendar, TrendingUp, Clock, Plus, X, ChevronLeft, ChevronRight,
@@ -189,8 +190,8 @@ export function ContentPage(): JSX.Element {
     try {
       const [, pipelineResp, scriptsResp] = await Promise.allSettled([
         window.barq?.social.trends() ?? Promise.resolve(undefined),
-        window.barq?.python.request('/social/pipeline') ?? Promise.resolve(undefined),
-        window.barq?.python.request('/social/scripts?limit=50') ?? Promise.resolve(undefined),
+        api('/social/pipeline') ?? Promise.resolve(undefined),
+        api('/social/scripts?limit=50') ?? Promise.resolve(undefined),
       ])
 
       const pipelineValue = pipelineResp.status === 'fulfilled' ? pipelineResp.value : undefined
@@ -225,8 +226,8 @@ export function ContentPage(): JSX.Element {
   const fetchCalendar = useCallback(async (year: number, month: number) => {
     try {
       const [monthResp, statsResp] = await Promise.allSettled([
-        window.barq?.python.request(`/social/calendar/month?year=${year}&month=${month}`) ?? Promise.resolve(undefined),
-        window.barq?.python.request('/social/calendar/stats') ?? Promise.resolve(undefined),
+        api(`/social/calendar/month?year=${year}&month=${month}`) ?? Promise.resolve(undefined),
+        api('/social/calendar/stats') ?? Promise.resolve(undefined),
       ])
 
       if (monthResp.status === 'fulfilled' && monthResp.value) {
@@ -258,7 +259,7 @@ export function ContentPage(): JSX.Element {
   const fetchTrends = useCallback(async () => {
     setTrendsLoading(true)
     try {
-      const resp = await window.barq?.python.request('/social/trends')
+      const resp = await api('/social/trends')
       const data = resp && 'data' in resp ? resp.data : resp
       const typedData = data as { trends?: Trend[] } | undefined
       if (typedData?.trends) {
