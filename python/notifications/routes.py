@@ -43,6 +43,11 @@ class UpdateSettingsRequest(BaseModel):
     value: str
 
 
+class TelegramCredentialsRequest(BaseModel):
+    bot_token: str = ""
+    chat_id: str = ""
+
+
 class NotificationSettingsRequest(BaseModel):
     telegram_enabled: Optional[bool] = None
     email_enabled: Optional[bool] = None
@@ -157,6 +162,60 @@ async def update_settings(request: NotificationSettingsRequest):
             await settings_dao.set_setting("content_alerts", str(request.content_alerts).lower(), "notifications")
 
         return {"status": "updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Telegram Credentials ─────────────────────────────────────────────
+
+
+@router.get("/telegram/status", summary="Get Telegram connection status (token configured, last test)")
+async def get_telegram_status():
+    """Get Telegram configuration status (without exposing the full token)."""
+    from config import get_settings
+    cfg = get_settings()
+    token = cfg.telegram_bot_token or await settings_dao.get_setting("telegram_bot_token") or ""
+    chat_id = cfg.telegram_chat_id or await settings_dao.get_setting("telegram_chat_id") or ""
+    return {
+        "configured": bool(token and chat_id),
+        "bot_token_preview": (token[:8] + "..." + token[-4:]) if token and len(token) > 12 else "",
+        "chat_id_preview": (chat_id[:4] + "...") if chat_id else "",
+        "has_token": bool(token),
+        "has_chat_id": bool(chat_id),
+    }
+
+
+class TelegramCredentialsRequest(BaseModel):
+    bot_token: str = ""
+    chat_id: str = ""
+
+
+@router.post("/telegram/credentials", summary="Save Telegram bot token and chat ID")
+async def set_telegram_credentials(request: TelegramCredentialsRequest):
+    """Save Telegram bot token and chat ID to user settings (persisted across restarts)."""
+    try:
+        if request.bot_token:
+            await settings_dao.set_setting("telegram_bot_token", request.bot_token, "notifications")
+        if request.chat_id:
+            await settings_dao.set_setting("telegram_chat_id", request.chat_id, "notifications")
+        return {"status": "saved", "has_token": bool(request.bot_token), "has_chat_id": bool(request.chat_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/telegram/credentials", summary="Get saved Telegram bot token and chat ID (masked)")
+async def get_telegram_credentials():
+    """Get saved Telegram credentials (token is masked for security)."""
+    try:
+        token = await settings_dao.get_setting("telegram_bot_token") or ""
+        chat_id = await settings_dao.get_setting("telegram_chat_id") or ""
+        return {
+            "bot_token": token,
+            "chat_id": chat_id,
+            "bot_token_masked": (token[:8] + "..." + token[-4:]) if len(token) > 12 else ("*" * min(len(token), 8)) if token else "",
+            "has_token": bool(token),
+            "has_chat_id": bool(chat_id),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

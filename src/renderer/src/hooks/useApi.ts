@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, startTransition } from 'react'
 import { api as apiFn } from '../utils/api'
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -176,7 +176,9 @@ export function useApi<T = Record<string, unknown>>(
 
     if (debounceMs > 0) {
       debounceTimerRef.current = setTimeout(() => {
-        void execute()
+        startTransition(() => {
+          void execute()
+        })
       }, debounceMs)
       return () => {
         if (debounceTimerRef.current) {
@@ -185,7 +187,10 @@ export function useApi<T = Record<string, unknown>>(
       }
     }
 
-    void execute()
+    startTransition(() => {
+      void execute()
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [immediate, debounceMs, endpoint, ...deps])
 
   return {

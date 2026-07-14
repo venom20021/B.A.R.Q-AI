@@ -11,6 +11,8 @@ class PythonSidecar {
   private process: ChildProcess | null = null
   private isRunning = false
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
+  private _showVoskLogs = false
+  private _showWhisperLogs = false
 
   /**
    * Kill any existing process holding the sidecar port (Windows only).
@@ -72,11 +74,29 @@ class PythonSidecar {
     })
 
     this.process.stdout?.on('data', (data: Buffer) => {
-      console.log(`[Python] ${data.toString().trim()}`)
+      const text = data.toString().trim()
+      // Whisper/STT related lines have [Speech] prefix or mention "whisper".
+      // Hide them unless the whisper debug toggle is enabled.
+      if (text.includes('[Speech]') || /whisper/i.test(text)) {
+        if (this._showWhisperLogs) {
+          console.log(`[STT] ${text}`)
+        }
+        return
+      }
+      console.log(`[Python] ${text}`)
     })
 
     this.process.stderr?.on('data', (data: Buffer) => {
-      console.error(`[Python Error] ${data.toString().trim()}`)
+      const text = data.toString().trim()
+      // Vosk and other native libraries write verbose INFO logs to stderr.
+      // Lines starting with "LOG (" are informational (model loading etc.) — show at debug level.
+      if (text.startsWith('LOG (')) {
+        if (this._showVoskLogs) {
+          console.log(`[Vosk] ${text}`)
+        }
+        return
+      }
+      console.warn(`[Python stderr] ${text}`)
     })
 
     this.process.on('exit', (code) => {
@@ -128,6 +148,36 @@ class PythonSidecar {
     }
 
     this.isRunning = false
+  }
+
+  /**
+   * Get whether Vosk verbose logs are shown in the console.
+   */
+  get showVoskLogs(): boolean {
+    return this._showVoskLogs
+  }
+
+  /**
+   * Set whether Vosk verbose logs are shown in the console.
+   */
+  set showVoskLogs(enabled: boolean) {
+    this._showVoskLogs = enabled
+    console.log(`[PythonSidecar] Vosk verbose logs ${enabled ? 'enabled' : 'disabled'}`)
+  }
+
+  /**
+   * Get whether Whisper/STT verbose logs are shown in the console.
+   */
+  get showWhisperLogs(): boolean {
+    return this._showWhisperLogs
+  }
+
+  /**
+   * Set whether Whisper/STT verbose logs are shown in the console.
+   */
+  set showWhisperLogs(enabled: boolean) {
+    this._showWhisperLogs = enabled
+    console.log(`[PythonSidecar] Whisper/STT verbose logs ${enabled ? 'enabled' : 'disabled'}`)
   }
 
   /**

@@ -26,6 +26,11 @@ interface BarqAPI {
     followupCandidates: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     scheduleFollowups: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     sendFollowup: (data: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    pipeline: {
+      run: (settings?: Record<string, unknown>) => Promise<{ success: boolean; data?: unknown; error?: string }>
+      progress: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+      settings: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    }
   }
   social: {
     trends: () => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -107,6 +112,12 @@ interface BarqAPI {
     stocks: (ticker: string, period?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     weather: (city: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     generateImage: (prompt: string, style?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+  }
+  debug: {
+    getVoskLogs: () => Promise<{ success: boolean; data?: { enabled: boolean }; error?: string }>
+    setVoskLogs: (enabled: boolean) => Promise<{ success: boolean; data?: { enabled: boolean }; error?: string }>
+    getWhisperLogs: () => Promise<{ success: boolean; data?: { enabled: boolean }; error?: string }>
+    setWhisperLogs: (enabled: boolean) => Promise<{ success: boolean; data?: { enabled: boolean }; error?: string }>
   }
   overlay: {
     show: () => void

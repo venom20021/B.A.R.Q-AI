@@ -20,8 +20,7 @@ interface MockWS {
 }
 
 let mockWs: MockWS | null = null
-
-const OriginalWebSocket = globalThis.WebSocket
+let originalWebSocket: typeof globalThis.WebSocket | null = null
 
 class TestWebSocket {
   onopen: ((event: Event) => void) | null = null
@@ -34,6 +33,7 @@ class TestWebSocket {
   url: string
   constructor(url: string) {
     this.url = url
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     mockWs = this
   }
 }
@@ -111,13 +111,17 @@ import { DashboardPage } from './DashboardPage'
 
 function setupTestEnv() {
   mockWs = null
+  originalWebSocket = globalThis.WebSocket
   globalThis.WebSocket = TestWebSocket as unknown as typeof globalThis.WebSocket
 }
 
 function teardownTestEnv() {
   cleanup()
   mockWs = null
-  globalThis.WebSocket = OriginalWebSocket
+  if (originalWebSocket) {
+    globalThis.WebSocket = originalWebSocket
+    originalWebSocket = null
+  }
 }
 
 async function openWsAndRender(): Promise<void> {

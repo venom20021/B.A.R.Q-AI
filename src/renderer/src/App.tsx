@@ -314,7 +314,7 @@ function AppContent(): JSX.Element {
           {/* Sidebar is fixed-position, add left padding to main content */}
           <Sidebar currentRoute={location.pathname} onNavigate={navigate} />
 
-          <main className="flex-1 flex flex-col overflow-hidden pb-16">
+          <main className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto relative">
               {/* Scanline overlay */}
               <div

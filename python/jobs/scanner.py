@@ -28,6 +28,18 @@ JOB_BOARDS = {
     "lever": "https://api.lever.co/v0/postings",                 # Lever API
     "workday": "https://www.myworkdayjobs.com",                   # Workday (Playwright)
     "bamboohr": "https://api.bamboohr.com/api/gateway.php",       # BambooHR API
+
+    # ─── New v3.0 Custom Job Boards ──────────────────────────────────
+    "himalayas": "https://himalayas.app/jobs",                      # Himalayas — AI-matched remote jobs
+    "wellfound": "https://wellfound.com/jobs",                     # Wellfound (AngelList) — startup jobs
+    "weworkremotely": "https://weworkremotely.com",                 # WeWorkRemotely — curated remote jobs
+    "workingnomads": "https://www.workingnomads.com/jobs",         # WorkingNomads — remote job board
+    "instahyre": "https://www.instahyre.com/job-search",            # Instahyre — India tech hiring
+    "protocol": "https://www.protocoljobs.ai/jobs",                # Protocol — AI-matched job search
+    "welcometothejungle": "https://www.welcometothejungle.com/en/jobs",  # Welcome to the Jungle
+    "cutshort": "https://cutshort.io/jobs",                        # Cutshort — India tech hiring
+    "relocateme": "https://relocate.me/search",                     # Relocate.me — relocation jobs
+    "hnhiring": "https://hnhiring.com",                            # HN "Who's Hiring" aggregator
 }
 
 # Progress tracking — module-level singleton so routes can share state
@@ -681,6 +693,488 @@ class JobScanner:
             print(f"[Scanner] HN error: {e}")
             return []
 
+    # ─── New v3.0 Custom Board Scrapers ────────────────────────────────
+
+    async def _scan_himalayas(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Himalayas.app for remote job listings."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://himalayas.app/jobs",
+                params={"q": keyword_str, "remote": "true"},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], article, li[class*="job"]'):
+                title_el = card.select_one('h2, h3, [class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el and company_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    link_el = card.select_one('a[href]') or title_el.parent if title_el.parent and title_el.parent.name == 'a' else None
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip(),
+                        "location": "Remote",
+                        "url": link_el.get("href", "") if link_el else "",
+                        "source_board": "himalayas",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on Himalayas")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Himalayas error: {e}")
+            return []
+
+    async def _scan_wellfound(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Wellfound (AngelList) for startup jobs."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://wellfound.com/jobs",
+                params={"q": keyword_str, "remote": "true"},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="listing"], [class*="card"]'):
+                title_el = card.select_one('h2, h3, [class*="title"], a[class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el and company_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip(),
+                        "location": "Remote / Onsite",
+                        "url": "",
+                        "source_board": "wellfound",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on Wellfound")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Wellfound error: {e}")
+            return []
+
+    async def _scan_weworkremotely(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape WeWorkRemotely — has a free JSON endpoint."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            # Try JSON API first
+            try:
+                resp = await self.client.get(
+                    "https://weworkremotely.com/categories/remote-jobs.json",
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    jobs = []
+                    for job in data[:30]:
+                        if isinstance(job, dict):
+                            title = job.get("title", "") or job.get("name", "")
+                            if title:
+                                title_lower = title.lower()
+                                if not any(k.lower() in title_lower for k in keywords):
+                                    continue
+                                jobs.append({
+                                    "title": title,
+                                    "company": job.get("company", "") or job.get("organization", ""),
+                                    "location": "Remote",
+                                    "url": job.get("url", ""),
+                                    "source_board": "weworkremotely",
+                                    "posted_date": job.get("date", "") or job.get("pub_date", ""),
+                                    "salary_min": 0, "salary_max": 0,
+                                    "description": job.get("description", "")[:2000],
+                                    "employment_type": "full_time",
+                                })
+                    if jobs:
+                        print(f"[Scanner] Found {len(jobs)} jobs on WeWorkRemotely (API)")
+                        return jobs
+            except Exception:
+                pass
+
+            # Fallback: scrape web
+            resp = await self.client.get(
+                "https://weworkremotely.com/categories/remote-full-time-jobs",
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for li in soup.select("li.job, li.feature"):
+                title_el = li.select_one("span.title a, h4 a")
+                company_el = li.select_one("span.company")
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "Remote",
+                        "url": title_el.get("href", "") if hasattr(title_el, "get") else "",
+                        "source_board": "weworkremotely",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on WeWorkRemotely")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] WeWorkRemotely error: {e}")
+            return []
+
+    async def _scan_instahyre(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Instahyre — India-focused tech hiring platform."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://www.instahyre.com/job-search",
+                params={"q": keyword_str},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+            if resp.status_code != 200:
+                return await self._scan_via_google_jobs("instahyre.com", keywords)
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], .job-listing'):
+                title_el = card.select_one('h3, h2, [class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "",
+                        "url": "",
+                        "source_board": "instahyre",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            if len(jobs) < 3:
+                google_jobs = await self._scan_via_google_jobs("instahyre.com", keywords)
+                jobs.extend(google_jobs)
+            print(f"[Scanner] Found {len(jobs)} jobs on Instahyre")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Instahyre error: {e}")
+            return []
+
+    async def _scan_protocol(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape ProtocolJobs.ai — AI-matched job search."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://www.protocoljobs.ai/jobs",
+                params={"q": keyword_str},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            if resp.status_code != 200:
+                return await self._scan_via_google_jobs("protocoljobs.ai", keywords)
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], article'):
+                title_el = card.select_one('h2, h3, [class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "",
+                        "url": "",
+                        "source_board": "protocol",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on Protocol")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Protocol error: {e}")
+            return []
+
+    async def _scan_welcometothejungle(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Welcome to the Jungle — European job board."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://www.welcometothejungle.com/en/jobs",
+                params={"query": keyword_str, "remoteOnly": "true"},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", "Accept": "application/json"},
+            )
+            if resp.status_code == 200 and resp.headers.get("content-type", "").startswith("application/json"):
+                data = resp.json()
+                jobs = []
+                for job in (data.get("data", []) or data.get("jobs", []) or data.get("results", []))[:30]:
+                    if isinstance(job, dict):
+                        title = job.get("title", "") or job.get("name", "") or job.get("jobTitle", "")
+                        if title:
+                            title_lower = title.lower()
+                            if not any(k.lower() in title_lower for k in keywords):
+                                continue
+                            jobs.append({
+                                "title": title,
+                                "company": job.get("company", {}).get("name", "") if isinstance(job.get("company"), dict) else job.get("organization", ""),
+                                "location": job.get("location", "") or job.get("city", ""),
+                                "url": job.get("url", "") or job.get("applyUrl", ""),
+                                "source_board": "welcometothejungle",
+                                "posted_date": job.get("publishedAt", "") or job.get("date", ""),
+                                "salary_min": 0, "salary_max": 0,
+                                "description": job.get("description", "")[:2000],
+                                "employment_type": "full_time",
+                            })
+                if jobs:
+                    print(f"[Scanner] Found {len(jobs)} jobs on WTTJ (API)")
+                    return jobs
+
+            # Fallback: web scrape
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], article'):
+                title_el = card.select_one('h2, h3, [class*="title"]')
+                company_el = card.select_one('[class*="company"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "",
+                        "url": "",
+                        "source_board": "welcometothejungle",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on WTTJ")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] WelcomeToTheJungle error: {e}")
+            return []
+
+    async def _scan_workingnomads(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape WorkingNomads — remote job board with API."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            # Try their API first
+            try:
+                resp = await self.client.get(
+                    "https://www.workingnomads.com/api/jobs",
+                    params={"q": keyword_str},
+                    timeout=15,
+                    headers={"Accept": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    jobs = []
+                    job_list = data.get("data", []) or data.get("jobs", []) or data if isinstance(data, list) else []
+                    for job in job_list[:30]:
+                        if isinstance(job, dict):
+                            title = job.get("title", "") or job.get("name", "")
+                            if title:
+                                title_lower = title.lower()
+                                if not any(k.lower() in title_lower for k in keywords):
+                                    continue
+                                jobs.append({
+                                    "title": title,
+                                    "company": job.get("company", "") or job.get("organization", {}).get("name", "") if isinstance(job.get("organization"), dict) else job.get("organization", ""),
+                                    "location": "Remote",
+                                    "url": job.get("url", ""),
+                                    "source_board": "workingnomads",
+                                    "posted_date": job.get("date", ""),
+                                    "salary_min": 0, "salary_max": 0,
+                                    "description": job.get("description", "")[:2000],
+                                    "employment_type": "full_time",
+                                })
+                    if jobs:
+                        print(f"[Scanner] Found {len(jobs)} jobs on WorkingNomads (API)")
+                        return jobs
+            except Exception:
+                pass
+
+            # Fallback: web scrape
+            resp = await self.client.get(
+                "https://www.workingnomads.com/jobs",
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            if resp.status_code != 200:
+                return await self._scan_via_google_jobs("workingnomads.com", keywords)
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], article'):
+                title_el = card.select_one('h2, h3, [class*="title"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": "",
+                        "location": "Remote",
+                        "url": "",
+                        "source_board": "workingnomads",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on WorkingNomads")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] WorkingNomads error: {e}")
+            return []
+
+    async def _scan_hnhiring(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape HN Hiring aggregator for monthly job threads."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://hnhiring.com",
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for row in soup.select("tr, div.job, li"):
+                title_el = row.select_one("a")
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": "",
+                        "location": "Remote / Onsite",
+                        "url": title_el.get("href", ""),
+                        "source_board": "hnhiring",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on HN Hiring")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] HN Hiring error: {e}")
+            return []
+
+    async def _scan_cutshort(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Cutshort — India-focused tech hiring."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://cutshort.io/jobs",
+                params={"q": keyword_str},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+            if resp.status_code != 200:
+                return await self._scan_via_google_jobs("cutshort.io", keywords)
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], .job-listing'):
+                title_el = card.select_one('h3, h2, [class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "",
+                        "url": "",
+                        "source_board": "cutshort",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on Cutshort")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Cutshort error: {e}")
+            return []
+
+    async def _scan_relocateme(self, keywords: list[str]) -> list[dict[str, Any]]:
+        """Scrape Relocate.me — relocation/sponsorship jobs."""
+        try:
+            keyword_str = " ".join(k.lower() for k in keywords)
+            resp = await self.client.get(
+                "https://relocate.me/search",
+                params={"q": keyword_str, "remote": "true"},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            if resp.status_code != 200:
+                return await self._scan_via_google_jobs("relocate.me", keywords)
+            soup = BeautifulSoup(resp.text, "lxml")
+            jobs = []
+            for card in soup.select('[class*="job"], [class*="card"], [class*="listing"]'):
+                title_el = card.select_one('h2, h3, [class*="title"]')
+                company_el = card.select_one('[class*="company"], [class*="org"]')
+                if title_el:
+                    title = title_el.text.strip()
+                    title_lower = title.lower()
+                    if not any(k.lower() in title_lower for k in keywords):
+                        continue
+                    jobs.append({
+                        "title": title,
+                        "company": company_el.text.strip() if company_el else "",
+                        "location": "",
+                        "url": "",
+                        "source_board": "relocateme",
+                        "posted_date": "",
+                        "salary_min": 0, "salary_max": 0,
+                        "description": "",
+                        "employment_type": "full_time",
+                    })
+            print(f"[Scanner] Found {len(jobs)} jobs on Relocate.me")
+            return jobs
+        except Exception as e:
+            print(f"[Scanner] Relocate.me error: {e}")
+            return []
+
     # ─── Playwright-based scrapers ─────────────────────────────────────
 
     async def _scan_board(self, board: str, keywords: list[str], location: str) -> list[dict[str, Any]]:
@@ -706,6 +1200,28 @@ class JobScanner:
             return await self._scan_bamboohr(keywords)
         if board == "workday":
             return await self._scan_workday(keywords)
+
+        # ─── New v3.0 boards ────────────────────────────────────────
+        if board == "himalayas":
+            return await self._scan_himalayas(keywords)
+        if board == "wellfound":
+            return await self._scan_wellfound(keywords)
+        if board == "weworkremotely":
+            return await self._scan_weworkremotely(keywords)
+        if board == "instahyre":
+            return await self._scan_instahyre(keywords)
+        if board == "protocol":
+            return await self._scan_protocol(keywords)
+        if board == "welcometothejungle":
+            return await self._scan_welcometothejungle(keywords)
+        if board == "cutshort":
+            return await self._scan_cutshort(keywords)
+        if board == "relocateme":
+            return await self._scan_relocateme(keywords)
+        if board == "workingnomads":
+            return await self._scan_workingnomads(keywords)
+        if board == "hnhiring":
+            return await self._scan_hnhiring(keywords)
 
         # Try Playwright first for LinkedIn/Indeed, fall back to HTTP
         if board in ("linkedin", "indeed"):

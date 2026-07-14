@@ -578,6 +578,35 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ─── Pipeline ─────────────────────────────────────────────────────
+
+  ipcMain.handle('jobs:pipeline:run', async (_event, settings?: Record<string, unknown>) => {
+    try {
+      const result = await pythonBridge.request('/jobs/pipeline/run', settings ?? undefined)
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:pipeline:progress', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/pipeline/progress')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('jobs:pipeline:settings', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/pipeline/settings')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // ─── Phase 3: Job Analytics & Follow-ups ──────────────────────────
 
   ipcMain.handle('jobs:response-analytics', async () => {
@@ -789,6 +818,46 @@ export function registerIpcHandlers(): void {
     try {
       const result = await pythonBridge.request('/voice/chat/stream', { message, language: 'en' })
       return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Debug Settings ────────────────────────────────────────────
+
+  // Get Vosk debug log visibility
+  ipcMain.handle('debug:get-vosk-logs', async () => {
+    try {
+      return { success: true, data: { enabled: pythonBridge.showVoskLogs } }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Set Vosk debug log visibility
+  ipcMain.handle('debug:set-vosk-logs', async (_event, enabled: boolean) => {
+    try {
+      pythonBridge.showVoskLogs = enabled
+      return { success: true, data: { enabled } }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Get Whisper/STT debug log visibility
+  ipcMain.handle('debug:get-whisper-logs', async () => {
+    try {
+      return { success: true, data: { enabled: pythonBridge.showWhisperLogs } }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Set Whisper/STT debug log visibility
+  ipcMain.handle('debug:set-whisper-logs', async (_event, enabled: boolean) => {
+    try {
+      pythonBridge.showWhisperLogs = enabled
+      return { success: true, data: { enabled } }
     } catch (error) {
       return { success: false, error: String(error) }
     }

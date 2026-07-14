@@ -271,24 +271,17 @@ export function DashboardPage(): JSX.Element {
   const [activeAgent, setActiveAgent] = useState<string | null>(null)
   const focusTargetRef = useRef<Vector3 | null>(null) as MutableRefObject<Vector3 | null>
 
-  const AGENT_COLORS: Record<string, string> = {
-    Strategist: '#00E5FF', Researcher: '#A855F7', 'Chief of Staff': '#FBBF24',
-    Finance: '#34D399', Memory: '#F472B6', Vision: '#60A5FA', Analytics: '#FB923C', Coding: '#2DD4BF',
-  }
   const activeAgentColor = useMemo(
-    () => (activeAgent ? AGENT_COLORS[activeAgent] : '#00E5FF') ?? '#00E5FF', [activeAgent],
+    () => (activeAgent ? AGENT_COLORS[activeAgent] : '#00E5FF') ?? '#00E5FF',
+    [activeAgent],
   )
 
-  const onSelectAgent = useCallback((label: string) => { setActiveAgent(label) }, [])
-  const onReturnToCore = useCallback(() => {
-    setActiveAgent(null)
-    setActiveRadialMenu(null)
-    focusTargetRef.current = null
-  }, [])
-
-  // ── Agent chat state ─────────────────────────────────────────────
+  const onSelectAgent = useCallback((label: string) => { setActiveAgent(label) }, [setActiveAgent])
   const [agentHistory, setAgentHistory] = useState<Record<string, AgentChatMessage[]>>({})
-  const currentMessages: AgentChatMessage[] = activeAgent ? (agentHistory[activeAgent] ?? []) : []
+  const currentMessages = useMemo<AgentChatMessage[]>(
+    () => activeAgent ? (agentHistory[activeAgent] ?? []) : [],
+    [activeAgent, agentHistory],
+  )
   const [agentInput, setAgentInput] = useState('')
   const [agentLoading, setAgentLoading] = useState(false)
   const agentInputRef = useRef<HTMLTextAreaElement>(null!)
@@ -493,22 +486,18 @@ export function DashboardPage(): JSX.Element {
   // ── Radial menu handlers ─────────────────────────────────────────
   const onContextMenu = useCallback((label: string) => {
     setActiveRadialMenu(label)
-  }, [])
+  }, [setActiveRadialMenu])
   const onCloseRadialMenu = useCallback(() => {
     setActiveRadialMenu(null)
-  }, [])
+  }, [setActiveRadialMenu])
 
-  // ── Radial action handlers ────────────────────────────────────────
-  const QUICK_PROMPTS: Record<string, string> = {
-    Strategist: 'Scan the current environment and provide a strategic overview',
-    Researcher: 'Summarize the latest developments in our active research areas',
-    'Chief of Staff': 'Check the status of all active workflows and flag any blockers',
-    Finance: 'Provide a quick budget health check and spending summary',
-    Memory: 'Summarize recent context and important facts from memory',
-    Vision: 'Analyze the current screen content and describe what you see',
-    Analytics: 'Pull the latest metrics and highlight any anomalies',
-    Coding: 'Review the current codebase state and suggest improvements',
-  }
+  const onReturnToCore = useCallback(() => {
+    setActiveAgent(null)
+    setActiveRadialMenu(null)
+    focusTargetRef.current = null
+  }, [setActiveAgent, setActiveRadialMenu])
+
+  // ── Radial action handlers (QUICK_PROMPTS defined at module level) ──
 
   const handleRadialAction = useCallback(async (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => {
     onCloseRadialMenu()
@@ -873,7 +862,23 @@ export function DashboardPage(): JSX.Element {
 
 interface TLHelper { id: string; label: string; color: string; position: [number, number, number]; description: string }
 
-const AGENT_COLORS_KEYS = Object.keys({ Strategist: '#00E5FF', Researcher: '#A855F7', 'Chief of Staff': '#FBBF24', Finance: '#34D399', Memory: '#F472B6', Vision: '#60A5FA', Analytics: '#FB923C', Coding: '#2DD4BF' })
+const AGENT_COLORS: Record<string, string> = {
+  Strategist: '#00E5FF', Researcher: '#A855F7', 'Chief of Staff': '#FBBF24',
+  Finance: '#34D399', Memory: '#F472B6', Vision: '#60A5FA', Analytics: '#FB923C', Coding: '#2DD4BF',
+}
+
+const QUICK_PROMPTS: Record<string, string> = {
+  Strategist: 'Scan the current environment and provide a strategic overview',
+  Researcher: 'Summarize the latest developments in our active research areas',
+  'Chief of Staff': 'Check the status of all active workflows and flag any blockers',
+  Finance: 'Provide a quick budget health check and spending summary',
+  Memory: 'Summarize recent context and important facts from memory',
+  Vision: 'Analyze the current screen content and describe what you see',
+  Analytics: 'Pull the latest metrics and highlight any anomalies',
+  Coding: 'Review the current codebase state and suggest improvements',
+}
+
+const AGENT_COLORS_KEYS = Object.keys(AGENT_COLORS)
 
 const AGENT_NODES_LIST: TLHelper[] = [
   { id: 'strategist', label: 'Strategist', color: '#00E5FF', position: [5.0, 1.8, 1.0], description: 'Planning & Strategy' },

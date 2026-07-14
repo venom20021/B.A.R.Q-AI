@@ -40,6 +40,11 @@ contextBridge.exposeInMainWorld('barq', {
     followupCandidates: () => ipcRenderer.invoke('jobs:followup-candidates'),
     scheduleFollowups: () => ipcRenderer.invoke('jobs:schedule-followups'),
     sendFollowup: (data: unknown) => ipcRenderer.invoke('jobs:send-followup', data),
+    pipeline: {
+      run: (settings?: Record<string, unknown>) => ipcRenderer.invoke('jobs:pipeline:run', settings),
+      progress: () => ipcRenderer.invoke('jobs:pipeline:progress'),
+      settings: () => ipcRenderer.invoke('jobs:pipeline:settings'),
+    },
   },
 
   // Social media
@@ -161,6 +166,14 @@ contextBridge.exposeInMainWorld('barq', {
     show: () => ipcRenderer.send('overlay:show'),
     hide: () => ipcRenderer.send('overlay:hide'),
     toggle: () => ipcRenderer.send('overlay:toggle'),
+  },
+
+  // Debug settings
+  debug: {
+    getVoskLogs: () => ipcRenderer.invoke('debug:get-vosk-logs'),
+    setVoskLogs: (enabled: boolean) => ipcRenderer.invoke('debug:set-vosk-logs', enabled),
+    getWhisperLogs: () => ipcRenderer.invoke('debug:get-whisper-logs'),
+    setWhisperLogs: (enabled: boolean) => ipcRenderer.invoke('debug:set-whisper-logs', enabled),
   },
 
   // Navigation listener (returns cleanup function)

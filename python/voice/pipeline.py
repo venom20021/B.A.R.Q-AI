@@ -31,9 +31,12 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from collections.abc import Awaitable
 from typing import AsyncIterable, Callable, Optional
 
 import numpy as np
+
+from utils.callback_guards import SyncCallback
 
 # ═══════════════════════════════════════════════════════════════════════
 # Frame Types — standalone dataclasses (no inheritance) to avoid Python
@@ -187,7 +190,18 @@ class STTProcessor(FrameProcessor):
     Input ``AudioFrame``s are used only for mic-level visualisation;
     transcription comes from the streaming function.
     ``InterruptFrame`` cancels the streaming worker immediately.
+
+    .. note::
+
+        ``transcribe_fn`` is called **synchronously** (no ``await``) in
+        accumulation mode.  It must be a regular function — passing an
+        ``async def`` will raise ``TypeError`` at construction.
+        ``transcribe_streaming_fn`` is an async generator and **must**
+        be async — no guard is applied to it.
     """
+
+    # Sync-only callback slots — assigning an async function raises TypeError
+    _transcribe_fn = SyncCallback()
 
     def __init__(
         self,
@@ -388,7 +402,19 @@ class LLMProcessor(FrameProcessor):
     via a streaming Ollama-style ``stream_chat_fn``.
 
     Passes through ``InterruptFrame`` to flush the LLM stream.
+
+    .. note::
+
+        ``get_context_fn``, ``add_message_fn``, and
+        ``response_text_callback`` are called **synchronously**
+        (no ``await``).  They must be regular functions — passing
+        an ``async def`` will raise ``TypeError`` at construction.
     """
+
+    # Sync-only callback slots — assigning an async function raises TypeError
+    _get_context = SyncCallback()
+    _add_message = SyncCallback()
+    _response_text_callback = SyncCallback()
 
     def __init__(
         self,
@@ -487,7 +513,7 @@ class TTSProcessor(FrameProcessor):
     in-memory PCM audio for immediate playback.
     """
 
-    def __init__(self, synthesize_pcm_fn: Callable[[str], tuple[np.ndarray, int]]):
+    def __init__(self, synthesize_pcm_fn: Callable[[str], Awaitable[tuple[np.ndarray, int]]]):
         """
         Args:
             synthesize_pcm_fn: Async callable that takes text and returns

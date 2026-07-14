@@ -21,6 +21,7 @@ import edge_tts
 import numpy as np
 
 from config import get_settings
+from utils.callback_guards import SyncCallback
 
 # ── Piper TTS Engine (offline, local) ──────────────────────────────────
 
@@ -159,7 +160,16 @@ class SpeechProcessor:
     Supports two TTS backends:
     - "edge" (default): Microsoft Edge TTS — natural voices, requires internet
     - "piper": Local Piper TTS — fully offline, uses local ONNX models
+
+    .. note::
+
+        ``on_language_detected`` is called synchronously during transcription.
+        It **must** be a regular (non-async) function — passing an ``async def``
+        will raise ``TypeError`` at assignment.
     """
+
+    # Sync-only callback slots — assigning an async function raises TypeError
+    on_language_detected = SyncCallback()
 
     def __init__(self):
         self.settings = get_settings()
@@ -171,9 +181,7 @@ class SpeechProcessor:
         self._piper_engine: Optional[PiperTTSEngine] = None
         # STT language: "en" or "hi" — defaults to English, auto-detected from speech
         self.stt_language: str = "en"
-        # Callback fired when language is auto-detected to differ from current
-        # signature: on_language_detected(detected_lang: str) -> None
-        self.on_language_detected: Optional[callable] = None
+        self.on_language_detected = None  # Initialise as None (valid for SyncCallback)
         # Live mic level tracking — updated by transcribe_streaming() every chunk
         # and by the background mic monitor between turns, so the sphere always
         # shows audio reactivity even when STT is idle.
