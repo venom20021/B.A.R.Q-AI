@@ -15,7 +15,7 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: 'cd src/renderer/dist && python -m http.server 5173',
+    command: 'cd out/renderer && python -m http.server 5173',
     port: 5173,
     reuseExistingServer: true,
   },

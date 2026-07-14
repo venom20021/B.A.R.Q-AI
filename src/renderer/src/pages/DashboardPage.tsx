@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Cloud, Mic, MicOff, Bot, User, ArrowLeft, Send, Loader2,
-  Crosshair, MapPin, LocateFixed,
+  Crosshair, MapPin, LocateFixed, Settings2,
 } from 'lucide-react'
 import { Vector3 } from 'three'
 
@@ -21,9 +21,30 @@ function getStoredUserName(): string {
 
 // ─── Lazy-loaded Agent Node Network ────────────────────────────────────
 
+import { QUALITY_PRESETS } from '../components/ParticleSphere3D'
+import type { QualityLevel } from '../components/ParticleSphere3D'
+
 const ParticleSphere3D = lazy(() =>
   import('../components/ParticleSphere3D').then(mod => ({ default: mod.ParticleSphere3D }))
 )
+
+// ─── Quality preset key ────────────────────────────────────────────────
+
+const QUALITY_STORAGE_KEY = 'barq_particle_quality'
+
+function getStoredQuality(): QualityLevel {
+  try {
+    const stored = localStorage.getItem(QUALITY_STORAGE_KEY)
+    if (stored === 'ultra' || stored === 'high' || stored === 'medium' || stored === 'low' || stored === 'potato') {
+      return stored
+    }
+  } catch { /* ignore */ }
+  return 'high'
+}
+
+function setStoredQuality(quality: QualityLevel): void {
+  try { localStorage.setItem(QUALITY_STORAGE_KEY, quality) } catch { /* ignore */ }
+}
 
 // ─── Real Weather Data ─────────────────────────────────────────────────
 
@@ -538,6 +559,29 @@ export function DashboardPage(): JSX.Element {
     }
   }, [onCloseRadialMenu])
 
+  // ── Particle quality control ────────────────────────────────────
+  const [quality, setQuality] = useState<QualityLevel>(getStoredQuality)
+  const [showQualityMenu, setShowQualityMenu] = useState(false)
+  const qualityRef = useRef<HTMLDivElement>(null!)
+
+  // Close quality menu on outside click
+  useEffect(() => {
+    if (!showQualityMenu) return
+    const handler = (e: MouseEvent) => {
+      if (qualityRef.current && !qualityRef.current.contains(e.target as Node)) {
+        setShowQualityMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showQualityMenu])
+
+  const handleQualityChange = useCallback((ql: QualityLevel) => {
+    setQuality(ql)
+    setStoredQuality(ql)
+    setShowQualityMenu(false)
+  }, [])
+
   // ── Drag-and-drop handlers ───────────────────────────────────────
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setIsDraggingFile(true)
@@ -578,6 +622,7 @@ export function DashboardPage(): JSX.Element {
             activeRadialMenu={activeRadialMenu}
             onCloseRadialMenu={onCloseRadialMenu}
             onRadialAction={handleRadialAction}
+            quality={quality}
           />
         </Suspense>
       </div>
@@ -814,8 +859,9 @@ export function DashboardPage(): JSX.Element {
           className="text-[10px] font-sans text-white/15 tracking-[0.2em] uppercase font-medium">B.A.R.Q · Agent Network</motion.p>
       </div>
 
-      {/* ═══ SYSTEM LOAD INDICATOR (mini) ═══ */}
-      <div className="absolute bottom-8 right-8 z-10 flex items-center gap-2">
+      {/* ═══ SYSTEM LOAD + QUALITY CONTROL ═══ */}
+      <div className="absolute bottom-8 right-8 z-30 flex items-center gap-2">
+        {/* System load bar */}
         <div className="w-16 h-1 rounded-full bg-white/5 overflow-hidden">
           <motion.div
             className="h-full rounded-full"
@@ -825,6 +871,55 @@ export function DashboardPage(): JSX.Element {
           />
         </div>
         <span className="text-[9px] font-mono text-white/30 tabular-nums">{Math.round(systemLoad)}%</span>
+
+        {/* Quality control gear */}
+        <div className="relative" ref={qualityRef}>
+          <button
+            onClick={() => setShowQualityMenu(prev => !prev)}
+            className="flex items-center justify-center w-5 h-5 rounded text-white/25 hover:text-cyan-300/70 hover:bg-white/5 transition-all duration-200"
+            title="Particle quality"
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+          </button>
+
+          {showQualityMenu && (
+            <motion.div
+              initial={{ opacity: 0, y: 6, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.15 }}
+              className="absolute bottom-6 right-0 mb-2 p-1.5 rounded-xl backdrop-blur-xl bg-black/80 border border-white/10 shadow-2xl min-w-[140px]"
+            >
+              <p className="text-[8px] font-sans text-white/25 tracking-[0.15em] uppercase font-medium px-2 pb-1.5 pt-0.5">
+                3D Quality
+              </p>
+              <div className="space-y-0.5">
+                {(['ultra', 'high', 'medium', 'low', 'potato'] as const).map((ql) => {
+                  const preset = QUALITY_PRESETS[ql]
+                  const isActive = quality === ql
+                  return (
+                    <button
+                      key={ql}
+                      onClick={() => handleQualityChange(ql)}
+                      className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition-all duration-150 ${isActive ? 'bg-cyan-500/15 text-cyan-300' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          ql === 'ultra' ? 'bg-purple-400' :
+                          ql === 'high' ? 'bg-cyan-400' :
+                          ql === 'medium' ? 'bg-amber-400' :
+                          ql === 'low' ? 'bg-orange-400' :
+                          'bg-red-400'
+                        }`} />
+                        <span className="font-sans font-medium">{preset.label}</span>
+                      </div>
+                      <span className="text-[9px] font-mono opacity-60">{preset.particles.toLocaleString()}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </motion.div>
+          )}
+        </div>
       </div>
 
       {/* ═══ CONTEXT DROP ZONE (viewport-scaled orbital ring) ═══ */}

@@ -35,6 +35,8 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; fallback?: Re
 
 export type AIState = 'idle' | 'listening' | 'thinking' | 'responding'
 
+export type QualityLevel = 'ultra' | 'high' | 'medium' | 'low' | 'potato'
+
 export interface TransferSparkData {
   id: string
   from: [number, number, number]
@@ -71,14 +73,23 @@ const AGENT_NODES: AgentNodeData[] = [
   { id: 'coding', label: 'Coding', color: '#2DD4BF', position: [1.5, 5.0, -2.0], description: 'Code Generation' },
 ]
 
+// ─── Quality Presets ───────────────────────────────────────────────────
+
+export const QUALITY_PRESETS: Record<QualityLevel, { label: string; particles: number; description: string }> = {
+  ultra:  { label: 'Ultra',   particles: 40000, description: 'High-end desktops' },
+  high:   { label: 'High',    particles: 20000, description: 'Default — recommended' },
+  medium: { label: 'Medium',  particles: 10000, description: 'Mid-range systems' },
+  low:    { label: 'Low',     particles: 5000,  description: 'Integrated GPUs' },
+  potato: { label: 'Potato',  particles: 1500,  description: 'Minimum performance' },
+}
+
 // ─── Constants ─────────────────────────────────────────────────────────
 
-const PARTICLE_COUNT = 20000
 const SPHERE_RADIUS = 2.8
 const WAKE_EASE_RATE = 0.035
 const WAKE_MIN_SCALE = 0.02
 
-// ─── Module-level pre-computed particle data (impure — runs once) ──────
+// ─── Particle Data Generator ───────────────────────────────────────────
 
 interface ParticleData {
   positions: Float32Array
@@ -86,14 +97,14 @@ interface ParticleData {
   colors: Float32Array
 }
 
-function generateParticleData(): ParticleData {
-  const pos = new Float32Array(PARTICLE_COUNT * 3)
-  const sz = new Float32Array(PARTICLE_COUNT)
-  const col = new Float32Array(PARTICLE_COUNT * 3)
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
+function generateParticleData(particleCount: number): ParticleData {
+  const pos = new Float32Array(particleCount * 3)
+  const sz = new Float32Array(particleCount)
+  const col = new Float32Array(particleCount * 3)
+  for (let i = 0; i < particleCount; i++) {
     const goldenRatio = (1 + Math.sqrt(5)) / 2
     const theta = 2 * Math.PI * i / goldenRatio
-    const phi = Math.acos(1 - 2 * (i + 0.5) / PARTICLE_COUNT)
+    const phi = Math.acos(1 - 2 * (i + 0.5) / particleCount)
     const t = Math.pow(Math.random(), 4.0)
     const r = SPHERE_RADIUS * (0.75 + t * 0.25)
     pos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
@@ -101,7 +112,6 @@ function generateParticleData(): ParticleData {
     pos[i * 3 + 2] = r * Math.cos(phi)
     sz[i] = (0.28 - t * 0.20) + Math.random() * 0.05
 
-    // Colors (previously in a useMemo with Math.random calls)
     const normalizedDepth = (r / SPHERE_RADIUS - 0.75) / 0.25
     const isInner = normalizedDepth < 0.5
     if (isInner) {
@@ -118,21 +128,10 @@ function generateParticleData(): ParticleData {
   return { positions: pos, sizes: sz, colors: col }
 }
 
-const PARTICLE_DATA = generateParticleData()
+// ─── Soft Particle Texture ─────────────────────────────────────────────
 
-// ─── Cyan Particle Core ────────────────────────────────────────────────
-
-function ParticleCore(): JSX.Element {
-  "use no memo"
-  const groupRef = useRef<Group>(null!)
-  const pointsRef = useRef<Points>(null!)
-  const wakeProgressRef = useRef(0)
-  const wakeDoneRef = useRef(false)
-
-  const particleGeometry = PARTICLE_DATA
-  const colors = PARTICLE_DATA.colors
-
-  const softTexture = useMemo(() => {
+function useSoftTexture(): CanvasTexture {
+  return useMemo(() => {
     const size = 64
     const canvas = document.createElement('canvas')
     canvas.width = size; canvas.height = size
@@ -149,6 +148,21 @@ function ParticleCore(): JSX.Element {
     tex.needsUpdate = true
     return tex
   }, [])
+}
+
+// ─── Cyan Particle Core ────────────────────────────────────────────────
+
+function ParticleCore({ particleCount }: { particleCount: number }): JSX.Element {
+  "use no memo"
+  const groupRef = useRef<Group>(null!)
+  const pointsRef = useRef<Points>(null!)
+  const wakeProgressRef = useRef(0)
+  const wakeDoneRef = useRef(false)
+
+  // Regenerate particle data when count changes
+  const particleData = useMemo(() => generateParticleData(particleCount), [particleCount])
+  const colors = particleData.colors
+  const softTexture = useSoftTexture()
 
   useFrame((state) => {
     const t = state.clock.elapsedTime
@@ -167,8 +181,8 @@ function ParticleCore(): JSX.Element {
       if (sizeAttr) {
         const array = sizeAttr.array as Float32Array
         const pulse = 1 + Math.sin(t * 0.3) * 0.03
-        const sizes = particleGeometry.sizes
-        for (let i = 0; i < PARTICLE_COUNT; i++) array[i] = sizes[i] * pulse
+        const sizes = particleData.sizes
+        for (let i = 0; i < particleCount; i++) array[i] = sizes[i] * pulse
         sizeAttr.needsUpdate = true
       }
     }
@@ -178,9 +192,9 @@ function ParticleCore(): JSX.Element {
     <group ref={groupRef}>
       <points ref={pointsRef}>
         <bufferGeometry>
-          <bufferAttribute attach="attributes-position" count={PARTICLE_COUNT} array={particleGeometry.positions} itemSize={3} />
-          <bufferAttribute attach="attributes-size" count={PARTICLE_COUNT} array={particleGeometry.sizes} itemSize={1} />
-          <bufferAttribute attach="attributes-color" count={PARTICLE_COUNT} array={colors} itemSize={3} />
+          <bufferAttribute attach="attributes-position" count={particleCount} array={particleData.positions} itemSize={3} />
+          <bufferAttribute attach="attributes-size" count={particleCount} array={particleData.sizes} itemSize={1} />
+          <bufferAttribute attach="attributes-color" count={particleCount} array={colors} itemSize={3} />
         </bufferGeometry>
         <pointsMaterial size={0.06} sizeAttenuation transparent opacity={0.95} vertexColors depthWrite={false} blending={AdditiveBlending} map={softTexture} />
       </points>
@@ -224,17 +238,12 @@ function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
 
   useFrame((state) => {
     if (!ringRef.current || !matRef.current) return
-    // Higher load = faster spin, slightly brighter
-    const normalizedLoad = systemLoad / 100 // 0-1
+    const normalizedLoad = systemLoad / 100
     const speed = 0.025 + normalizedLoad * 0.025
     ringRef.current.rotation.y += speed
     ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.08) * 0.06
-
-    // Opacity stays within a very faint 0.1–0.3 range
     const opacity = 0.1 + normalizedLoad * 0.2
     matRef.current.opacity = Math.min(opacity, 0.3)
-
-    // Shift color from cool blue to faint warm cyan as load increases
     const r = 0.05 + normalizedLoad * 0.5
     const g = 0.3 + normalizedLoad * 0.5
     const b = 0.8 - normalizedLoad * 0.4
@@ -243,7 +252,6 @@ function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
 
   return (
     <group ref={ringRef}>
-      {/* Ultra-thin orbital trajectory — tube={0.005} or smaller */}
       <mesh rotation={[Math.PI / 2.2, 0, 0]}>
         <torusGeometry args={[SPHERE_RADIUS * 1.65, 0.005, 16, 80]} />
         <meshBasicMaterial ref={matRef} color="#4FC3F7" transparent opacity={0.15} side={DoubleSide} depthWrite={false} />
@@ -257,7 +265,6 @@ function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
 function TransferSpark({ spark }: { spark: TransferSparkData }): JSX.Element {
   const meshRef = useRef<Mesh>(null!)
 
-  // Compute the same QuadraticBezier mid-point the connecting lines use
   const mid = useMemo(() => {
     const start = new Vector3(...spark.from)
     const end = new Vector3(...spark.to)
@@ -270,7 +277,6 @@ function TransferSpark({ spark }: { spark: TransferSparkData }): JSX.Element {
   useFrame(() => {
     if (!meshRef.current) return
     const t = spark.progress
-    // Quadratic Bezier: B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
     const p0 = new Vector3(...spark.from)
     const p1 = mid
     const p2 = new Vector3(...spark.to)
@@ -279,7 +285,6 @@ function TransferSpark({ spark }: { spark: TransferSparkData }): JSX.Element {
     pos.y = (1 - t) ** 2 * p0.y + 2 * (1 - t) * t * p1.y + t ** 2 * p2.y
     pos.z = (1 - t) ** 2 * p0.z + 2 * (1 - t) * t * p1.z + t ** 2 * p2.z
     meshRef.current.position.copy(pos)
-    // Pulse size
     const pulse = 0.5 + Math.sin(t * 20) * 0.3
     meshRef.current.scale.setScalar(pulse)
   })
@@ -584,6 +589,7 @@ function AgentNetworkScene({
   activeRadialMenu,
   onCloseRadialMenu,
   onRadialAction,
+  particleCount,
 }: {
   activeAgent: string | null
   onSelectAgent: (label: string) => void
@@ -594,12 +600,13 @@ function AgentNetworkScene({
   activeRadialMenu: string | null
   onCloseRadialMenu: () => void
   onRadialAction: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+  particleCount: number
 }): JSX.Element {
   return (
     <>
       <CameraController focusTargetRef={focusTargetRef} activeAgent={activeAgent} />
       <ambientLight intensity={0.5} />
-      <ParticleCore />
+      <ParticleCore particleCount={particleCount} />
       <ResourceRing systemLoad={systemLoad} />
       <GoldRing />
       <NodeConstellation
@@ -638,6 +645,7 @@ export function ParticleSphere3D({
   activeRadialMenu = null,
   onCloseRadialMenu,
   onRadialAction,
+  quality = 'high',
 }: {
   activeTheme?: string
   aiState?: AIState
@@ -656,14 +664,21 @@ export function ParticleSphere3D({
   activeRadialMenu?: string | null
   onCloseRadialMenu?: () => void
   onRadialAction?: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
+  quality?: QualityLevel
 }): JSX.Element {
+  const particleCount = QUALITY_PRESETS[quality]?.particles ?? 20000
   return (
     <div className="w-full h-full">
       <CanvasErrorBoundary>
         <Canvas
           camera={{ position: [0, 0, 9], fov: 45 }}
-          dpr={[1, 1.5]}
-          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance', failIfMajorPerformanceCaveat: false }}
+          dpr={quality === 'ultra' ? [1, 2] : quality === 'high' ? [1, 1.5] : quality === 'medium' ? [0.9, 1.25] : quality === 'low' ? [0.75, 1] : [0.75, 1]}
+          gl={{
+            antialias: quality !== 'potato',
+            alpha: true,
+            powerPreference: 'high-performance',
+            failIfMajorPerformanceCaveat: false,
+          }}
           style={{ width: '100%', height: '100%', background: 'transparent' }}
           onPointerMissed={onReturnToCore}
         >
@@ -677,6 +692,7 @@ export function ParticleSphere3D({
             activeRadialMenu={activeRadialMenu}
             onCloseRadialMenu={onCloseRadialMenu ?? (() => {})}
             onRadialAction={onRadialAction ?? (() => {})}
+            particleCount={particleCount}
           />
         </Canvas>
       </CanvasErrorBoundary>
