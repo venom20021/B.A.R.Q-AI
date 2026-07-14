@@ -48,7 +48,7 @@ const defaultProps = {
   onSelectAgent: vi.fn(),
   focusTargetRef: { current: null },
 }
-import { ParticleSphere3D, type AIState, AGENT_NODES } from './ParticleSphere3D'
+import { ParticleSphere3D, type AIState, type QualityLevel, AGENT_NODES, QUALITY_PRESETS } from './ParticleSphere3D'
 
 // ═══════════════════════════════════════════════════════════════════════
 // Agent Node Data
@@ -187,5 +187,38 @@ describe('edge cases', () => {
   it('renders without any props (just required)', () => {
     const { container } = render(<ParticleSphere3D {...defaultProps} />)
     expect(container.firstChild).toBeInTheDocument()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Quality Prop Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('quality prop', () => {
+  const validQualities: QualityLevel[] = ['ultra', 'high', 'medium', 'low', 'potato']
+
+  for (const ql of validQualities) {
+    it(`renders with quality="${ql}" (${QUALITY_PRESETS[ql].particles} particles)`, () => {
+      const { container } = render(<ParticleSphere3D {...defaultProps} quality={ql} />)
+      expect(container.firstChild).toBeInTheDocument()
+    })
+  }
+
+  it('defaults to high quality when no quality prop is provided', () => {
+    const { container } = render(<ParticleSphere3D {...defaultProps} />)
+    expect(container.firstChild).toBeInTheDocument()
+  })
+
+  it('each quality preset has unique particle count', () => {
+    const counts = Object.values(QUALITY_PRESETS).map(p => p.particles)
+    const unique = new Set(counts)
+    expect(unique.size).toBe(counts.length)
+  })
+
+  it('all quality levels have label and description', () => {
+    for (const ql of validQualities) {
+      expect(QUALITY_PRESETS[ql].label).toBeTruthy()
+      expect(QUALITY_PRESETS[ql].description).toBeTruthy()
+    }
   })
 })

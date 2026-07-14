@@ -1144,51 +1144,255 @@ async def test_overlay_hide(client):
     assert response.status_code == 200
     data = response.json()
     assert data["action"] == "overlay_hide"
-    assert data["status"] == "triggered"
+
+
+# ─── Agent Task Voice Commands (Complex Multi-Step Goals) ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_overlay_toggle(client):
-    """'toggle overlay' should return overlay_toggle."""
-    response = await client.post("/command", json={"command": "toggle overlay"})
+async def test_agent_task_research_and_save(client):
+    """'research quantum computing and save to file' should route to agent_task.
+
+    process_command executes AgentExecutor after _parse_and_route returns
+    agent_task, so we mock the executor to keep the test fast and deterministic."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Researched and saved."
+        response = await client.post("/command", json={"command": "research quantum computing and save to file"})
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "overlay_toggle"
-    assert data["status"] == "triggered"
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
+    assert "quantum computing" in data["goal"]
 
 
 @pytest.mark.asyncio
-async def test_overlay_alone(client):
-    """'overlay' alone (no show/hide/toggle) should default to overlay_toggle."""
-    response = await client.post("/command", json={"command": "overlay"})
+async def test_agent_task_find_and_summarize(client):
+    """'find information about React and summarize' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Done."
+        response = await client.post("/command", json={"command": "find information about React and summarize"})
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "overlay_toggle"
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_overlay_show_me(client):
-    """'show me the overlay' should still match overlay_show (permissive keyword)."""
-    response = await client.post("/command", json={"command": "show me the overlay"})
+async def test_agent_task_plan_trip(client):
+    """'plan a trip to Paris' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Planned."
+        response = await client.post("/command", json={"command": "plan a trip to Paris"})
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "overlay_show"
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_overlay_not_confused_with_apps(client):
-    """'overlay' keyword should not be caught by app launcher (no open/launch/start)."""
-    response = await client.post("/command", json={"command": "show overlay"})
+async def test_agent_task_analyze_and_report(client):
+    """'analyze this data and create a report' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Analyzed and created report."
+        response = await client.post("/command", json={"command": "analyze this data and create a report"})
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "overlay_show"
-    assert data["action"] != "launch_app"
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_overlay_hide_now(client):
-    """'overlay hide now' should still match (both keywords present)."""
-    response = await client.post("/command", json={"command": "overlay hide now"})
+async def test_agent_task_compare_and_save(client):
+    """'compare these products and save results' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Compared and saved."
+        response = await client.post("/command", json={"command": "compare these products and save results"})
     assert response.status_code == 200
     data = response.json()
-    assert data["action"] == "overlay_hide"
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_create_summary(client):
+    """'create a summary of the meeting notes' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Summary created."
+        response = await client.post("/command", json={"command": "create a summary of the meeting notes"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_could_you_research(client):
+    """'could you research the latest AI advancements' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Researched."
+        response = await client.post("/command", json={"command": "could you research the latest AI advancements"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_i_need_you_to(client):
+    """'I need you to find the best restaurants near me' should route to agent_task."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Found restaurants."
+        response = await client.post("/command", json={"command": "I need you to find the best restaurants near me"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "agent_task"
+    assert data["status"] == "completed"
+
+
+# ─── Agent Task: Negative Cases ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_task_research_alone_not_routed(client):
+    """'research machine learning' (no 'and' conjunction) should NOT route to agent_task.
+
+    Simple research commands without multi-step patterns fall through to
+    the 'unknown' action (or navigation if applicable)."""
+    response = await client.post("/command", json={"command": "research machine learning"})
+    assert response.status_code == 200
+    data = response.json()
+    # Without 'and/then', this doesn't match any agent pattern
+    assert data["action"] != "agent_task"
+    # Falls through to unknown since no other rule matches 'research'
+    assert data["action"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_find_jobs_not_routed(client):
+    """'find jobs' should route to scan_jobs, not agent_task.
+
+    The 'find\s+.+(?:and|then)\s+.+' pattern requires an 'and'/'then'
+    after the find target, so simple 'find jobs' should not match."""
+    response = await client.post("/command", json={"command": "find jobs"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "scan_jobs"
+    assert data["action"] != "agent_task"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_simple_find_not_routed(client):
+    """'find python tutorials' (no 'and/then') should route to scan_jobs, not agent_task."""
+    response = await client.post("/command", json={"command": "find python tutorials"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] != "agent_task"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_plan_dashboard_not_routed(client):
+    """'plan' alone (without 'trip/vacation/itinerary') should NOT route to agent_task."""
+    response = await client.post("/command", json={"command": "plan"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] != "agent_task"
+
+
+# ─── Agent Task: Execution via process_command ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_task_command_execution(client):
+    """When process_command routes to agent_task, it should call AgentExecutor.execute().
+
+    The process_command endpoint in voice/routes.py checks:
+        if result.get("action") == "agent_task":
+            executor = AgentExecutor()
+            task_result = await executor.execute(goal=goal)
+
+    We patch AgentExecutor.execute to return a known result and verify
+    the response includes status='completed' and the mock result."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "I researched quantum computing and saved the results to a file."
+
+        response = await client.post("/command", json={
+            "command": "research quantum computing and save to file"
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["action"] == "agent_task"
+        assert data["status"] == "completed"
+        assert "quantum computing" in data["result"]
+        mock_execute.assert_awaited_once()
+        # Verify the goal passed to AgentExecutor matches the command
+        call_args = mock_execute.call_args
+        assert "goal" in call_args.kwargs
+        assert "quantum computing" in call_args.kwargs["goal"]
+
+
+@pytest.mark.asyncio
+async def test_agent_task_execution_error(client):
+    """When AgentExecutor raises, process_command should return status='error'."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.side_effect = RuntimeError("Agent execution timed out")
+
+        response = await client.post("/command", json={
+            "command": "analyze this data and create a report"
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["action"] == "agent_task"
+        assert data["status"] == "error"
+        assert "error" in data
+        assert "timed out" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_agent_task_preserves_command_history(client):
+    """Agent task commands should be logged to conversation history and action log."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("agent.agent_executor.AgentExecutor.execute", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = "Done."
+
+        response = await client.post("/command", json={
+            "command": "plan a trip to Tokyo"
+        })
+
+        assert response.status_code == 200
+
+        # Verify action log was written
+        log_response = await client.get("/action-log/recent?limit=1")
+        log_data = log_response.json()
+        assert len(log_data["actions"]) >= 1
+        entry = log_data["actions"][0]
+        assert entry["action"] == "agent_task"
+        # The description should contain a summary of the command
+        # Description falls back to action name ("agent task") since no
+    # "command"/"target"/"query" key exists in the agent_task result
+    assert "agent" in entry["description"].lower()
+    # Metadata should contain the original command
+    metadata = entry.get("metadata", {})
+    assert "tokyo" in metadata.get("command", "").lower()

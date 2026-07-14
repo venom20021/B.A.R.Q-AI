@@ -399,3 +399,168 @@ class TestStreamRespondErrors:
         # and execution continues to the flush-remaining-buffer step.
         assert len(chunks) >= 1
         assert any("partial" in c["text"] for c in chunks)
+
+
+# ── _handle_command: agent_task paths ──────────────────────────────────────
+
+
+class TestHandleCommandAgentTask:
+    """Tests for the agent_task path in _handle_command.
+
+    The _handle_command method in responder.py routes complex goals to
+    AgentExecutor. When agent execution fails, it falls back to the LLM
+    for a conversational response, and finally to a static message.
+    """
+
+    @patch("voice.routes._parse_and_route")
+    @patch("agent.agent_executor.AgentExecutor")
+    async def test_agent_task_executes_via_executor(
+        self, mock_executor_cls: MagicMock, mock_parse: AsyncMock, responder: BARQResponder,
+    ):
+        """agent_task action should execute AgentExecutor and return its result."""
+        # _parse_and_route returns agent_task action
+        mock_parse.return_value = {
+            "action": "agent_task",
+            "goal": "research quantum computing and save to file",
+            "status": "triggered",
+        }
+        # AgentExecutor returns a successful result
+        mock_executor_instance = AsyncMock()
+        mock_executor_instance.execute.return_value = "I researched quantum computing and saved the results."
+        mock_executor_cls.return_value = mock_executor_instance
+
+        result = await responder._handle_command("research quantum computing and save to file")
+
+        assert "quantum computing" in result
+        assert "saved" in result.lower()
+        mock_parse.assert_awaited_once()
+        mock_executor_instance.execute.assert_awaited_once_with(
+            goal="research quantum computing and save to file"
+        )
+
+    @patch("voice.routes._parse_and_route")
+    @patch("agent.agent_executor.AgentExecutor")
+    async def test_agent_task_falls_back_to_llm_on_executor_error(
+        self, mock_executor_cls: MagicMock, mock_parse: AsyncMock, responder: BARQResponder,
+    ):
+        """When AgentExecutor raises, _handle_command falls back to the LLM."""
+        mock_parse.return_value = {
+            "action": "agent_task",
+            "goal": "analyze this data and create a report",
+            "status": "triggered",
+        }
+        # AgentExecutor raises
+        mock_executor_instance = AsyncMock()
+        mock_executor_instance.execute.side_effect = RuntimeError("LLM backend unavailable")
+        mock_executor_cls.return_value = mock_executor_instance
+
+        # Configure the LLM chat to return a fallback response
+        responder.llm.chat = AsyncMock(return_value="Let me analyze that data for you now.")
+
+        result = await responder._handle_command("analyze this data and create a report")
+
+        assert "analyze" in result.lower() or "data" in result.lower()
+        # LLM should have been called as the fallback
+        responder.llm.chat.assert_awaited_once()
+
+    @patch("voice.routes._parse_and_route")
+    @patch("agent.agent_executor.AgentExecutor")
+    async def test_agent_task_static_fallback_when_both_fail(
+        self, mock_executor_cls: MagicMock, mock_parse: AsyncMock, responder: BARQResponder,
+    ):
+        """When both AgentExecutor and LLM fail, return the static fallback message."""
+        mock_parse.return_value = {
+            "action": "agent_task",
+            "goal": "plan a trip to Paris",
+            "status": "triggered",
+        }
+        # AgentExecutor raises
+        mock_executor_instance = AsyncMock()
+        mock_executor_instance.execute.side_effect = RuntimeError("Agent timeout")
+        mock_executor_cls.return_value = mock_executor_instance
+
+        # LLM also raises
+        responder.llm.chat = AsyncMock(side_effect=RuntimeError("LLM also down"))
+
+        result = await responder._handle_command("plan a trip to Paris")
+
+        # Static fallback message
+        assert "work on that" in result.lower() or "let you know" in result.lower()
+
+    @patch("voice.routes._parse_and_route")
+    @patch("agent.agent_executor.AgentExecutor")
+    async def test_agent_task_goal_uses_command_as_fallback(
+        self, mock_executor_cls: MagicMock, mock_parse: AsyncMock, responder: BARQResponder,
+    ):
+        """When _parse_and_route returns agent_task without a 'goal' key
+        (edge case), _handle_command should use the original text as the goal."""
+        # Simulate parse returning agent_task without a 'goal' key
+        mock_parse.return_value = {
+            "action": "agent_task",
+            "status": "triggered",
+            # No 'goal' key — _handle_command should fall back to command text
+        }
+        mock_executor_instance = AsyncMock()
+        mock_executor_instance.execute.return_value = "Done."
+        mock_executor_cls.return_value = mock_executor_instance
+
+        await responder._handle_command("find the best laptop deals and compare them")
+
+        # When goal is missing from parse result, _handle_command uses
+        # result.get("goal", text) — falls back to the original command text
+        mock_executor_instance.execute.assert_awaited_once_with(
+            goal="find the best laptop deals and compare them"
+        )
+
+    @patch("voice.routes._parse_and_route")
+    @patch("agent.agent_executor.AgentExecutor")
+    async def test_agent_task_non_agent_command_not_routed(
+        self, mock_executor_cls: MagicMock, mock_parse: AsyncMock, responder: BARQResponder,
+    ):
+        """Non-agent_task actions should NOT call AgentExecutor."""
+        mock_parse.return_value = {
+            "action": "web_search",
+            "query": "quantum computing",
+            "status": "parsed",
+        }
+
+        _ = await responder._handle_command("search for quantum computing")
+
+        # AgentExecutor should NOT have been created for non-agent_task actions
+        mock_executor_cls.assert_not_called()
+
+
+# ── _handle_command: exit phrases ──────────────────────────────────────────
+
+
+class TestHandleCommandExitPhrases:
+    """Exit phrases should end the conversation and return a goodbye message."""
+
+    async def test_exit_phrase_goodbye(self, responder: BARQResponder):
+        """'goodbye' should end the session and return a goodbye message."""
+        assert responder.conversation.is_active
+        result = await responder._handle_command("goodbye")
+        assert "goodbye" in result.lower()
+        assert "computer" in result.lower()
+        # Session should be ended
+        assert not responder.conversation.is_active
+
+    async def test_exit_phrase_nothing(self, responder: BARQResponder):
+        """'nothing' should end the session."""
+        result = await responder._handle_command("nothing")
+        assert "goodbye" in result.lower()
+
+    async def test_exit_phrase_go_to_sleep(self, responder: BARQResponder):
+        """'go to sleep' should end the session."""
+        result = await responder._handle_command("go to sleep")
+        assert "goodbye" in result.lower()
+
+    async def test_exit_phrase_not_in_normal_command(self, responder: BARQResponder):
+        """A normal command that doesn't contain any exit phrase should not trigger exits.
+
+        Uses 'what is the weather' which contains no exit phrase substrings
+        (nothing, goodbye, bye, exit, end, stop, that's, we're, go to, that's it)."""
+        result = await responder._handle_command("what is the weather")
+        assert result is not None
+        # Session should still be active since no exit phrase was triggered
+        assert responder.conversation.is_active
