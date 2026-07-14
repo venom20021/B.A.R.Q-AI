@@ -1,0 +1,33 @@
+[tool.mypy]
+# ── Python version ──────────────────────────────────────────────────
+python_version = "3.12"
+
+# ── Await/coroutine safety ──────────────────────────────────────────
+# mypy (2.x) catches missing-await bugs via two mechanisms:
+#
+# 1. `[attr-defined]` — calling `.get()` or other dict methods on a
+#    ``Coroutine`` object emits: "Maybe you forgot to use 'await'?"
+#
+# 2. `[assignment]` — assigning an ``async def`` function to a
+#    ``Callable[..., dict]`` slot raises incompatible type error.
+#
+# Both are enabled by default (no extra flag needed).  The config below
+# focuses on catching these patterns without drowning in pre-existing
+# type issues from third-party stubs.
+
+# Check bodies of functions without type annotations (common in callback
+# wiring) so that missing-await inside untyped code is still caught.
+check_untyped_defs = true
+
+# ─── Strictness (relaxed for existing codebase) ─────────────────────
+# We do NOT enable full strict mode because this is an existing codebase
+# with many untyped third-party deps.  The goal is to catch coroutine
+# misuse, not to enforce full type coverage.
+
+# ─── Third-party stubs ──────────────────────────────────────────────
+# Many voice-pipeline dependencies (vosk, faster-whisper, edge-tts,
+# sounddevice, etc.) lack PEP 561 stubs.  Suppress import errors so
+# mypy focuses on our code, not missing stubs.
+ignore_missing_imports = true
+
+

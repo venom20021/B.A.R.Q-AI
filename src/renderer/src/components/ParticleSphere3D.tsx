@@ -1,9 +1,9 @@
 import { useRef, useMemo, useState, useCallback, useEffect, Component } from 'react'
 import { Zap, FileText, Link } from 'lucide-react'
 import type { ReactNode, MutableRefObject } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import type { Group, Mesh, Points } from 'three'
-import { AdditiveBlending, DoubleSide, CanvasTexture, Vector3, type MeshBasicMaterial, Color } from 'three'
+import { AdditiveBlending, DoubleSide, CanvasTexture, Vector3, type MeshBasicMaterial } from 'three'
 import { Html, QuadraticBezierLine, OrbitControls } from '@react-three/drei'
 
 // ─── Error Boundary ────────────────────────────────────────────────────
@@ -78,6 +78,48 @@ const SPHERE_RADIUS = 2.8
 const WAKE_EASE_RATE = 0.035
 const WAKE_MIN_SCALE = 0.02
 
+// ─── Module-level pre-computed particle data (impure — runs once) ──────
+
+interface ParticleData {
+  positions: Float32Array
+  sizes: Float32Array
+  colors: Float32Array
+}
+
+function generateParticleData(): ParticleData {
+  const pos = new Float32Array(PARTICLE_COUNT * 3)
+  const sz = new Float32Array(PARTICLE_COUNT)
+  const col = new Float32Array(PARTICLE_COUNT * 3)
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const goldenRatio = (1 + Math.sqrt(5)) / 2
+    const theta = 2 * Math.PI * i / goldenRatio
+    const phi = Math.acos(1 - 2 * (i + 0.5) / PARTICLE_COUNT)
+    const t = Math.pow(Math.random(), 4.0)
+    const r = SPHERE_RADIUS * (0.75 + t * 0.25)
+    pos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+    pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
+    pos[i * 3 + 2] = r * Math.cos(phi)
+    sz[i] = (0.28 - t * 0.20) + Math.random() * 0.05
+
+    // Colors (previously in a useMemo with Math.random calls)
+    const normalizedDepth = (r / SPHERE_RADIUS - 0.75) / 0.25
+    const isInner = normalizedDepth < 0.5
+    if (isInner) {
+      col[i * 3] = 0.3 + Math.random() * 0.4
+      col[i * 3 + 1] = 0.8 + Math.random() * 0.5
+      col[i * 3 + 2] = 1.0
+    } else {
+      const fade = (normalizedDepth - 0.5) * 2
+      col[i * 3] = 0.1 * (1 - fade)
+      col[i * 3 + 1] = 0.4 * (1 - fade * 0.5)
+      col[i * 3 + 2] = 0.7 * (1 - fade * 0.3)
+    }
+  }
+  return { positions: pos, sizes: sz, colors: col }
+}
+
+const PARTICLE_DATA = generateParticleData()
+
 // ─── Cyan Particle Core ────────────────────────────────────────────────
 
 function ParticleCore(): JSX.Element {
@@ -87,47 +129,8 @@ function ParticleCore(): JSX.Element {
   const wakeProgressRef = useRef(0)
   const wakeDoneRef = useRef(false)
 
-  const [particleGeometry] = useState(() => {
-    const pos = new Float32Array(PARTICLE_COUNT * 3)
-    const sz = new Float32Array(PARTICLE_COUNT)
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const goldenRatio = (1 + Math.sqrt(5)) / 2
-      const theta = 2 * Math.PI * i / goldenRatio
-      const phi = Math.acos(1 - 2 * (i + 0.5) / PARTICLE_COUNT)
-      const t = Math.pow(Math.random(), 4.0)
-      const r = SPHERE_RADIUS * (0.75 + t * 0.25)
-      pos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
-      pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
-      pos[i * 3 + 2] = r * Math.cos(phi)
-      sz[i] = (0.28 - t * 0.20) + Math.random() * 0.05
-    }
-    return { positions: pos, sizes: sz }
-  })
-
-  const colors = useMemo(() => {
-    const col = new Float32Array(PARTICLE_COUNT * 3)
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const r = Math.sqrt(
-        particleGeometry.positions[i * 3] ** 2 +
-        particleGeometry.positions[i * 3 + 1] ** 2 +
-        particleGeometry.positions[i * 3 + 2] ** 2
-      )
-      const normalizedDepth = (r / SPHERE_RADIUS - 0.75) / 0.25
-      const isInner = normalizedDepth < 0.5
-      if (isInner) {
-        col[i * 3] = 0.3 + Math.random() * 0.4
-        col[i * 3 + 1] = 0.8 + Math.random() * 0.5
-        col[i * 3 + 2] = 1.0
-      } else {
-        const fade = (normalizedDepth - 0.5) * 2
-        col[i * 3] = 0.1 * (1 - fade)
-        col[i * 3 + 1] = 0.4 * (1 - fade * 0.5)
-        col[i * 3 + 2] = 0.7 * (1 - fade * 0.3)
-      }
-    }
-    return col
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const particleGeometry = PARTICLE_DATA
+  const colors = PARTICLE_DATA.colors
 
   const softTexture = useMemo(() => {
     const size = 64
@@ -304,6 +307,7 @@ function CameraController({
   activeAgent: string | null
 }): JSX.Element {
   const { camera } = useThree()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const controlsRef = useRef<any>(null!)
   const animatingRef = useRef(false)
 
@@ -369,6 +373,7 @@ function AgentNode({
   const nodeRef = useRef<Mesh>(null!)
   const glowRef = useRef<Mesh>(null!)
   const startPos = useMemo(() => new Vector3(...node.position), [node.position])
+  // eslint-disable-next-line react-hooks/purity
   const floatOffset = useRef(Math.random() * Math.PI * 2)
   const [hovered, setHovered] = useState(false)
   const hoveredRef = useRef(false)
@@ -411,7 +416,7 @@ function AgentNode({
   const handlePointerOut = useCallback(() => {
     setHovered(false); hoveredRef.current = false; document.body.style.cursor = 'default'
   }, [])
-  const handleClick = useCallback((e: any) => {
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation()
     onCloseRadialMenu()
     const worldPos = new Vector3()
@@ -419,7 +424,7 @@ function AgentNode({
     focusTargetRef.current = worldPos
     onSelect(node.label, worldPos)
   }, [node.label, onSelect, focusTargetRef, onCloseRadialMenu])
-  const handleContextMenu = useCallback((e: any) => {
+  const handleContextMenu = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation()
     e.nativeEvent.preventDefault()
     onContextMenu(node.label)

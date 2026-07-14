@@ -64,6 +64,12 @@ jobs:
       - name: Lint with Ruff
         run: ruff check python/
 
+      - name: Type-check with mypy
+        # Check only the core async modules where missing-await bugs occur.
+        # --follow-imports=silent avoids cascading errors from imported
+        # modules (database, agent, etc.) that have pre-existing type issues.
+        run: mypy python/ai python/voice python/utils --config-file python/pyproject.toml --follow-imports=silent
+
       - name: Test with pytest
         run: |
           pytest python/tests/ -v --tb=short \

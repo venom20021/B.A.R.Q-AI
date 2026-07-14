@@ -90,6 +90,8 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
   const startupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isOverDockRef = useRef(false)
   const size = DOCK_SIZES[dockSize]
+  // macOS dock magnification: track which item is hovered (-1 = none)
+  const [hoveredIndex, setHoveredIndex] = useState(-1)
 
   // ── Auto-hide after 3s on initial load (guarantees hide even without mouse movement) ─
   useEffect(() => {
@@ -192,28 +194,49 @@ export function Sidebar({ currentRoute, onNavigate }: SidebarProps): JSX.Element
             onMouseLeave={handleMouseLeave}
             className={`flex items-center gap-0.5 ${size.px} ${size.py} rounded-xl backdrop-blur-2xl bg-void-900/70 border border-white/[0.06] shadow-2xl`}
           >
-            {/* Nav items */}
+            {/* Nav items — macOS dock magnification on hover */}
             <div
               ref={scrollRef}
               className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
+              onMouseLeave={() => setHoveredIndex(-1)}
             >
-              {flattenedItems.map((item) => {
+              {flattenedItems.map((item, i) => {
                 const isActive = currentRoute === item.path
                 const Icon = item.icon
+
+                // macOS fisheye magnification: scale based on distance from hovered item
+                let scale = 1
+                if (hoveredIndex !== -1) {
+                  const dist = Math.abs(i - hoveredIndex)
+                  if (dist === 0) scale = 1.5
+                  else if (dist === 1) scale = 1.25
+                  else if (dist === 2) scale = 1.1
+                }
 
                 return (
                   <button
                     key={item.path}
                     onClick={() => onNavigate(item.path)}
-                    className={`relative flex items-center justify-center ${size.btn} rounded-lg transition-all duration-150 group`}
+                    onMouseEnter={() => setHoveredIndex(i)}
+                    className={`relative flex items-center justify-center rounded-lg transition-all duration-150 ease-out group`}
                     title={item.label}
+                    style={{
+                      width: `calc(${size.btn.split(' ')[0].replace('w-', '')} * 0.25rem * ${scale})`,
+                      height: `calc(${size.btn.split(' ')[1].replace('h-', '')} * 0.25rem * ${scale})`,
+                      transition: 'width 0.15s ease-out, height 0.15s ease-out',
+                    }}
                   >
                     <Icon
-                      className={`${size.icon} transition-all duration-200 ${
+                      className={`transition-all duration-200 ${
                         isActive
                           ? 'text-cyan-300 drop-shadow-[0_0_6px_rgba(34,211,238,0.4)]'
                           : 'text-white/30 group-hover:text-white/60'
                       }`}
+                      style={{
+                        width: `calc(${size.icon.split(' ')[0].replace('w-', '')} * 0.25rem * ${scale})`,
+                        height: `calc(${size.icon.split(' ')[1].replace('h-', '')} * 0.25rem * ${scale})`,
+                        transition: 'width 0.15s ease-out, height 0.15s ease-out',
+                      }}
                     />
 
                     {/* Active glow */}

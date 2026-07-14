@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { api } from '../utils/api'
-import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye } from 'lucide-react'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
 import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -19,7 +19,7 @@ const sections: SettingsSection[] = [
   { id: 'jobs', label: 'Job Search', icon: Briefcase, description: 'Job search preferences and filters' },
   { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },
   { id: 'security', label: 'Security', icon: Shield, description: 'Command whitelist and approvals' },
-  { id: 'privacy', label: 'Privacy', icon: ShieldOff, description: 'Data storage and local processing' },
+  { id: 'debug', label: 'Debug', icon: Terminal, description: 'Debug logging and diagnostics' },
   { id: 'profile', label: 'Profile', icon: User, description: 'Your name and personal details' },
   { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display settings' },
 ]
@@ -85,6 +85,96 @@ function AccentColorPicker(): JSX.Element {
   )
 }
 
+// ── Vosk Debug Logs Toggle (module-level component) ────────────────────
+
+function VoskDebugToggle(): JSX.Element {
+  const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const resp = await window.barq?.debug.getVoskLogs()
+        if (resp?.success && resp.data) {
+          const data = resp.data as { enabled: boolean }
+          setEnabled(data.enabled)
+        }
+      } catch {
+        /* ignore */
+      }
+      setLoading(false)
+    })()
+  }, [])
+
+  const handleToggle = useCallback(async () => {
+    const newVal = !enabled
+    setEnabled(newVal)
+    try {
+      await window.barq?.debug.setVoskLogs(newVal)
+    } catch {
+      setEnabled(!newVal) // revert on error
+    }
+  }, [enabled])
+
+  if (loading) {
+    return <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+  }
+
+  return (
+    <button
+      onClick={handleToggle}
+      className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-dim-500/30'}`}
+    >
+      <span className={`absolute top-[2px] w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+    </button>
+  )
+}
+
+// ── Whisper/STT Debug Logs Toggle (module-level component) ──────────────
+
+function WhisperDebugToggle(): JSX.Element {
+  const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const resp = await window.barq?.debug.getWhisperLogs()
+        if (resp?.success && resp.data) {
+          const data = resp.data as { enabled: boolean }
+          setEnabled(data.enabled)
+        }
+      } catch {
+        /* ignore */
+      }
+      setLoading(false)
+    })()
+  }, [])
+
+  const handleToggle = useCallback(async () => {
+    const newVal = !enabled
+    setEnabled(newVal)
+    try {
+      await window.barq?.debug.setWhisperLogs(newVal)
+    } catch {
+      setEnabled(!newVal) // revert on error
+    }
+  }, [enabled])
+
+  if (loading) {
+    return <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+  }
+
+  return (
+    <button
+      onClick={handleToggle}
+      className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-dim-500/30'}`}
+    >
+      <span className={`absolute top-[2px] w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+    </button>
+  )
+}
+
 // ── Main Settings Page Component ──────────────────────────────────────────
 
 export function SettingsPage(): JSX.Element {
@@ -109,6 +199,20 @@ export function SettingsPage(): JSX.Element {
   const [ttsBackend, setTtsBackend] = useState('edge')
   const [ttsBackendUpdating, setTtsBackendUpdating] = useState(false)
   const [piperAvailable, setPiperAvailable] = useState(false)
+  // Wake word editing
+  const [wakeWord, setWakeWord] = useState('')
+  const [wakeWordInput, setWakeWordInput] = useState('')
+  const [wakeWordUpdating, setWakeWordUpdating] = useState(false)
+  const [wakeWordSaved, setWakeWordSaved] = useState(false)
+
+  // Telegram credentials
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
+  const [showTelegramToken, setShowTelegramToken] = useState(false)
+  const [telegramSaving, setTelegramSaving] = useState(false)
+  const [telegramTesting, setTelegramTesting] = useState(false)
+  const [telegramSavedMsg, setTelegramSavedMsg] = useState('')
+  const [telegramConfigured, setTelegramConfigured] = useState(false)
 
   // Notification settings
   const [notifSettings, setNotifSettings] = useState({
@@ -196,6 +300,11 @@ export function SettingsPage(): JSX.Element {
         if (data.tts_backend) {
           setTtsBackend(data.tts_backend)
         }
+        // Wake word
+        if (data.wake_word) {
+          setWakeWord(data.wake_word)
+          setWakeWordInput(data.wake_word)
+        }
       }
     } catch { /* ignore */ }
     setVoiceLoading(false)
@@ -222,6 +331,24 @@ export function SettingsPage(): JSX.Element {
     }
     setTtsBackendUpdating(false)
   }, [])
+
+  const handleWakeWordChange = useCallback(async () => {
+    const newWord = wakeWordInput.trim().toLowerCase()
+    if (!newWord || newWord.length < 2) return
+    setWakeWordUpdating(true)
+    setWakeWordSaved(false)
+    try {
+      const resp = await api('/voice/wake-word', { wake_word: newWord })
+      if (resp && typeof resp === 'object') {
+        setWakeWord(newWord)
+        setWakeWordSaved(true)
+        setTimeout(() => setWakeWordSaved(false), 3000)
+      }
+    } catch {
+      setWakeWordInput(wakeWord) // revert on error
+    }
+    setWakeWordUpdating(false)
+  }, [wakeWordInput, wakeWord])
 
   const handleWeatherCityChange = useCallback(async (city: string) => {
     setWeatherCity(city)
@@ -358,6 +485,76 @@ export function SettingsPage(): JSX.Element {
     } catch { /* ignore */ }
   }, [])
 
+  // ─── Telegram Callbacks ─────────────────────────────────────────
+
+  const fetchTelegramCredentials = useCallback(async () => {
+    try {
+      const resp = await api('/notifications/telegram/credentials')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (typeof data.bot_token === 'string' && data.bot_token) {
+          setTelegramBotToken(data.bot_token)
+          setTelegramConfigured(true)
+        }
+        if (typeof data.chat_id === 'string' && data.chat_id) {
+          setTelegramChatId(data.chat_id)
+        }
+        // Also check via status endpoint for masked preview
+        const statusResp = await api('/notifications/telegram/status')
+        if (statusResp && typeof statusResp === 'object') {
+          const s = statusResp as Record<string, unknown>
+          if (typeof s.configured === 'boolean') {
+            setTelegramConfigured(s.configured)
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  const handleSaveTelegramCredentials = useCallback(async () => {
+    setTelegramSaving(true)
+    setTelegramSavedMsg('')
+    try {
+      const resp = await api('/notifications/telegram/credentials', {
+        bot_token: telegramBotToken,
+        chat_id: telegramChatId,
+      })
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (data.status === 'saved') {
+          setTelegramConfigured(true)
+          setTelegramSavedMsg('Credentials saved!')
+          setTimeout(() => setTelegramSavedMsg(''), 3000)
+        }
+      }
+    } catch {
+      setTelegramSavedMsg('Failed to save')
+      setTimeout(() => setTelegramSavedMsg(''), 3000)
+    }
+    setTelegramSaving(false)
+  }, [telegramBotToken, telegramChatId])
+
+  const handleTestTelegram = useCallback(async () => {
+    setTelegramTesting(true)
+    setTelegramSavedMsg('')
+    try {
+      const resp = await api('/notifications/test/telegram')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (data.success) {
+          setTelegramSavedMsg('✅ Test message sent!')
+        } else {
+          setTelegramSavedMsg('❌ Test failed: ' + (data.message || 'unknown error'))
+        }
+        setTimeout(() => setTelegramSavedMsg(''), 4000)
+      }
+    } catch {
+      setTelegramSavedMsg('❌ Test request failed')
+      setTimeout(() => setTelegramSavedMsg(''), 4000)
+    }
+    setTelegramTesting(false)
+  }, [])
+
   // ─── Security Callbacks ──────────────────────────────────────────
 
   const handleCheckCommand = useCallback(async () => {
@@ -458,8 +655,9 @@ export function SettingsPage(): JSX.Element {
       void fetchWhitelistRules()
       void fetchVadSettings()
       void fetchTtsBackend()
+      void fetchTelegramCredentials()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend, fetchTelegramCredentials])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -520,13 +718,41 @@ export function SettingsPage(): JSX.Element {
               </div>
               <div className="space-y-4">
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
-                  <div>
+                  <div className="flex-1">
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Wake Word</p>
-                    <p className="text-xs font-exo text-dim-400">Trigger phrase: &quot;{voiceStatus?.wake_word || 'Computer'}&quot;</p>
+                    <p className="text-xs font-exo text-dim-400">Say this phrase to wake BARQ</p>
                   </div>
-                  <span className={`${voiceStatus?.is_listening ? 'badge-green' : 'badge-dim'}`}>
-                    {voiceStatus?.is_listening ? 'Active' : 'Inactive'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={wakeWordInput}
+                      onChange={(e) => setWakeWordInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleWakeWordChange()}
+                      placeholder="e.g. computer, hey barq"
+                      className="bg-void-800/60 text-ghost text-sm font-mono px-3 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500 w-40"
+                    />
+                    <button
+                      onClick={handleWakeWordChange}
+                      disabled={wakeWordUpdating || !wakeWordInput.trim() || wakeWordInput.trim().toLowerCase() === wakeWord}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {wakeWordUpdating ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <CheckCircle className="w-3 h-3" />
+                      )}
+                      Save
+                    </button>
+                    {wakeWordSaved && (
+                      <span className="text-[10px] font-exo text-green-400 whitespace-nowrap">Saved!</span>
+                    )}
+                    <div className="flex items-center gap-1.5 pl-2 border-l border-cyan-500/15">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${voiceStatus?.is_listening ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-dim-500/50'}`} />
+                      <span className={`text-[10px] font-mono font-bold tracking-wider uppercase ${voiceStatus?.is_listening ? 'text-green-400' : 'text-dim-500'}`}>
+                        {voiceStatus?.is_listening ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
@@ -933,6 +1159,82 @@ export function SettingsPage(): JSX.Element {
                 <p className="text-sm font-rajdhani text-dim-400">Control how and when BARQ sends alerts</p>
               </div>
               <div className="space-y-4">
+                {/* ── Telegram Credentials ── */}
+                <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10 mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">📱</span>
+                    <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">Telegram Configuration</h4>
+                  </div>
+                  <p className="text-xs font-exo text-dim-400 mb-3">
+                    Enter your Telegram bot credentials to receive job alerts, pipeline results, and other notifications.
+                    Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="text-cyan-300 hover:text-cyan-200 underline underline-offset-2">@BotFather</a> on Telegram.
+                  </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-rajdhani font-semibold text-dim-400 uppercase tracking-wider">Bot Token</label>
+                      <div className="flex gap-2 mt-1">
+                        <input
+                          type="password"
+                          value={telegramBotToken}
+                          onChange={(e) => setTelegramBotToken(e.target.value)}
+                          placeholder="1234567890:ABCdefGHIjklmNOPqrstUVwxyz-1234"
+                          className="flex-1 bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500"
+                        />
+                        <button
+                          onClick={() => setShowTelegramToken(!showTelegramToken)}
+                          className="flex items-center gap-1 px-2 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-void-800/40 text-dim-400 border border-cyan-500/10 hover:text-ghost transition-all"
+                        >
+                          {showTelegramToken ? '🙈' : '👁️'}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-rajdhani font-semibold text-dim-400 uppercase tracking-wider">Chat ID</label>
+                      <div className="flex gap-2 mt-1">
+                        <input
+                          type="text"
+                          value={telegramChatId}
+                          onChange={(e) => setTelegramChatId(e.target.value)}
+                          placeholder="123456789"
+                          className="flex-1 bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500"
+                        />
+                        <span className="text-hud text-dim-500 flex items-center text-xs">Get via @userinfobot</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleSaveTelegramCredentials}
+                        disabled={telegramSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-40"
+                      >
+                        {telegramSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                        Save Credentials
+                      </button>
+                      <button
+                        onClick={handleTestTelegram}
+                        disabled={telegramTesting || !telegramConfigured}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-40"
+                      >
+                        {telegramTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                        Test
+                      </button>
+                      <AnimatePresence>
+                        {telegramSavedMsg && (
+                          <motion.span initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="text-[10px] font-exo text-green-400">
+                            {telegramSavedMsg}
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                    {telegramConfigured && (
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" />
+                        <span className="text-[10px] font-exo text-green-400">Telegram configured</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Desktop Notifications</p>
@@ -1333,12 +1635,12 @@ export function SettingsPage(): JSX.Element {
             </div>
           )}
 
-          {/* ─── Privacy Section ─── */}
-          {activeSection === 'privacy' && (
+          {/* ─── Debug Section ─── */}
+          {activeSection === 'debug' && (
             <div className="space-y-6">
               <div>
-                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Privacy & Security</h3>
-                <p className="text-sm font-rajdhani text-dim-400">Control data storage and processing</p>
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Debug Settings</h3>
+                <p className="text-sm font-rajdhani text-dim-400">Debug logging, diagnostics, and privacy controls</p>
               </div>
               <div className="space-y-4">
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
@@ -1361,6 +1663,20 @@ export function SettingsPage(): JSX.Element {
                     <p className="text-xs font-exo text-dim-400">Automatically report errors for debugging</p>
                   </div>
                   {renderToggle(privacySettings.crash_reporting, () => setPrivacySettings(prev => ({ ...prev, crash_reporting: !prev.crash_reporting })))}
+                </div>
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Vosk Debug Logs</p>
+                    <p className="text-xs font-exo text-dim-400">Show verbose Vosk model-loading logs in the console</p>
+                  </div>
+                  <VoskDebugToggle />
+                </div>
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Whisper/STT Debug Logs</p>
+                    <p className="text-xs font-exo text-dim-400">Show verbose Whisper transcription logs in the console</p>
+                  </div>
+                  <WhisperDebugToggle />
                 </div>
                 <div className="pt-3 border-t border-cyan-500/8">
                   <p className="text-xs font-exo text-dim-500">Your data stays on your machine. BARQ processes everything locally using Ollama, Whisper, and Edge TTS. No cloud dependency.</p>

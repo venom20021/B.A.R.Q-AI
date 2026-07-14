@@ -17,6 +17,7 @@ Flow:
 import asyncio
 import re
 from pathlib import Path
+from collections.abc import Awaitable
 from typing import Callable, Optional
 
 from ai.responder import BARQResponder
@@ -29,10 +30,10 @@ from voice.pipeline import (
 )
 from voice.speech import SpeechProcessor
 
-# Type aliases for optional command callbacks
-ParseCommandFn = Callable[[str, bool, Optional[str]], dict]
+# Type aliases for optional command callbacks (both are async)
+ParseCommandFn = Callable[[str, bool, Optional[str]], Awaitable[dict]]
 # execute_command(text, action_result) -> str (spoken confirmation)
-ExecuteCommandFn = Callable[[str, dict], str]
+ExecuteCommandFn = Callable[[str, dict], Awaitable[str]]
 
 
 # Aggressive silence endpointing defaults (overridable per-instance)
@@ -60,7 +61,7 @@ class ConversationListener:
         responder: BARQResponder,
         on_stop: Optional[Callable] = None,
         use_pipeline: bool = True,
-        energy_threshold: float = 160.0,
+        energy_threshold: float = 500.0,
         parse_command: Optional[ParseCommandFn] = None,
         execute_command: Optional[ExecuteCommandFn] = None,
     ):
@@ -228,7 +229,7 @@ class ConversationListener:
 
                 # ── 3. Check if it's a voice command (open/launch/run/etc.) ──
                 if self._parse_command and self._execute_command:
-                    parsed = self._parse_command(text, False, None)
+                    parsed = await self._parse_command(text, False, None)
                     if parsed.get("action") != "unknown":
                         print(f"[Conversation] Voice command detected: {parsed['action']} → {parsed.get('target', parsed.get('command', ''))}")
                         # Execute the command and speak the result
@@ -372,7 +373,7 @@ class ConversationListener:
 
                 # ── 3. Check if it's a voice command (open/launch/run/etc.) ──
                 if self._parse_command and self._execute_command:
-                    parsed = self._parse_command(text, False, None)
+                    parsed = await self._parse_command(text, False, None)
                     if parsed.get("action") != "unknown":
                         print(f"[Conversation·Pipeline] Voice command detected: {parsed['action']} → {parsed.get('target', parsed.get('command', ''))}")
                         # Execute the command and speak the result

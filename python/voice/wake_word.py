@@ -18,6 +18,7 @@ import wave
 from typing import Callable, Optional
 
 from config import get_settings
+from utils.callback_guards import SyncCallback
 
 # Electron wake receiver endpoint — spawned as a lightweight HTTP server
 ELECTRON_WAKE_URL = "http://127.0.0.1:8112/wake"
@@ -221,7 +222,18 @@ class WakeWordDetector:
     Loads both English and Hindi Vosk models. Runs the active model in a
     continuous background thread. Supports live switching between languages.
     On detection, sends an HTTP POST to Electron's /wake endpoint.
+
+    .. note::
+
+        ``on_wake_word`` and ``on_conversation_trigger`` are called from a
+        **daemon thread**, not the async event loop.  They **must** be
+        regular (non-async) functions — passing an ``async def`` will
+        raise ``TypeError`` at assignment.
     """
+
+    # Sync-only callback slots — assigning an async function raises TypeError
+    on_wake_word = SyncCallback()
+    on_conversation_trigger = SyncCallback()
 
     def __init__(self, on_wake_word: Optional[Callable] = None, on_conversation_trigger: Optional[Callable] = None):
         self.settings = get_settings()

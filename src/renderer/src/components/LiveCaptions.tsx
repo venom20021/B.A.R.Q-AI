@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { User, Bot } from 'lucide-react'
 
@@ -64,9 +64,11 @@ export function LiveCaptions({
   useEffect(() => {
     if (sttText) {
       cancelDissolve()
-      setDisplayStt(sttText)
+      startTransition(() => {
+        setDisplayStt(sttText)
+        setVisible(true)
+      })
       lastSttRef.current = sttText
-      setVisible(true)
       hasContentRef.current = true
     }
   }, [sttText, cancelDissolve])
@@ -75,20 +77,26 @@ export function LiveCaptions({
   useEffect(() => {
     if (responseText) {
       cancelDissolve()
-      setDisplayResponse(responseText)
+      startTransition(() => {
+        setDisplayResponse(responseText)
+        setVisible(true)
+        setShowCursor(true)
+      })
       lastResponseRef.current = responseText
-      setVisible(true)
       hasContentRef.current = true
-      setShowCursor(true)
     } else {
-      setShowCursor(false)
+      startTransition(() => {
+        setShowCursor(false)
+      })
     }
   }, [responseText, cancelDissolve])
 
   // ── Show captions when conversation becomes active (Listening indicator) ─
   useEffect(() => {
     if (conversationActive && !isProcessing) {
-      setVisible(true)
+      startTransition(() => {
+        setVisible(true)
+      })
       hasContentRef.current = true
     }
   }, [conversationActive, isProcessing])

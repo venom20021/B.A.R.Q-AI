@@ -410,11 +410,14 @@ async def _speak_wake_greeting():
 
             responder.is_speaking = True
             try:
-                # Use interrupt handler so the user can barge-in during greeting
+                # Play greeting without barge-in detection to avoid the TTS
+                # audio bleeding from speakers to mic (which falsely triggers
+                # interrupt). The conversation mode starts right after, so the
+                # user can speak and interrupt then.
                 await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
-                    pcm, sample_rate, listen_for_interrupt=True,
+                    pcm, sample_rate, listen_for_interrupt=False,
                 )
-                print("[WakeGreeting] Greeting played with barge-in support")
+                print("[WakeGreeting] Greeting played fully")
             finally:
                 responder.is_speaking = False
 
@@ -715,14 +718,14 @@ async def _speak_greeting_and_feed_command(command_text: str):
     responder.is_processing = True
     try:
         # Step 1: Quick audible acknowledgment via interrupt handler
-        # (supports barge-in even during the ack)
+        # (no barge-in during the ack to avoid TTS feedback loops)
         try:
             pcm, sample_rate = await responder.speech.synthesize_pcm(
                 "On it!", voice="en-US-JennyNeural",
             )
             responder.is_speaking = True
             await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
-                pcm, sample_rate, listen_for_interrupt=True,
+                pcm, sample_rate, listen_for_interrupt=False,
             )
         except Exception:
             pass
@@ -817,6 +820,19 @@ async def load_sound_settings():
         global _wake_greeting_enabled
         _wake_greeting_enabled = wg_val.lower() == "true"
         print(f"[Voice] Wake greeting enabled loaded from DB: {_wake_greeting_enabled}")
+
+    # Load TTS backend setting and apply to speech processor
+    tts_backend = await settings_dao.get_setting("tts_backend")
+    if tts_backend is not None and tts_backend in ("edge", "piper"):
+        # Validate Piper is still available if it was the saved backend
+        if tts_backend == "piper":
+            piper_engine = speech_processor.get_piper_engine()
+            if piper_engine.is_available:
+                speech_processor.tts_backend = "piper"
+                print(f"[Voice] TTS backend loaded from DB: piper (offline)")
+        else:
+            speech_processor.tts_backend = "edge"
+            print(f"[Voice] TTS backend loaded from DB: edge")
 
 # ─── Multi-turn conversation state ─────────────────────────────────────────
 
@@ -1187,6 +1203,9 @@ async def set_tts_backend(request: TTSBackendRequest):
 
     speech_processor.tts_backend = request.backend
     print(f"[Voice] TTS backend switched to: {request.backend}")
+
+    # Persist to database so the setting survives restarts
+    await settings_dao.set_setting("tts_backend", request.backend, "voice")
 
     await analytics_dao.log_activity(
         "voice", "tts_backend",
@@ -2301,6 +2320,10 @@ async def voice_status():
     if wake_word_detector is not None:
         language = wake_word_detector.language
 
+    # Read live STT and response text for the frontend captions
+    current_stt = getattr(responder, "stt_text", "")
+    current_response = getattr(responder, "response_text", "")
+
     return {
         "is_listening": is_running,
         "wake_word": cfg.wake_word,
@@ -2320,6 +2343,8 @@ async def voice_status():
         "hands_free_mode": _hands_free_mode,
         "wake_greeting_enabled": _wake_greeting_enabled,
         "weather_city": weather_city or "London",
+        "stt_text": current_stt,
+        "response_text": current_response,
         "recent_commands": [
             {"transcript": c["transcript"], "confidence": c.get("confidence", 0.0), "created_at": c["created_at"]}
             for c in recent_commands

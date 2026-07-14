@@ -3,12 +3,17 @@ FastAPI routes for job search automation.
 Uses database DAOs for all CRUD operations.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database import analytics_dao, db_connection, jobs_dao
 
-from . import FollowUpAutomation, JobApplier, JobEvaluator, JobScanner, ResponseTracker
+from . import (
+    FollowUpAutomation, JobApplier, JobEvaluator, JobScanner,
+    ResponseTracker, get_pipeline_progress, get_pipeline_settings, run_pipeline,
+)
 from .scanner import get_scan_progress, set_scan_error
 
 router = APIRouter()
@@ -212,6 +217,131 @@ async def get_followup_history():
         return {"history": history, "count": len(history)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Resume Upload ─────────────────────────────────────────────────
+
+
+class ResumeUploadResponse(BaseModel):
+    status: str
+    message: str
+    path: str = ""
+
+
+@router.post("/resume/upload", summary="Upload a resume file to replace ~/career-ops/cv.md")
+async def upload_resume(data: dict):
+    """
+    Upload resume content (markdown text) and save it to ~/career-ops/cv.md.
+    The pipeline and resume parser will use this file for job matching.
+    """
+    import os
+    from pathlib import Path
+
+    try:
+        content = data.get("content", "")
+        if not content or len(content.strip()) < 50:
+            raise HTTPException(status_code=400, detail="Resume content must be at least 50 characters")
+
+        from .resume_parser import DEFAULT_RESUME_PATH
+        path = Path(DEFAULT_RESUME_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+        from .resume_parser import clear_parse_cache
+        clear_parse_cache()
+
+        await analytics_dao.log_activity("job", "resume_upload", "Resume updated via upload")
+
+        return {"status": "saved", "message": "Resume saved successfully", "path": str(path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/resume", summary="Get the current resume content and parse status")
+async def get_resume():
+    """Get the current resume file content and parsed data."""
+    try:
+        from .resume_parser import DEFAULT_RESUME_PATH, parse_resume
+        parsed = parse_resume()
+        path_exists = bool(parsed.get("raw_md"))
+        return {
+            "exists": path_exists,
+            "path": DEFAULT_RESUME_PATH,
+            "parsed": {
+                "full_name": parsed.get("full_name", ""),
+                "email": parsed.get("email", ""),
+                "skills_count": len(parsed.get("skills", [])),
+                "experience_count": len(parsed.get("experience", [])),
+                "education_count": len(parsed.get("education", [])),
+            },
+            "char_count": len(parsed.get("raw_md", "")),
+            "error": parsed.get("_error", ""),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Pipeline Endpoints ────────────────────────────────────────────
+
+class PipelineSettingsRequest(BaseModel):
+    mode: str = "notify"
+    auto_apply: bool = False
+    max_per_run: int = 10
+    generate_pdf: bool = True
+    send_telegram: bool = True
+    min_match_score: int = 60
+
+
+@router.post("/pipeline/run")
+async def run_application_pipeline(settings: Optional[PipelineSettingsRequest] = None):
+    """
+    Execute the end-to-end job application pipeline.
+
+    Processes queued/approved jobs by:
+    1. Parsing resume from ~/career-ops/cv.md
+    2. Optimizing resume for each specific job
+    3. Generating tailored cover letters
+    4. Generating PDF documents
+    5. Sending Telegram notification with job link + docs
+       OR auto-applying via Playwright
+
+    Returns real-time progress via GET /jobs/pipeline/progress
+    """
+    import asyncio
+
+    # Check if pipeline is already running
+    progress = get_pipeline_progress()
+    if progress["status"] == "running":
+        return {"status": "already_running", "message": "Pipeline is already running", "progress": progress}
+
+    cfg = settings.model_dump() if settings else {}
+
+    # Run pipeline as a background task
+    async def _run():
+        try:
+            await run_pipeline(cfg)
+        except Exception as e:
+            print(f"[Routes] Pipeline background task error: {e}")
+
+    asyncio.create_task(_run())
+
+    return {
+        "status": "started",
+        "message": "Job application pipeline started in background",
+        "settings": cfg or get_pipeline_settings(),
+    }
+
+
+@router.get("/pipeline/progress")
+async def pipeline_progress():
+    """Get real-time progress of the running pipeline."""
+    return get_pipeline_progress()
+
+
+@router.get("/pipeline/settings")
+async def pipeline_settings():
+    """Get current pipeline settings."""
+    return get_pipeline_settings()
 
 
 @router.get("/status")
