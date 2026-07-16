@@ -51,8 +51,8 @@ const navSections: { label: string; items: NavItemDef[] }[] = [
     label: 'Tools',
     items: [
       { path: '/chat', label: 'Chat', icon: MessageSquare },
-      { path: '/memory', label: 'Memory', icon: BrainCircuit },
-      { path: '/brain', label: 'Brain', icon: BrainCircuit },
+      { path: '/memory', label: 'Notes & Storage', icon: BrainCircuit },
+      { path: '/brain', label: 'Knowledge Graph', icon: BrainCircuit },
       { path: '/agent', label: 'Agent', icon: Cpu },
       { path: '/vision', label: 'Vision', icon: Eye },
       { path: '/apis', label: 'APIs', icon: Zap },

@@ -276,10 +276,13 @@ class WakeWordDetector:
         hindi_path = self.settings.vosk_hindi_model_path
         self.model_hi = None
         try:
-            import vosk
-            if hindi_path and hindi_path != model_path:
+            import os as _os
+            if hindi_path and hindi_path != model_path and _os.path.isdir(hindi_path):
+                import vosk
                 self.model_hi = vosk.Model(hindi_path)
                 print(f"[WakeWord] Hindi model loaded from {hindi_path}")
+            elif hindi_path and not _os.path.isdir(hindi_path):
+                print(f"[WakeWord] Hindi model path '{hindi_path}' does not exist — skipping")
         except Exception as e:
             print(f"[WakeWord] Failed to load Hindi model (non-fatal): {e}")
 

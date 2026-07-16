@@ -74,7 +74,7 @@ export function MemoryPage(): JSX.Element {
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-xl font-orbitron font-bold text-ghost tracking-wider">MEMORY & KNOWLEDGE</h1>
+        <h1 className="text-xl font-orbitron font-bold text-ghost tracking-wider">NOTES & STORAGE</h1>
         <p className="text-sm font-rajdhani text-dim-400 mt-1">Core memory, vector search, notes, and RAG knowledge base</p>
       </motion.div>
 

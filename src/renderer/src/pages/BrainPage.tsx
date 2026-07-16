@@ -531,10 +531,10 @@ export function BrainPage(): JSX.Element {
           </div>
           <div>
             <h1 className="text-sm font-orbitron font-bold tracking-[0.15em] uppercase text-indigo-300">
-              AI Brain
+              Knowledge Graph
             </h1>
             <p className="text-[9px] font-mono text-zinc-500 tracking-[0.1em]">
-              Knowledge Graph Visualization
+              Entity Relationship Visualization
             </p>
           </div>
         </div>

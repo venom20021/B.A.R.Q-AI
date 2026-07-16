@@ -19,6 +19,69 @@ function getStoredUserName(): string {
   try { return localStorage.getItem(USER_NAME_KEY) || DEFAULT_USER_NAME } catch { return DEFAULT_USER_NAME }
 }
 
+// ─── Persistent Agent Chat History ─────────────────────────────────────
+
+const AGENT_HISTORY_KEY = 'barq_agent_history'
+const MAX_MESSAGES_PER_AGENT = 50
+
+interface AgentChatMessage { role: 'user' | 'assistant'; content: string }
+
+type AgentHistoryMap = Record<string, AgentChatMessage[]>
+
+function loadAgentHistory(): AgentHistoryMap {
+  try {
+    const raw = localStorage.getItem(AGENT_HISTORY_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as AgentHistoryMap
+      // Basic validation: ensure it's an object
+      if (typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+    }
+  } catch { /* ignore corrupt data */ }
+  return {}
+}
+
+function saveAgentHistory(history: AgentHistoryMap): void {
+  try {
+    // Prune: keep only last N messages per agent to avoid bloating localStorage
+    const pruned: AgentHistoryMap = {}
+    for (const [agent, messages] of Object.entries(history)) {
+      pruned[agent] = messages.length > MAX_MESSAGES_PER_AGENT
+        ? messages.slice(-MAX_MESSAGES_PER_AGENT)
+        : messages
+    }
+    localStorage.setItem(AGENT_HISTORY_KEY, JSON.stringify(pruned))
+  } catch {
+    console.warn('[AgentHistory] Failed to persist to localStorage')
+  }
+}
+
+async function loadAgentHistoryFromBackend(): Promise<AgentHistoryMap | null> {
+  try {
+    const resp = await api<{ history?: AgentHistoryMap }>('/memory/agent-history')
+    if (resp?.history && typeof resp.history === 'object') {
+      return resp.history
+    }
+  } catch {
+    // Backend unreachable — fall back to localStorage
+  }
+  return null
+}
+
+async function syncAgentHistoryToBackend(history: AgentHistoryMap): Promise<void> {
+  try {
+    // Prune before sending to backend
+    const pruned: AgentHistoryMap = {}
+    for (const [agent, messages] of Object.entries(history)) {
+      pruned[agent] = messages.length > MAX_MESSAGES_PER_AGENT
+        ? messages.slice(-MAX_MESSAGES_PER_AGENT)
+        : messages
+    }
+    await api('/memory/agent-history', { history: pruned })
+  } catch {
+    // Backend unreachable — silently skip (localStorage still has the data)
+  }
+}
+
 // ─── Lazy-loaded Agent Node Network ────────────────────────────────────
 
 import { QUALITY_PRESETS } from '../components/ParticleSphere3D'
@@ -258,9 +321,7 @@ function getSubGreeting(sttText: string, responseText: string, aiState: string, 
   return 'BARQ is ready'
 }
 
-// ─── Types ─────────────────────────────────────────────────────────────
 
-interface AgentChatMessage { role: 'user' | 'assistant'; content: string }
 
 // ─── CSS Audio Waveform ────────────────────────────────────────────────
 
@@ -298,7 +359,29 @@ export function DashboardPage(): JSX.Element {
   )
 
   const onSelectAgent = useCallback((label: string) => { setActiveAgent(label) }, [setActiveAgent])
-  const [agentHistory, setAgentHistory] = useState<Record<string, AgentChatMessage[]>>({})
+  // Persisted agent chat history (survives page reloads)
+  const [agentHistory, setAgentHistory] = useState<AgentHistoryMap>(loadAgentHistory)
+  const [historyLoaded, setHistoryLoaded] = useState(false)
+
+  // On mount, try loading from backend first (cross-device sync)
+  useEffect(() => {
+    loadAgentHistoryFromBackend().then((backendHistory) => {
+      if (backendHistory && Object.keys(backendHistory).length > 0) {
+        setAgentHistory(backendHistory)
+      }
+      setHistoryLoaded(true)
+    })
+  }, [])
+
+  // Persist to localStorage + backend whenever history changes (debounced)
+  useEffect(() => {
+    if (!historyLoaded) return
+    const timer = setTimeout(() => {
+      saveAgentHistory(agentHistory)
+      syncAgentHistoryToBackend(agentHistory)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [agentHistory, historyLoaded])
   const currentMessages = useMemo<AgentChatMessage[]>(
     () => activeAgent ? (agentHistory[activeAgent] ?? []) : [],
     [activeAgent, agentHistory],

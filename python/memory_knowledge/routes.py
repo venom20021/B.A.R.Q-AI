@@ -388,6 +388,35 @@ async def rag_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Agent Chat History (cross-device sync) ──────────────────────────────
+
+@router.get("/agent-history")
+async def get_agent_history():
+    """Get the persisted agent chat history."""
+    try:
+        raw = await settings_dao.get_setting("agent_chat_history")
+        if raw:
+            return {"history": json.loads(raw)}
+        return {"history": {}}
+    except Exception:
+        return {"history": {}}
+
+
+@router.post("/agent-history")
+async def save_agent_history(data: dict):
+    """Persist agent chat history to the database."""
+    try:
+        history = data.get("history", {})
+        await settings_dao.set_setting(
+            "agent_chat_history",
+            json.dumps(history),
+            category="memory",
+        )
+        return {"status": "saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
