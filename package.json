@@ -52,7 +52,7 @@
     "electron": "^32.3.3",
     "electron-builder": "^25.0.5",
     "electron-vite": "^2.3.0",
-    "eslint": "^9.39.4",
+    "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "happy-dom": "^20.10.6",
     "jsdom": "^27.0.1",
