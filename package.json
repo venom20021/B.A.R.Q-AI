@@ -27,7 +27,7 @@
     "@tsparticles/react": "^3.0.0",
     "@tsparticles/slim": "^4.3.1",
     "framer-motion": "^12.42.2",
-    "lucide-react": "^0.441.0",
+    "lucide-react": "^1.24.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-force-graph-2d": "^1.29.1",
