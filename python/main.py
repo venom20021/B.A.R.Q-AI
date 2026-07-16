@@ -191,12 +191,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[BARQ Sidecar] Agent task queue start error: {e}")
 
-    # Initialize the SkillRegistry with built-in tools
-    try:
-        from agent.skill_registry import register_builtin_skills
-        register_builtin_skills()
-    except Exception as e:
-        print(f"[BARQ Sidecar] Skill registry init error: {e}")
+    # Skills auto-register on import via agent.skill_registry
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown

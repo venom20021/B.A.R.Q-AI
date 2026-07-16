@@ -493,6 +493,12 @@ def register_builtin_skills(registry: Optional[SkillRegistry] = None) -> SkillRe
     return reg
 
 
+# Auto-register built-in skills when this module is imported.
+# This ensures skills are always available, even when TestClient or
+# direct imports are used without triggering the application lifespan.
+register_builtin_skills()
+
+
 # ─── Dynamic Skill Registration Helper ───────────────────────────────────
 
 
