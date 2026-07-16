@@ -1,4 +1,4 @@
 allowBuilds:
-  '@tsparticles/engine': set this to true or false
-  electron: set this to true or false
-  esbuild: set this to true or false
+  '@tsparticles/engine': true
+  electron: true
+  esbuild: true

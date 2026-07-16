@@ -33,7 +33,11 @@ from config import get_settings
 from database import analytics_dao, close_db, init_db
 from desktop_automation.routes import router as desktop_router
 from documents.routes import router as documents_router
+from external_apis.routes import router as external_apis_router
+from graph_brain import graph_brain
 from jobs.routes import router as jobs_router
+from memory_knowledge.brain_api import router as brain_api_router
+from memory_knowledge.graph_routes import router as graph_router
 from memory_knowledge.routes import router as memory_router
 from notifications.routes import router as notification_router
 from social.routes import router as social_router
@@ -164,6 +168,12 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"[BARQ Sidecar] Starting on {settings.host}:{settings.port}")
     await init_db()
+
+    # Load knowledge graph from disk if it exists
+    import os as _os
+    _graph_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "graph.json")
+    graph_brain.load_from_disk(_graph_path)
+
     try:
         await analytics_dao.log_activity(
             "system", "startup", f"BARQ Sidecar v2.0 started on {settings.host}:{settings.port}",
@@ -240,10 +250,13 @@ app.include_router(memory_router, prefix="/memory", tags=["Memory & Knowledge"])
 app.include_router(web_router, prefix="/web", tags=["Web & Media"])
 app.include_router(documents_router, prefix="/documents", tags=["Document Generation"])
 app.include_router(desktop_router, prefix="/desktop", tags=["Desktop Automation"])
+app.include_router(graph_router, prefix="/graph", tags=["Graph Brain"])
+app.include_router(brain_api_router, tags=["Brain Visualisation"])
 app.include_router(auth_router, tags=["Auth"])
 app.include_router(api_v1_router, tags=["Jobs v1"])  # Already has /api/v1 prefix
 app.include_router(agent_router, prefix="/agent", tags=["Agent System"])
 app.include_router(vision_router, prefix="/vision", tags=["Visual Awareness"])
+app.include_router(external_apis_router, tags=["Free Public APIs"])
 
 
 @app.get("/health")

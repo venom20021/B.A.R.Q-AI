@@ -22,6 +22,12 @@ dist/
 Desktop.ini
 Thumbs.db
 
+# Freebuff tool cache
+.freebuff/
+
+# Stray pip output
+=3.2.1
+
 # Logs
 *.log
 test-results/

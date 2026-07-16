@@ -83,3 +83,6 @@ psutil>=7.0.0
 # Utilities
 python-dotenv>=1.0.1
 rich>=13.8.0
+
+# Knowledge Graph
+networkx>=3.2.1

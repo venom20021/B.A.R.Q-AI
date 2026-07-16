@@ -1,5 +1,6 @@
 import { ChildProcess, spawn, execSync } from 'child_process'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 
@@ -7,20 +8,40 @@ const SIDECAR_PORT = 8970
 const SIDECAR_HOST = '127.0.0.1'
 const SIDECAR_URL = `http://${SIDECAR_HOST}:${SIDECAR_PORT}`
 
+/**
+ * Common Python installation paths on Windows, checked in order.
+ */
+const WINDOWS_PYTHON_PATHS = [
+  // User-local Python 3.13 (most common for winget installs)
+  join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python313', 'python.exe'),
+  join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python312', 'python.exe'),
+  join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python311', 'python.exe'),
+  'C:\\Python313\\python.exe',
+  'C:\\Python312\\python.exe',
+  'C:\\Python311\\python.exe',
+  join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Python313', 'python.exe'),
+  join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Python312', 'python.exe'),
+]
+
 class PythonSidecar {
   private process: ChildProcess | null = null
   private isRunning = false
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private _showVoskLogs = false
   private _showWhisperLogs = false
+  private restartCount = 0
+  private lastRestartAttempt = 0
 
   /**
    * Kill any existing process holding the sidecar port (Windows only).
+   * Uses multiple methods to find and kill the offending process.
    */
   private async freePort(): Promise<void> {
     if (process.platform !== 'win32') return
 
-    let killed = false
+    const pids = new Set<number>()
+
+    // Method 1: netstat
     try {
       const result = execSync(
         `netstat -ano | findstr :${SIDECAR_PORT}`,
@@ -29,21 +50,47 @@ class PythonSidecar {
       const lines = result.trim().split(/\r?\n/)
       for (const line of lines) {
         const parts = line.trim().split(/\s+/)
-        const pid = parts[parts.length - 1]
-        if (pid && !isNaN(Number(pid))) {
-          console.log(`[PythonSidecar] Killing process ${pid} on port ${SIDECAR_PORT}...`)
-          execSync(`taskkill /F /PID ${pid}`, { encoding: 'utf8', timeout: 3000 })
-          console.log(`[PythonSidecar] Freed port ${SIDECAR_PORT}`)
-          killed = true
+        const pid = parseInt(parts[parts.length - 1], 10)
+        if (!isNaN(pid) && pid > 0) {
+          pids.add(pid)
         }
       }
     } catch {
-      // No process found on port — proceed normally
+      // netstat not available — fall through
     }
 
-    // Only delay if a process was actually killed
-    if (killed) {
-      await new Promise((resolve) => setTimeout(resolve, 500))
+    if (pids.size === 0) return // No process found on port
+
+    // Kill all PIDs found
+    for (const pid of pids) {
+      try {
+        console.log(`[PythonSidecar] Killing process ${pid} on port ${SIDECAR_PORT}...`)
+        execSync(`taskkill /F /PID ${pid}`, { encoding: 'utf8', timeout: 3000 })
+        console.log(`[PythonSidecar] Killed PID ${pid}`)
+      } catch {
+        // Process may have already exited — that's fine
+      }
+    }
+
+    // Wait for the port to be released (OS may hold TIME_WAIT for a bit)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+
+    // Verify the port is actually free now
+    try {
+      const check = execSync(
+        `netstat -ano | findstr :${SIDECAR_PORT}`,
+        { encoding: 'utf8', timeout: 3000 },
+      )
+      if (check.trim().length > 0) {
+        console.warn(`[PythonSidecar] Port ${SIDECAR_PORT} still in use after killing. Retrying in 2s...`)
+        // Give it more time for TIME_WAIT to clear
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      } else {
+        console.log(`[PythonSidecar] Port ${SIDECAR_PORT} is now free`)
+      }
+    } catch {
+      // No output means port is free
+      console.log(`[PythonSidecar] Port ${SIDECAR_PORT} is now free`)
     }
   }
 
@@ -55,68 +102,117 @@ class PythonSidecar {
   async start(): Promise<void> {
     if (this.isRunning) return
 
-    // Free the port if another process is holding it
-    await this.freePort()
-
-    const pythonPath = this.getPythonPath()
-    const args = this.getArgs()
-
-    console.log(`[PythonSidecar] Starting: ${pythonPath} ${args.join(' ')}`)
-
-    this.process = spawn(pythonPath, args, {
-      cwd: this.getWorkingDir(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        SIDECAR_PORT: String(SIDECAR_PORT),
-        SIDECAR_HOST: SIDECAR_HOST
+    // Try starting with up to 2 retries
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        console.log(`[PythonSidecar] Retry attempt ${attempt + 1}/3...`)
+        // Aggressively free the port before retry
+        await this.freePort()
+      } else {
+        // Free the port if another process is holding it
+        await this.freePort()
       }
-    })
 
-    this.process.stdout?.on('data', (data: Buffer) => {
-      const text = data.toString().trim()
-      // Whisper/STT related lines have [Speech] prefix or mention "whisper".
-      // Hide them unless the whisper debug toggle is enabled.
-      if (text.includes('[Speech]') || /whisper/i.test(text)) {
-        if (this._showWhisperLogs) {
-          console.log(`[STT] ${text}`)
+      const pythonPath = this.getPythonPath()
+      const args = this.getArgs()
+
+      console.log(`[PythonSidecar] Starting: ${pythonPath} ${args.join(' ')}`)
+
+      this.process = spawn(pythonPath, args, {
+        cwd: this.getWorkingDir(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          SIDECAR_PORT: String(SIDECAR_PORT),
+          SIDECAR_HOST: SIDECAR_HOST
         }
-        return
-      }
-      console.log(`[Python] ${text}`)
-    })
+      })
 
-    this.process.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString().trim()
-      // Vosk and other native libraries write verbose INFO logs to stderr.
-      // Lines starting with "LOG (" are informational (model loading etc.) — show at debug level.
-      if (text.startsWith('LOG (')) {
-        if (this._showVoskLogs) {
-          console.log(`[Vosk] ${text}`)
+      // Track if this attempt failed early (port in use, etc.)
+      let earlyExit = false
+
+      this.process.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString().trim()
+        if (text.includes('[Speech]') || /whisper/i.test(text)) {
+          if (this._showWhisperLogs) {
+            console.log(`[STT] ${text}`)
+          }
+          return
         }
-        return
+        console.log(`[Python] ${text}`)
+      })
+
+      this.process.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString().trim()
+        if (text.startsWith('LOG (')) {
+          if (this._showVoskLogs) {
+            console.log(`[Vosk] ${text}`)
+          }
+          return
+        }
+        // Log stderr but detect address-in-use errors
+        if (text.includes('Address already in use') || text.includes('errno 10048') || text.includes('EADDRINUSE')) {
+          console.error(`[PythonSidecar] Port ${SIDECAR_PORT} is already in use (detected in stderr)`)
+          earlyExit = true
+        } else {
+          console.warn(`[Python stderr] ${text}`)
+        }
+      })
+
+      const exitPromise = new Promise<void>((resolve) => {
+        const onExit = (code: number | null): void => {
+          console.log(`[PythonSidecar] Process exited with code ${code}`)
+          this.isRunning = false
+          this.process = null
+          if (code === 1 || code === null) {
+            earlyExit = true
+          }
+          resolve()
+        }
+        this.process!.on('exit', onExit)
+        this.process!.on('error', (err) => {
+          console.error(`[PythonSidecar] Failed to start:`, err.message)
+          this.isRunning = false
+          this.process = null
+          earlyExit = true
+          resolve()
+        })
+      })
+
+      // Wait for the sidecar to become healthy, but also race against early exit
+      try {
+        // If the process exits for ANY reason before the health check passes,
+        // reject immediately instead of waiting 30s for timeout
+        const exitRace = exitPromise.then(() => {
+          throw new Error(
+            earlyExit
+              ? 'Process exited early (likely port in use)'
+              : 'Process exited unexpectedly before health check'
+          )
+        })
+        // Prevent unhandled rejection if health check wins and process later exits
+        exitRace.catch(() => {})
+
+        await Promise.race([this.waitForHealth(30_000), exitRace])
+        this.isRunning = true
+        this.startHealthChecks()
+        return // Success!
+      } catch (err) {
+        // Save reference before any null-assignment in callbacks
+        const proc = this.process
+        console.warn(
+          `[PythonSidecar] Attempt ${attempt + 1}/3 failed` +
+          (earlyExit ? ' (process exited early)' : ' (health check timed out)') +
+          (attempt >= 2 ? '. No more retries.' : ', retrying...')
+        )
+        if (proc) proc.kill('SIGTERM')
+        this.process = null
+        this.isRunning = false
+        if (attempt >= 2) throw err
       }
-      console.warn(`[Python stderr] ${text}`)
-    })
+    }
 
-    this.process.on('exit', (code) => {
-      console.log(`[PythonSidecar] Process exited with code ${code}`)
-      this.isRunning = false
-      this.process = null
-    })
-
-    this.process.on('error', (err) => {
-      console.error(`[PythonSidecar] Failed to start:`, err.message)
-      this.isRunning = false
-      this.process = null
-    })
-
-    // Wait for the sidecar to become healthy
-    await this.waitForHealth(30_000) // 30 second timeout
-    this.isRunning = true
-
-    // Start periodic health checks
-    this.startHealthChecks()
+    throw new Error('[PythonSidecar] Failed to start after 3 attempts')
   }
 
   /**
@@ -212,14 +308,67 @@ class PythonSidecar {
 
   private getPythonPath(): string {
     if (is.dev) {
-      // In development, expect Python to be on PATH
-      return process.platform === 'win32' ? 'python' : 'python3'
+      if (process.platform === 'win32') {
+        return this.findWindowsPython()
+      }
+      return 'python3'
     } else {
       // In production, use the bundled executable
       const resourcesPath = join(process.resourcesPath, 'python')
       const ext = process.platform === 'win32' ? '.exe' : ''
       return join(resourcesPath, `barq-sidecar${ext}`)
     }
+  }
+
+  /**
+   * Find a working Python executable on Windows.
+   * Tries `python` command first (skipping the WindowsApp shim),
+   * then checks common installation paths.
+   */
+  private findWindowsPython(): string {
+    // 1. Try `py -3` (Python launcher) — avoids the Store redirect
+    try {
+      const result = execSync('py -3 -c "import sys; print(sys.executable)"', {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const path = result.trim()
+      if (path && existsSync(path)) {
+        console.log(`[PythonSidecar] Found Python via launcher: ${path}`)
+        return path
+      }
+    } catch {
+      // py launcher not available — fall through
+    }
+
+    // 2. Try `python -c` and check the actual path isn't the WindowsApp shim
+    try {
+      const result = execSync('python -c "import sys; print(sys.executable)"', {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const path = result.trim()
+      if (path && !path.includes('WindowsApps') && existsSync(path)) {
+        console.log(`[PythonSidecar] Found Python via PATH: ${path}`)
+        return path
+      }
+    } catch {
+      // Not on PATH — fall through
+    }
+
+    // 3. Check known installation paths
+    for (const candidate of WINDOWS_PYTHON_PATHS) {
+      if (existsSync(candidate)) {
+        console.log(`[PythonSidecar] Found Python at: ${candidate}`)
+        return candidate
+      }
+    }
+
+    // 4. Final fallback — let the OS decide (will likely fail with a clear error)
+    console.warn('[PythonSidecar] Could not find a real Python installation — falling back to "python"')
+    return 'python'
   }
 
   private getArgs(): string[] {
@@ -240,6 +389,7 @@ class PythonSidecar {
 
   private async waitForHealth(timeoutMs: number): Promise<void> {
     const startTime = Date.now()
+    let lastLogTime = 0
 
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -252,6 +402,13 @@ class PythonSidecar {
         // Not ready yet, retry
       }
 
+      const elapsed = Date.now() - startTime
+      // Log progress every 5 seconds
+      if (elapsed - lastLogTime >= 5000) {
+        lastLogTime = elapsed
+        console.log(`[PythonSidecar] Waiting for backend... (${Math.round(elapsed / 1000)}s/${Math.round(timeoutMs / 1000)}s)`)
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 500))
     }
 
@@ -262,8 +419,28 @@ class PythonSidecar {
     this.healthCheckInterval = setInterval(async () => {
       try {
         await this.request('/health', undefined, 2000)
+        // Reset restart count on successful health check
+        this.restartCount = 0
       } catch {
-        console.warn('[PythonSidecar] Health check failed, attempting restart...')
+        const now = Date.now()
+        const timeSinceLastRestart = now - this.lastRestartAttempt
+
+        // Backoff: wait at least 10s, 30s, 60s between restart attempts
+        const minDelay = [10_000, 30_000, 60_000][Math.min(this.restartCount, 2)]
+        if (timeSinceLastRestart < minDelay) {
+          console.warn(
+            `[PythonSidecar] Health check failed, but too soon to restart ` +
+            `(${Math.round(timeSinceLastRestart / 1000)}s since last attempt). Waiting.`
+          )
+          return
+        }
+
+        this.restartCount++
+        this.lastRestartAttempt = now
+        console.warn(
+          `[PythonSidecar] Health check failed, attempting restart ` +
+          `(attempt #${this.restartCount})...`
+        )
         await this.stop()
         await this.start()
       }

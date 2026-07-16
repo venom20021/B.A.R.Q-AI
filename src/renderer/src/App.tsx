@@ -29,6 +29,8 @@ import { WidgetsPage } from './pages/WidgetsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AgentPage } from './pages/AgentPage'
 import { VisionPage } from './pages/VisionPage'
+import { BrainPage } from './pages/BrainPage'
+import { PublicApisPage } from './pages/PublicApisPage'
 
 // Lazy loaded views for the main navbar tabs
 const NotesView = lazy(() => import('./views/NotesView'))
@@ -366,6 +368,8 @@ function AppContent(): JSX.Element {
                   <Route path="/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
                   <Route path="/agent" element={<AnimatedPage><AgentPage /></AnimatedPage>} />
                   <Route path="/vision" element={<AnimatedPage><VisionPage /></AnimatedPage>} />
+                  <Route path="/brain" element={<AnimatedPage><BrainPage /></AnimatedPage>} />
+                  <Route path="/apis" element={<AnimatedPage><PublicApisPage /></AnimatedPage>} />
                   <Route path="/widgets" element={<AnimatedPage><WidgetsPage /></AnimatedPage>} />
                 </Routes>
               </AnimatePresence>

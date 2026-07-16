@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
-    "dev:python": "cd python && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8970",
+    "dev:python": "node scripts/dev-python.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
@@ -30,6 +30,7 @@
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-force-graph-2d": "^1.29.1",
     "react-router-dom": "^6.26.0",
     "recharts": "^2.12.0",
     "three": "^0.185.1"
@@ -41,6 +42,7 @@
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.1.1",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@typescript-eslint/eslint-plugin": "^8.62.1",
