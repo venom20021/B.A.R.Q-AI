@@ -2,7 +2,7 @@ import { Suspense, useState, useEffect, useRef, useCallback, lazy, useMemo } fro
 import type { MutableRefObject } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Cloud, Mic, MicOff, Bot, User, ArrowLeft, Send, Loader2,
+  Cloud, Mic, MicOff, Bot, User, ArrowLeft, Send, Loader2, Trash2,
   Crosshair, MapPin, LocateFixed, Settings2,
 } from 'lucide-react'
 import { Vector3 } from 'three'
@@ -388,6 +388,7 @@ export function DashboardPage(): JSX.Element {
   )
   const [agentInput, setAgentInput] = useState('')
   const [agentLoading, setAgentLoading] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
   const agentInputRef = useRef<HTMLTextAreaElement>(null!)
   const agentInputRefValue = useRef('')
   const messagesEndRef = useRef<HTMLDivElement>(null!)
@@ -410,6 +411,29 @@ export function DashboardPage(): JSX.Element {
       setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'assistant' as const, content: 'Failed to reach agent. Is the backend running?' }] }))
     } finally { setAgentLoading(false) }
   }, [activeAgent, agentLoading])
+
+  const handleClearHistory = useCallback(() => {
+    setConfirmClear(true)
+  }, [])
+
+  const executeClearHistory = useCallback(() => {
+    if (!activeAgent) return
+    setConfirmClear(false)
+    setAgentHistory(prev => {
+      const next = { ...prev }
+      delete next[activeAgent]
+      return next
+    })
+  }, [activeAgent])
+
+  const cancelClearHistory = useCallback(() => {
+    setConfirmClear(false)
+  }, [])
+
+  // Reset confirmClear when switching agents
+  useEffect(() => {
+    setConfirmClear(false)
+  }, [activeAgent])
 
   const weather = useWeatherData()
   const [weatherInput, setWeatherInput] = useState('')
@@ -732,13 +756,49 @@ export function DashboardPage(): JSX.Element {
                   <p className="text-[10px] font-sans text-white/30 tracking-[0.2em] uppercase font-medium mb-1">Agent Workspace</p>
                   <h2 className="text-2xl font-sans font-bold text-white/90 tracking-tight">{activeAgent.toUpperCase()}</h2>
                 </div>
-                <div className="w-2.5 h-2.5 rounded-full shrink-0 mt-2" style={{ backgroundColor: activeAgentColor, boxShadow: `0 0 12px ${activeAgentColor}60` }} />
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    onClick={handleClearHistory}
+                    disabled={currentMessages.length === 0 || confirmClear}
+                    className="flex items-center justify-center w-6 h-6 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-20 disabled:cursor-not-allowed transition-all duration-200"
+                    title="Clear this agent's chat history"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: activeAgentColor, boxShadow: `0 0 12px ${activeAgentColor}60` }} />
+                </div>
               </div>
 
               {/* Chat */}
               <div className="flex-1 rounded-xl bg-white/[0.03] border border-white/[0.06] flex flex-col overflow-hidden">
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin" ref={messagesEndRef}>
-                  {currentMessages.length === 0 ? (
+                  {confirmClear ? (
+                    <div className="flex flex-col items-center justify-center h-full gap-4 px-6">
+                      <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center border border-red-500/20">
+                        <Trash2 className="w-5 h-5 text-red-400" />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm font-sans text-white/80 font-medium mb-1">Clear chat history?</p>
+                        <p className="text-[11px] font-sans text-white/40 leading-relaxed">
+                          This will permanently remove all messages for <span className="text-white/60 font-medium">{activeAgent}</span>.
+                        </p>
+                      </div>
+                      <div className="flex gap-3 w-full max-w-[200px]">
+                        <button
+                          onClick={cancelClearHistory}
+                          className="flex-1 px-3 py-2 rounded-lg text-xs font-sans font-medium text-white/50 border border-white/10 bg-white/5 hover:bg-white/10 hover:text-white/70 transition-all duration-200"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={executeClearHistory}
+                          className="flex-1 px-3 py-2 rounded-lg text-xs font-sans font-medium text-red-300 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-all duration-200"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                  ) : currentMessages.length === 0 ? (
                     <div className="flex items-center justify-center h-full">
                       <p className="text-sm font-sans text-white/20 italic text-center max-w-[200px]">Ask {activeAgent} anything to get started</p>
                     </div>
