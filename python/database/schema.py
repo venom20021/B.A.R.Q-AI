@@ -328,7 +328,7 @@ CREATE_ACTIVITY_LOG = """
 CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL
-        CHECK (type IN ('job', 'content', 'analytics', 'voice', 'system', 'notification', 'error', 'memory', 'desktop', 'web', 'documents')),
+        CHECK (type IN ('job', 'content', 'analytics', 'voice', 'system', 'notification', 'error', 'memory', 'desktop', 'web', 'documents', 'research')),
     action TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     metadata TEXT NOT NULL DEFAULT '{}',           -- JSON for extra context

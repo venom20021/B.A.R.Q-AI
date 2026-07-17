@@ -367,6 +367,73 @@ def get_skill_registry() -> SkillRegistry:
     return _registry
 
 
+# ─── Fallback Handler ────────────────────────────────────────────────────
+
+
+async def _handle_respond_fallback(**kwargs: Any) -> str:
+    """Fallback handler for the ``respond`` skill.
+
+    Tries the LLM first for a proper conversational response. Falls back to
+    canned regex-based responses only when the LLM is unavailable.
+    """
+    message = kwargs.get("message", "")
+    if not message:
+        return "I'm here to help! What would you like to do?"
+
+    # Strip agent prefix like "[Strategist] " to get the actual user message
+    cleaned = message.strip()
+    import re as _re
+    match = _re.match(r"^\[.*?\]\s*(.*)", cleaned)
+    if match:
+        cleaned = match.group(1).strip()
+
+    if not cleaned or len(cleaned) < 2:
+        return "I'm here! What can I help you with?"
+
+    # ── Try the LLM first for a proper response ────────────────────────
+    try:
+        from utils.ollama_client import OllamaClient
+        llm = OllamaClient()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are BARQ, a helpful AI assistant. Respond naturally and concisely "
+                    "to the user's message. Keep responses under 3 sentences."
+                ),
+            },
+            {"role": "user", "content": cleaned},
+        ]
+        response = await llm.chat(messages)
+        if response and len(response.strip()) > 5:
+            return response.strip()
+    except Exception:
+        pass  # Fall through to canned response
+
+    # ── Canned fallback when LLM is unavailable ─────────────────────────
+    intent_greeting = "hello" in cleaned.lower() or "hi " in cleaned.lower() or "hey" in cleaned.lower()
+    intent_question = "?" in cleaned or cleaned.lower().startswith(("what", "how", "why", "when", "where", "who", "can", "could", "would", "will", "is", "are", "do", "does"))
+    intent_thanks = "thank" in cleaned.lower() or "thanks" in cleaned.lower()
+
+    if intent_greeting:
+        return "Hello! I'm your agent assistant. How can I help you today?"
+    elif intent_thanks:
+        return "You're welcome! Let me know if you need anything else."
+    elif intent_question:
+        return (
+            "That's a great question. I'd love to research this for you, but my "
+            "language model (Ollama) is currently unavailable. Please make sure "
+            "Ollama is running so I can provide detailed responses. "
+            "In the meantime, feel free to ask me something else!"
+        )
+    else:
+        return (
+            "I heard you! Unfortunately, my language model is currently offline, "
+            "so I can only provide limited responses right now. "
+            "Please start Ollama to unlock my full capabilities."
+        )
+
+
 # ─── Built-in Skill Registration ──────────────────────────────────────────
 
 
@@ -479,6 +546,76 @@ def register_builtin_skills(registry: Optional[SkillRegistry] = None) -> SkillRe
             critical=False,
             category="social",
             metadata={"route_method": "GET", "route_path": "/social/trends", "route_payload": {"topic": ""}},
+        ),
+        Skill(
+            name="respond",
+            description="Respond conversationally to the user when no other tool is appropriate. Use this for general chat, greetings, simple questions, or when the user's input doesn't fit any other tool.",
+            parameters=[
+                SkillParameter("message", "string", True, "The conversational response to deliver"),
+            ],
+            critical=False,
+            category="communications",
+            handler=_handle_respond_fallback,
+        ),
+        # ── Deep Research Skills ──────────────────────────────────
+        Skill(
+            name="deep_research",
+            description="Perform deep, multi-round research on any topic. Returns a comprehensive report with gathered facts, elaborated insights, and structured findings. Supports basic (1 round), standard (2 rounds), and deep (3 rounds) research.",
+            parameters=[
+                SkillParameter("topic", "string", True, "The research topic or question to investigate"),
+                SkillParameter("depth", "string", False, "Research depth: 'basic', 'standard' (default), or 'deep'"),
+            ],
+            critical=False,
+            category="research",
+            metadata={"route_method": "POST", "route_path": "/research/deep", "route_payload": {"topic": "", "depth": "standard"}},
+        ),
+        # ── Recruitment Agent Skills ───────────────────────────────
+        Skill(
+            name="recruitment_extract",
+            description="Extract structured requirements from a raw job description. Returns must-have skills, nice-to-haves, experience level, education, and responsibilities.",
+            parameters=[
+                SkillParameter("job_description", "string", True, "The raw job description text to parse"),
+                SkillParameter("title_hint", "string", False, "Optional job title hint"),
+                SkillParameter("company_hint", "string", False, "Optional company name hint"),
+            ],
+            critical=False,
+            category="recruitment",
+            metadata={"route_method": "POST", "route_path": "/recruitment/extract", "route_payload": {"job_description": "", "title_hint": "", "company_hint": ""}},
+        ),
+        Skill(
+            name="recruitment_match",
+            description="Match job requirements against your resume. Returns fit scores, missing skills with severity, and recommendations for improvement.",
+            parameters=[
+                SkillParameter("job_description", "string", True, "The raw job description text"),
+                SkillParameter("title_hint", "string", False, "Optional job title hint"),
+            ],
+            critical=False,
+            category="recruitment",
+            metadata={"route_method": "POST", "route_path": "/recruitment/match", "route_payload": {"job_description": "", "title_hint": "", "company_hint": ""}},
+        ),
+        Skill(
+            name="recruitment_write",
+            description="Generate ATS-optimized resume and optional cover letter tailored to a job description. Produces optimized markdown and injected keywords.",
+            parameters=[
+                SkillParameter("job_description", "string", True, "The raw job description text"),
+                SkillParameter("title_hint", "string", False, "Optional job title hint"),
+                SkillParameter("generate_cover_letter", "boolean", False, "Whether to generate a cover letter (default true)"),
+            ],
+            critical=False,
+            category="recruitment",
+            metadata={"route_method": "POST", "route_path": "/recruitment/write", "route_payload": {"job_description": "", "title_hint": "", "company_hint": "", "generate_cover_letter": True}},
+        ),
+        Skill(
+            name="recruitment_pipeline",
+            description="Run the full recruitment pipeline: extract requirements, match against resume, and generate optimized documents. One-shot end-to-end.",
+            parameters=[
+                SkillParameter("job_description", "string", True, "The raw job description text"),
+                SkillParameter("title_hint", "string", False, "Optional job title hint"),
+                SkillParameter("generate_cover_letter", "boolean", False, "Whether to generate a cover letter (default true)"),
+            ],
+            critical=False,
+            category="recruitment",
+            metadata={"route_method": "POST", "route_path": "/recruitment/pipeline", "route_payload": {"job_description": "", "title_hint": "", "company_hint": "", "generate_cover_letter": True}},
         ),
     ]
 

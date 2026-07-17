@@ -1,0 +1,1 @@
+{"directed": false, "multigraph": false, "graph": {}, "nodes": [{"id": "python"}, {"id": "data science"}, {"id": "engineer"}, {"id": "company"}], "edges": [{"relation": "USED_FOR", "source": "python", "target": "data science"}, {"relation": "WORKS_AT", "source": "engineer", "target": "company"}]}

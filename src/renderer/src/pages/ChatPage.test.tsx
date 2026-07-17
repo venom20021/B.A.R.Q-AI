@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { ChatPage } from './ChatPage'
 
-// Mock window.barq API
+// Mock window.barq API — scoped to this file, reset each test
 const mockPythonRequest = vi.fn()
 
 beforeEach(() => {
   vi.clearAllMocks()
+
   // Set up window.barq mock
   Object.defineProperty(window, 'barq', {
     value: {
@@ -18,26 +19,36 @@ beforeEach(() => {
     configurable: true,
     writable: true,
   })
+
+  // Do NOT mock SpeechRecognition — happy-dom doesn't have it,
+  // so the component's `supported` check returns `false` and the
+  // recognition useEffect is safely skipped. This avoids React 18
+  // concurrent-mode conflicts with sttText state updates.
+
+  // Mock localStorage so chat history persistence doesn't interfere
+  vi.spyOn(Storage.prototype, 'getItem').mockReturnValue(null)
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {})
+  vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {})
 })
 
 afterEach(() => {
-  // Clean up mock
   delete (window as unknown as Record<string, unknown>).barq
+  vi.restoreAllMocks()
+  cleanup()
 })
 
-describe('ChatPage - barq:voice-command event dispatch', () => {
+describe('ChatPage', () => {
   it('renders the chat page with input field', () => {
     render(<ChatPage />)
-    expect(screen.getByPlaceholderText('Type a command or ask a question...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Type a message or click the mic...')).toBeInTheDocument()
   })
 
   it('dispatches barq:voice-command event when command returns an action', async () => {
     mockPythonRequest.mockResolvedValue({
       action: 'show_diagnostics',
-      status: 'triggered',
+      text: 'Showing system diagnostics',
     })
 
-    // Listen for the custom event
     const eventPromise = new Promise<CustomEvent>((resolve) => {
       window.addEventListener('barq:voice-command', (e) => {
         resolve(e as CustomEvent)
@@ -46,12 +57,10 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
 
     render(<ChatPage />)
 
-    // Type a command and press Enter (reliable, maps to real user interaction)
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'show diagnostics' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // Wait for the event
     const event = await eventPromise
     expect(event.detail).toEqual({ action: 'show_diagnostics' })
   })
@@ -59,8 +68,8 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
   it('dispatches barq:voice-command with navigate action', async () => {
     mockPythonRequest.mockResolvedValue({
       action: 'navigate',
+      text: 'Navigating to settings',
       target: '/settings',
-      status: 'triggered',
     })
 
     const eventPromise = new Promise<CustomEvent>((resolve) => {
@@ -71,7 +80,7 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
 
     render(<ChatPage />)
 
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'go to settings' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -87,15 +96,14 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
 
     render(<ChatPage />)
 
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'show diagnostics' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // The api() helper swallows errors and returns undefined – shows fallback message
-    const fallbackMsg = await screen.findByText('Command processed.')
+    // The api() helper swallows errors — shows the connection fallback message
+    const fallbackMsg = await screen.findByText(/could not process a response/, {}, { timeout: 2000 })
     expect(fallbackMsg).toBeInTheDocument()
 
-    // Verify the event was NOT dispatched
     expect(eventSpy).not.toHaveBeenCalled()
     window.removeEventListener('barq:voice-command', eventSpy)
   })
@@ -103,7 +111,7 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
   it('dispatches event for scan_jobs action', async () => {
     mockPythonRequest.mockResolvedValue({
       action: 'scan_jobs',
-      status: 'triggered',
+      text: 'Scanning for new job listings',
     })
 
     const eventPromise = new Promise<CustomEvent>((resolve) => {
@@ -114,7 +122,7 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
 
     render(<ChatPage />)
 
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'scan jobs' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -122,37 +130,57 @@ describe('ChatPage - barq:voice-command event dispatch', () => {
     expect(event.detail).toEqual({ action: 'scan_jobs' })
   })
 
-  it('dispatches event for navigate action and shows friendly response', async () => {
+  it('displays the response text from the backend', async () => {
     mockPythonRequest.mockResolvedValue({
+      text: 'Navigating to settings',
       action: 'navigate',
-      target: '/settings',
     })
 
     render(<ChatPage />)
 
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'go to settings' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // Wait for the friendly response to appear
-    const response = await screen.findByText(/Navigating to/, {}, { timeout: 2000 })
+    const response = await screen.findByText(/Navigating to settings/, {}, { timeout: 2000 })
     expect(response).toBeInTheDocument()
   })
 
-  it('shows friendly response for known actions', async () => {
+  it('displays fallback text when backend returns no text', async () => {
     mockPythonRequest.mockResolvedValue({
       action: 'show_diagnostics',
-      status: 'triggered',
     })
 
     render(<ChatPage />)
 
-    const input = screen.getByPlaceholderText('Type a command or ask a question...')
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
     fireEvent.change(input, { target: { value: 'show diagnostics' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // The response for show_diagnostics is: 'Showing system diagnostics' (special-cased in ChatPage.tsx)
-    const response = await screen.findByText('Showing system diagnostics', {}, { timeout: 2000 })
+    const response = await screen.findByText('Command processed.', {}, { timeout: 2000 })
     expect(response).toBeInTheDocument()
+  })
+
+  it('clears chat history', async () => {
+    mockPythonRequest.mockResolvedValue({
+      text: 'Response',
+      action: 'conversation',
+    })
+
+    render(<ChatPage />)
+
+    const input = screen.getByPlaceholderText('Type a message or click the mic...')
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // Wait for response
+    await screen.findByText('Response', {}, { timeout: 2000 })
+
+    // Clear history
+    const clearButton = screen.getByTitle('Clear chat history')
+    fireEvent.click(clearButton)
+
+    // Should show the empty state again
+    expect(screen.getByText(/Start a conversation with BARQ/)).toBeInTheDocument()
   })
 })

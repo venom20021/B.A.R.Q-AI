@@ -247,18 +247,20 @@ class ConversationListener:
                         continue
 
                 # ── 4. Streaming respond with sentence-aware TTS ─────
+                interrupted = False
                 try:
                     self.responder.is_speaking = True
-                    interrupted = False
+                    self.responder.is_speaking_event.set()
 
                     async for chunk in self.responder.stream_respond(text):
                         if self._interrupt_requested():
-                            # Barge-in signalled during TTS gen — cancel
                             self.responder._interrupt_requested = True
                             interrupted = True
                             break
 
-                        # Prefer in-memory PCM playback (faster, no file I/O)
+                        # Pause mic monitor during TTS playback (prevents echo)
+                        self.stt.stop_mic_monitor()
+
                         audio_pcm = chunk.get("audio_pcm")
                         if audio_pcm is not None:
                             pcm_array, sample_rate = audio_pcm
@@ -269,7 +271,6 @@ class ConversationListener:
                                 )
                             )
                         else:
-                            # Fallback to file-based playback
                             audio_path = chunk.get("audio_path", "")
                             if audio_path and Path(audio_path).exists():
                                 playback_interrupted = (
@@ -282,14 +283,12 @@ class ConversationListener:
                                 playback_interrupted = False
 
                         if playback_interrupted:
-                            # User spoke over BARQ — flush LLM stream
                             self.responder._interrupt_requested = True
                             interrupted = True
                             break
 
                     if interrupted:
                         print("[Conversation] Barge-in — flushing LLM & restarting listen")
-                        # Brief delay to let PortAudio release resources before STT reopens.
                         await asyncio.sleep(0.15)
                         continue
 
@@ -299,6 +298,14 @@ class ConversationListener:
                     continue
                 finally:
                     self.responder.is_speaking = False
+                    self.responder.is_speaking_event.clear()
+                    # Flush the audio input buffer to discard stale frames recorded
+                    # during TTS playback. Prevents echo-spiral where BARQ hears
+                    # its own voice and tries to respond.
+                    try:
+                        await self.stt.flush_audio_buffer()
+                    except Exception as flush_err:
+                        print(f"[Conversation] Buffer flush warning: {flush_err}")
 
         except asyncio.CancelledError:
             print("[Conversation] Conversation loop cancelled")
@@ -391,8 +398,10 @@ class ConversationListener:
                         continue
 
                 # ── 4. Feed into pipeline (LLM → TTS) ───────────────
+                interrupted = False
                 try:
                     self.responder.is_speaking = True
+                    self.responder.is_speaking_event.set()
                     self.responder._interrupt_requested = False
 
                     # Store user message in conversation history
@@ -409,10 +418,11 @@ class ConversationListener:
                     async def input_stream():
                         yield PipelineTranscriptionFrame(text=text)
 
-                    interrupted = False
-
                     async for frame in pipeline.run(input_stream()):
                         if isinstance(frame, PipelineTTSAudioFrame):
+                            # Pause mic monitor during TTS playback
+                            self.stt.stop_mic_monitor()
+
                             playback_interrupted = (
                                 await self.interrupt_handler.play_pcm_with_interrupt(
                                     frame.pcm, frame.sample_rate,
@@ -420,8 +430,6 @@ class ConversationListener:
                                 )
                             )
                             if playback_interrupted:
-                                # Barge-in: send InterruptFrame to flush pipeline
-                                # and restart listening
                                 interrupted = True
                                 break
 
@@ -436,6 +444,12 @@ class ConversationListener:
                     continue
                 finally:
                     self.responder.is_speaking = False
+                    self.responder.is_speaking_event.clear()
+                    # Flush stale audio recorded during TTS playback
+                    try:
+                        await self.stt.flush_audio_buffer()
+                    except Exception as flush_err:
+                        print(f"[Conversation·Pipeline] Buffer flush warning: {flush_err}")
 
         except asyncio.CancelledError:
             print("[Conversation·Pipeline] Loop cancelled")

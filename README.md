@@ -13,9 +13,11 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 ### 🎤 Voice Control
 - **Wake word detection** — Always-listening (Vosk), hands-free wake word activation
 - **Conversation mode** — Natural back-and-forth like Alexa/Gemini; no need to say the wake word for every turn
-- **VAD endpointing** — Automatically detects when you stop speaking
+- **VAD endpointing** — Automatically detects when you stop speaking (250ms aggressive silence)
 - **Barge-in** — Interrupt BARQ mid-response by speaking over it
 - **Auto-language detection** — Detects English or Hindi from speech automatically and switches TTS voice (Jenny ↔ Swara) in real-time
+- **Echo-cancelling TTS** — `threading.Event()` mutex + audio buffer flush prevents feedback spiral
+- **TTS error recovery** — `try/except/finally` guarantees state is always reset on audio device failure
 - **Language indicators** — 🇬🇧/🇮🇳 badges in both the Navbar and mic toggle area show the current language at a glance
 - **Manual language switch** — Dropdown in Settings to lock recognition to English or Hindi
 - **Auto-detection status** — Settings page shows which language was last auto-detected with a live timestamp
@@ -25,8 +27,21 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 
 ### 🧠 AI-Powered Conversation
 - **Local LLM** — Runs on Ollama (llama3.1, llama3.2, phi4, or any model)
+- **Cloud LLM fallback** — Transparently falls back to OpenAI-compatible APIs when Ollama is offline
 - **Conversation memory** — Maintains context across multi-turn conversations
-- **Natural speech** — Edge TTS for high-quality text-to-speech
+- **Streaming sentence-aware TTS** — Begins speaking while LLM continues generating (sub-second first audio)
+- **Agent system** — Multi-step planner/executor with skill registry, error recovery, and replanning
+- **Deep Research Agent** — Multi-round iterative research with web search, fact extraction, and report generation
+- **Recruitment Agents** — Extract, match, and write ATS-optimized documents from job descriptions
+- **Natural speech** — Edge TTS for high-quality text-to-speech with offline Piper TTS fallback
+
+### 🧠 Multi-Brain Knowledge Graphs
+- **Domain-specific brains** — Isolated NetworkX graphs per domain (Apple Notes, Google Docs, AI Chats, Career)
+- **Persistent timeline** — Event log recording all triplet additions, survives app restarts via JSON persistence
+- **Real-time timeline UI** — Right-side panel showing chronologically ordered triplet events with flash animation on new entries
+- **Auto-extraction** — Scheduled extraction of knowledge triplets from new content every 3 hours
+- **Tabbed visualizer** — React ForceGraph2D with distinct neon color themes per brain type
+- **Semantic search** — Highlight and zoom to entities across the knowledge graph
 
 ### 💼 Job Search Automation
 - **Multi-board scanning** — Searches LinkedIn, Indeed, Glassdoor, Greenhouse, Lever, Ashby, Workday, and more
@@ -309,6 +324,9 @@ Configuration is managed through environment variables or a `.env` file in the p
 | `VOSK_MODEL_PATH` | `models/vosk` | Path to Vosk English model |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model to use |
+| `CLOUD_LLM_ENABLED` | `true` | Enable cloud LLM fallback when Ollama is offline |
+| `CLOUD_LLM_MODEL` | `gpt-4o-mini` | Cloud LLM model (OpenAI-compatible) |
+| `CLOUD_LLM_BASE_URL` | `https://api.openai.com/v1` | Base URL for cloud LLM API |
 | `WHISPER_MODEL` | `base` | Whisper model size |
 | `DATABASE_URL` | `sqlite+aiosqlite:///barq.db` | Database connection |
 | `CAREER_OPS_PATH` | `~/career-ops` | Path for resume/job files |
@@ -381,7 +399,7 @@ barq/
 │   ├── web_media/          # Web browsing, media
 │   ├── documents/          # PPT, Excel, PDF generation
 │   ├── notifications/      # Multi-channel notifications
-│   ├── memory_knowledge/   # Vector memory store
+│   ├── memory_knowledge/   # Multi-brain knowledge graphs, timeline event log, migration
 │   ├── database/           # SQLite DAOs
 │   └── tests/              # Python test suite
 ├── scripts/                # Development scripts

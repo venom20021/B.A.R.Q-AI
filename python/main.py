@@ -24,10 +24,14 @@ from fastapi.middleware.cors import CORSMiddleware
 # Ensure the python directory is on the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from agent.recruitment.routes import router as recruitment_router
+from agent.research.routes import router as research_router
 from agent.routes import router as agent_router
 from agent.vision_routes import router as vision_router
+from knowledge.routes import router as knowledge_router
 from analytics.routes import router as analytics_router
 from api.routes import router as api_v1_router
+from settings.routes import router as settings_router
 from auth_routes import router as auth_router
 from config import get_settings
 from database import analytics_dao, close_db, init_db
@@ -38,6 +42,8 @@ from graph_brain import graph_brain
 from jobs.routes import router as jobs_router
 from memory_knowledge.brain_api import router as brain_api_router
 from memory_knowledge.graph_routes import router as graph_router
+from memory_knowledge.ingestion_routes import router as ingestion_router
+from memory_knowledge.migration_routes import router as migration_router
 from memory_knowledge.routes import router as memory_router
 from notifications.routes import router as notification_router
 from social.routes import router as social_router
@@ -75,6 +81,14 @@ async def start_scheduler():
             _auto_match_jobs,
             IntervalTrigger(hours=1),
             id="auto_match_jobs",
+            replace_existing=True,
+        )
+
+        # Auto-extract knowledge triplets from new content every 3 hours
+        scheduler.add_job(
+            _auto_extract_knowledge,
+            IntervalTrigger(hours=3),
+            id="auto_extract_knowledge",
             replace_existing=True,
         )
 
@@ -169,10 +183,55 @@ async def lifespan(app: FastAPI):
     print(f"[BARQ Sidecar] Starting on {settings.host}:{settings.port}")
     await init_db()
 
+    # Check LLM availability (Ollama + cloud fallback)
+    try:
+        from utils.ollama_client import OllamaClient, CloudLLMClient
+
+        _ollama_check = OllamaClient()
+        _cloud = CloudLLMClient()
+
+        if await _ollama_check.is_available():
+            print(f"[BARQ Sidecar] ✅ Ollama '{settings.ollama_model}' ready at {settings.ollama_host}")
+        else:
+            # Socket check to give a friendly diagnostic message
+            import socket as _socket
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.settimeout(1)
+            try:
+                _s.connect(("127.0.0.1", 11434))
+                _s.close()
+                print(f"[BARQ Sidecar] ⚠ Ollama is running but model '{settings.ollama_model}' is not pulled yet")
+                print(f"[BARQ Sidecar]   ➡ Run: ollama pull {settings.ollama_model}")
+            except Exception:
+                print("[BARQ Sidecar] ⚠ Ollama is NOT running")
+                print(f"[BARQ Sidecar]   ➡ Install from: https://ollama.com/download/windows")
+            finally:
+                try:
+                    _s.close()
+                except Exception:
+                    pass
+
+            # Check cloud fallback
+            if _cloud.enabled:
+                print(f"[BARQ Sidecar] ✅ Cloud LLM fallback ready ({_cloud.model} at {_cloud.base_url})")
+            else:
+                print("[BARQ Sidecar] ⚠ No cloud LLM fallback — set OPENAI_API_KEY in .env to enable")
+                print("[BARQ Sidecar]   ➡ Get a key at: https://platform.openai.com/api-keys")
+    except Exception:
+        pass  # don't crash on startup diagnostics
+
     # Load knowledge graph from disk if it exists
     import os as _os
     _graph_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "graph.json")
     graph_brain.load_from_disk(_graph_path)
+
+    # Load multi-brain domain-specific graphs from disk
+    from memory_knowledge.multi_brain import multi_brain_manager as _mbm
+    _brains_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "brains")
+    _mbm.set_data_dir(_brains_dir)
+    _loaded = _mbm.load_all()
+    _loaded_count = sum(1 for v in _loaded.values() if v)
+    print(f"[BARQ Sidecar] Loaded {_loaded_count}/{len(_loaded)} domain-specific brains from {_brains_dir}")
 
     try:
         await analytics_dao.log_activity(
@@ -192,9 +251,31 @@ async def lifespan(app: FastAPI):
         print(f"[BARQ Sidecar] Agent task queue start error: {e}")
 
     # Skills auto-register on import via agent.skill_registry
+
+    # Start the ingestion drop-folder watcher
+    _ingestion_monitor = None
+    try:
+        from memory_knowledge.ingestion import DropFolderMonitor
+        from memory_knowledge.ingestion_routes import set_monitor as _set_ingestion_monitor
+
+        _ingestion_monitor = DropFolderMonitor()
+        _ingestion_monitor.process_all_existing()
+        _ingestion_monitor.start()
+        _set_ingestion_monitor(_ingestion_monitor)
+        print("[BARQ Sidecar] Ingestion watcher started")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Ingestion watcher start error: {e}")
+
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown
+    # Stop the ingestion watcher
+    if _ingestion_monitor is not None:
+        try:
+            _ingestion_monitor.stop()
+            print("[BARQ Sidecar] Ingestion watcher stopped")
+        except Exception:
+            pass
     await stop_scheduler()
     # Stop the agent task queue
     try:
@@ -251,6 +332,12 @@ app.include_router(auth_router, tags=["Auth"])
 app.include_router(api_v1_router, tags=["Jobs v1"])  # Already has /api/v1 prefix
 app.include_router(agent_router, prefix="/agent", tags=["Agent System"])
 app.include_router(vision_router, prefix="/vision", tags=["Visual Awareness"])
+app.include_router(recruitment_router, prefix="/recruitment", tags=["Recruitment Agents"])
+app.include_router(research_router, prefix="/research", tags=["Deep Research Agent"])
+app.include_router(knowledge_router, prefix="/knowledge", tags=["Knowledge Management"])
+app.include_router(ingestion_router, tags=["Ingestion Pipeline"])
+app.include_router(migration_router, tags=["Graph Migration"])
+app.include_router(settings_router, tags=["Settings"])
 app.include_router(external_apis_router, tags=["Free Public APIs"])
 
 
@@ -365,6 +452,23 @@ async def scheduler_status():
     return {"running": True, "jobs": jobs}
 
 
+async def _auto_extract_knowledge():
+    """Auto-extract knowledge triplets from unprocessed jobs/social (called by scheduler)."""
+    try:
+        from knowledge.auto_extractor import AutoExtractor
+
+        extractor = AutoExtractor()
+        result = await extractor.run_full_extraction()
+        logger.info(
+            "[AutoExtract] Extracted %d triplets (%d from jobs, %d from trends)",
+            result["total_triplets"],
+            result["job_triplets"],
+            result["trend_triplets"],
+        )
+    except Exception as e:
+        logger.error("[AutoExtract] Failed: %s", e)
+
+
 @app.post("/scheduler/run/{task_type}")
 async def run_task_manual(task_type: str):
     """Manually trigger a scheduled task."""
@@ -374,6 +478,9 @@ async def run_task_manual(task_type: str):
             return {"status": "completed", "task": task_type}
         elif task_type == "job_match":
             await _auto_match_jobs()
+            return {"status": "completed", "task": task_type}
+        elif task_type == "knowledge_extract":
+            await _auto_extract_knowledge()
             return {"status": "completed", "task": task_type}
         else:
             return {"status": "unknown_task", "task": task_type}

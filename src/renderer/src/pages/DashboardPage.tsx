@@ -5,10 +5,12 @@ import {
   Cloud, Mic, MicOff, Bot, User, ArrowLeft, Send, Loader2, Trash2,
   Crosshair, MapPin, LocateFixed, Settings2,
 } from 'lucide-react'
-import { Vector3 } from 'three'
-
 import { LiveCaptions } from '../components/LiveCaptions'
+import { DynamicChart } from '../components/DynamicChart'
+import type { DynamicChartSchema } from '../components/DynamicChart'
+import { BarChart3 as ChartIcon } from 'lucide-react'
 import { api } from '../utils/api'
+import { Vector3 } from 'three'
 
 // ─── User Name ─────────────────────────────────────────────────────────
 
@@ -392,6 +394,7 @@ export function DashboardPage(): JSX.Element {
   const agentInputRef = useRef<HTMLTextAreaElement>(null!)
   const agentInputRefValue = useRef('')
   const messagesEndRef = useRef<HTMLDivElement>(null!)
+  const lastRequestRef = useRef<{ goal: string; time: number } | null>(null)
 
   useEffect(() => { agentInputRefValue.current = agentInput }, [agentInput])
   useEffect(() => { if (activeAgent) { const timer = setTimeout(() => agentInputRef.current?.focus(), 350); return () => clearTimeout(timer) } }, [activeAgent])
@@ -399,14 +402,32 @@ export function DashboardPage(): JSX.Element {
 
   const sendAgentMessage = useCallback(async () => {
     const text = agentInputRefValue.current.trim()
-    if (!text || !activeAgent || agentLoading) return
+    if (!text || text === '?' || text.length < 2 || !activeAgent || agentLoading) return
+    
+    // Dedup: prevent sending the same goal twice within 3 seconds
+    const goal = `[${activeAgent}] ${text}`
+    const now = Date.now()
+    if (lastRequestRef.current && lastRequestRef.current.goal === goal && now - lastRequestRef.current.time < 3000) return
+    lastRequestRef.current = { goal, time: now }
+
     setAgentInput('')
+    agentInputRefValue.current = ''
     setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'user' as const, content: text }] }))
     setAgentLoading(true)
     try {
-      const resp = await api('/agent/execute', { goal: `[${activeAgent}] ${text}` })
-      const result = resp && typeof resp === 'object' ? (resp as Record<string, unknown>).result ?? (resp as Record<string, unknown>).detail ?? 'No response' : String(resp ?? 'No response')
-      setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'assistant' as const, content: String(result) }] }))
+      const resp = await api('/agent/execute', { goal })
+      let result: string
+      if (resp && typeof resp === 'object') {
+        const r = resp as Record<string, unknown>
+        result = String(r.result ?? r.detail ?? '')
+        if (!result || result === 'No response' || result === '') {
+          result = r.result ? String(r.result) : ''
+          if (!result) result = 'No response'
+        }
+      } else {
+        result = String(resp ?? 'No response')
+      }
+      setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'assistant' as const, content: result }] }))
     } catch {
       setAgentHistory(prev => ({ ...prev, [activeAgent]: [...(prev[activeAgent] ?? []), { role: 'assistant' as const, content: 'Failed to reach agent. Is the backend running?' }] }))
     } finally { setAgentLoading(false) }
@@ -688,6 +709,37 @@ export function DashboardPage(): JSX.Element {
     setStoredQuality(ql)
     setShowQualityMenu(false)
   }, [])
+
+  // ── Dynamic Chart (Generative UI) ───────────────────────────────
+  const [chartSchema, setChartSchema] = useState<DynamicChartSchema | null>(null)
+  const [chartQuery, setChartQuery] = useState('')
+  const [chartLoading, setChartLoading] = useState(false)
+  const [chartError, setChartError] = useState('')
+  const [showChartInput, setShowChartInput] = useState(false)
+
+  const handleChartQuery = useCallback(async () => {
+    const q = chartQuery.trim()
+    if (!q || chartLoading) return
+    setChartLoading(true)
+    setChartError('')
+    try {
+      const resp = await api<{ schema?: DynamicChartSchema; interpretation?: string }>('/analytics/dynamic-chart', { query: q })
+      if (resp?.schema) {
+        setChartSchema(resp.schema)
+      } else {
+        setChartError('No chart data returned')
+      }
+    } catch {
+      setChartError('Failed to generate chart. Is the backend running?')
+    } finally {
+      setChartLoading(false)
+    }
+  }, [chartQuery, chartLoading])
+
+  const chartInputRef = useRef<HTMLInputElement>(null!)
+  useEffect(() => {
+    if (showChartInput && chartInputRef.current) chartInputRef.current.focus()
+  }, [showChartInput])
 
   // ── Drag-and-drop handlers ───────────────────────────────────────
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -1075,23 +1127,117 @@ export function DashboardPage(): JSX.Element {
             transition={{ duration: 0.3 }}
             className="fixed inset-0 z-50 pointer-events-none"
           >
-            {/* Viewport-scaled dashed orbital ring — tracks 3D core footprint */}
             <div
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-[1px] border-dashed border-cyan-400/30 animate-[spin_12s_linear_infinite]"
               style={{ width: '82vmin', height: '82vmin' }}
             />
-            {/* Faint secondary ring */}
             <div
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-400/10 animate-ping"
               style={{ width: '72vmin', height: '72vmin', animationDuration: '4s' }}
             />
-            {/* Center text */}
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1">
               <p className="text-[10px] font-sans tracking-[0.3em] font-light text-cyan-400/70">DROP TO INGEST</p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* ═══ DYNAMIC CHART WIDGET (Bottom-right) ═══ */}
+      <div className="absolute bottom-8 right-[160px] z-30 flex flex-col items-end gap-2">
+        <AnimatePresence>
+          {showChartInput && (
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.95 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="w-[320px] rounded-2xl backdrop-blur-xl bg-black/70 border border-white/10 shadow-2xl overflow-hidden"
+            >
+              {/* Query Input */}
+              <div className="p-3 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={chartInputRef}
+                    value={chartQuery}
+                    onChange={(e) => setChartQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleChartQuery() }}
+                    placeholder="Ask for a chart... (e.g. 'Show career funnel')"
+                    className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-xs font-sans text-white/70 placeholder:text-white/20 outline-none focus:border-cyan-500/30 focus:bg-white/[0.06] transition-all duration-200"
+                    disabled={chartLoading}
+                  />
+                  <button
+                    onClick={handleChartQuery}
+                    disabled={!chartQuery.trim() || chartLoading}
+                    className="flex items-center justify-center w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/25 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200 shrink-0"
+                  >
+                    {chartLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+                {/* Suggested queries */}
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  {['Career funnel', 'Social performance', 'Revenue trend', 'Platform breakdown'].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => { setChartQuery(suggestion); setShowChartInput(true) }}
+                      className="text-[9px] px-1.5 py-0.5 rounded-md bg-white/[0.03] border border-white/[0.06] text-white/30 hover:text-cyan-300/60 hover:border-cyan-500/20 transition-all duration-200 font-sans"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Chart Display */}
+              <div className="p-3 min-h-[60px]">
+                {chartError && (
+                  <p className="text-xs font-sans text-red-400/70 text-center py-2">{chartError}</p>
+                )}
+                {chartLoading && !chartError && (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-5 h-5 text-cyan-400/50 animate-spin" />
+                  </div>
+                )}
+                {chartSchema && !chartLoading && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-xs font-sans font-medium text-white/60 tracking-wide">{chartSchema.title}</h3>
+                      <button
+                        onClick={() => { setChartSchema(null); setChartQuery('') }}
+                        className="text-white/20 hover:text-red-400/70 transition-colors duration-200"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <DynamicChart schema={chartSchema} />
+                  </div>
+                )}
+                {!chartSchema && !chartLoading && !chartError && (
+                  <p className="text-[10px] font-sans text-white/20 italic text-center py-4">
+                    Ask a question about your data
+                  </p>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Toggle button */}
+        <button
+          onClick={() => setShowChartInput(prev => !prev)}
+          className={`flex items-center justify-center w-7 h-7 rounded-full transition-all duration-200 ${
+            showChartInput
+              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/20 shadow-[0_0_12px_rgba(34,211,238,0.15)]'
+              : 'bg-white/5 text-white/30 border border-white/10 hover:bg-white/10 hover:text-cyan-300/60'
+          }`}
+          title="Analytics Chart"
+        >
+          <ChartIcon className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   )
 }

@@ -498,7 +498,12 @@ class LLMProcessor(FrameProcessor):
                     self._add_message(full_text)
 
             except Exception as e:
-                print(f"[LLMProcessor] Error: {e}")
+                from utils.ollama_client import OllamaNotAvailableError
+                if isinstance(e, OllamaNotAvailableError):
+                    print(f"[LLMProcessor] {e}")
+                    print(f"[LLMProcessor] ➡ Install Ollama from https://ollama.com/download/windows and run: ollama pull llama3.2:3b")
+                else:
+                    print(f"[LLMProcessor] Error: {e}")
                 if not full_text.strip():
                     yield LLMResponseFrame(
                         text="Sorry, I encountered an error.",

@@ -15,13 +15,17 @@ The pipeline processes approved/queued applications by:
 
 import asyncio
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+logger = logging.getLogger("barq.pipeline")
+
 from database import analytics_dao, db_connection, jobs_dao, settings_dao
+from knowledge.auto_extractor import AutoExtractor
 from notifications.manager import notification_manager
 
 from .applier import JobApplier
@@ -381,6 +385,18 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 results.append(app_result)
 
                 # Log success
+                # Auto-extract knowledge triplets from the job description
+                try:
+                    extractor = AutoExtractor()
+                    await extractor.extract_from_job(
+                        job_id=job_id,
+                        title=job_title,
+                        description=job.get("description", ""),
+                        company=company,
+                    )
+                except Exception as exc:
+                    logger.warning("[Extraction] Failed to extract from job %d: %s", job_id, exc)
+
                 await analytics_dao.log_activity(
                     "job", "pipeline_processed",
                     f"Pipeline: {job_title} at {company} "

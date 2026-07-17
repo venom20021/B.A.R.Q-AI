@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { api } from '../utils/api'
-import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
 import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -15,6 +15,7 @@ const sections: SettingsSection[] = [
   { id: 'voice', label: 'Voice', icon: Mic, description: 'Wake word, language, speech settings' },
   { id: 'sounds', label: 'Sounds', icon: Volume2, description: 'Preview and toggle audio profiles' },
   { id: 'api', label: 'API Keys', icon: Key, description: 'Connect your accounts and services' },
+  { id: 'cloud-llm', label: 'Cloud LLM', icon: Cpu, description: 'Ollama fallback and cloud AI settings' },
   { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alerts and digest preferences' },
   { id: 'jobs', label: 'Job Search', icon: Briefcase, description: 'Job search preferences and filters' },
   { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },
@@ -248,6 +249,19 @@ export function SettingsPage(): JSX.Element {
     crash_reporting: false,
   })
 
+  // Cloud LLM settings
+  const [cloudLLM, setCloudLLM] = useState({
+    enabled: true,
+    api_key: '',
+    has_key: false,
+    model: 'gpt-4o-mini',
+    base_url: 'https://api.openai.com/v1',
+  })
+  const [cloudLLMLoading, setCloudLLMLoading] = useState(false)
+  const [cloudLLMSaving, setCloudLLMSaving] = useState(false)
+  const [cloudLLMSaved, setCloudLLMSaved] = useState('')
+  const [cloudLLMKeyVisible, setCloudLLMKeyVisible] = useState(false)
+
   // Appearance settings
   const [appearanceSettings, setAppearanceSettings] = useState({
     theme: 'dark',
@@ -255,6 +269,49 @@ export function SettingsPage(): JSX.Element {
     font_scale: '100',
     animations: true,
   })
+
+  // ─── Cloud LLM Callbacks ──────────────────────────────────────
+
+  const fetchCloudLLM = useCallback(async () => {
+    setCloudLLMLoading(true)
+    try {
+      const resp = await api('/settings/cloud-llm')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        setCloudLLM(prev => ({
+          ...prev,
+          enabled: data.enabled === true,
+          has_key: data.has_api_key === true,
+          api_key: '',  // never pre-fill masked key
+          model: String(data.model || 'gpt-4o-mini'),
+          base_url: String(data.base_url || 'https://api.openai.com/v1'),
+        }))
+      }
+    } catch { /* ignore */ }
+    setCloudLLMLoading(false)
+  }, [])
+
+  const handleSaveCloudLLM = useCallback(async () => {
+    setCloudLLMSaving(true)
+    setCloudLLMSaved('')
+    try {
+      const resp = await api('/settings/cloud-llm', {
+        enabled: cloudLLM.enabled,
+        api_key: cloudLLM.api_key,
+        model: cloudLLM.model,
+        base_url: cloudLLM.base_url,
+      })
+      if (resp && typeof resp === 'object' && (resp as Record<string, unknown>).status === 'saved') {
+        setCloudLLMSaved('Settings saved!')
+        setCloudLLM(prev => ({ ...prev, has_key: cloudLLM.api_key ? true : prev.has_key, api_key: '' }))
+        setTimeout(() => setCloudLLMSaved(''), 3000)
+      }
+    } catch {
+      setCloudLLMSaved('Failed to save')
+      setTimeout(() => setCloudLLMSaved(''), 3000)
+    }
+    setCloudLLMSaving(false)
+  }, [cloudLLM])
 
   // ─── Security / Command Whitelist State ───────────────────────────
   const [checkCommand, setCheckCommand] = useState('')
@@ -656,8 +713,9 @@ export function SettingsPage(): JSX.Element {
       void fetchVadSettings()
       void fetchTtsBackend()
       void fetchTelegramCredentials()
+      void fetchCloudLLM()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend, fetchTelegramCredentials])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -1147,6 +1205,141 @@ export function SettingsPage(): JSX.Element {
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* ─── Cloud LLM Section ─── */}
+          {activeSection === 'cloud-llm' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Cloud LLM Fallback</h3>
+                <p className="text-sm font-rajdhani text-dim-400">Configure cloud AI fallback when local Ollama is offline</p>
+              </div>
+              <div className="space-y-4">
+                <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10 mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Cpu className="w-4 h-4 text-cyan-300" />
+                    <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">OpenAI-Compatible Provider</h4>
+                  </div>
+                  <p className="text-xs font-exo text-dim-400 mb-3">
+                    When Ollama is unavailable, BARQ will automatically use this cloud provider.
+                    Works with OpenAI, OpenRouter, Groq, Together AI, and any OpenAI-compatible API.
+                  </p>
+
+                  {cloudLLMLoading ? (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader2 className="w-5 h-5 animate-spin text-cyan-300" />
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Enable toggle */}
+                      <div className="flex items-center justify-between py-2">
+                        <div>
+                          <p className="text-xs font-rajdhani font-semibold text-ghost">Enable Cloud Fallback</p>
+                          <p className="text-[10px] font-exo text-dim-500">Allow using cloud AI when Ollama is offline</p>
+                        </div>
+                        {renderToggle(cloudLLM.enabled, () => setCloudLLM(prev => ({ ...prev, enabled: !prev.enabled })))}
+                      </div>
+
+                      {/* API Key */}
+                      <div>
+                        <label className="text-[10px] font-rajdhani font-semibold text-dim-400 uppercase tracking-wider">
+                          API Key {cloudLLM.has_key && <span className="text-green-400 normal-case">(saved)</span>}
+                        </label>
+                        <div className="flex gap-2 mt-1">
+                          <input
+                            type={cloudLLMKeyVisible ? 'text' : 'password'}
+                            value={cloudLLM.api_key}
+                            onChange={(e) => setCloudLLM(prev => ({ ...prev, api_key: e.target.value }))}
+                            placeholder={cloudLLM.has_key ? '•••••••• (key saved — leave blank to keep)' : 'sk-... or your API key'}
+                            className="flex-1 bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500"
+                          />
+                          <button
+                            onClick={() => setCloudLLMKeyVisible(!cloudLLMKeyVisible)}
+                            className="flex items-center gap-1 px-2 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-void-800/40 text-dim-400 border border-cyan-500/10 hover:text-ghost transition-all"
+                          >
+                            {cloudLLMKeyVisible ? '🙈' : '👁️'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Model */}
+                      <div>
+                        <label className="text-[10px] font-rajdhani font-semibold text-dim-400 uppercase tracking-wider">Model</label>
+                        <input
+                          type="text"
+                          value={cloudLLM.model}
+                          onChange={(e) => setCloudLLM(prev => ({ ...prev, model: e.target.value }))}
+                          placeholder="gpt-4o-mini"
+                          className="w-full bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500 mt-1"
+                        />
+                        <p className="text-[10px] font-exo text-dim-500 mt-1">
+                          e.g. gpt-4o-mini, claude-3-haiku, gemini-2.0-flash, llama-3.3-70b
+                        </p>
+                      </div>
+
+                      {/* Base URL */}
+                      <div>
+                        <label className="text-[10px] font-rajdhani font-semibold text-dim-400 uppercase tracking-wider">API Base URL</label>
+                        <input
+                          type="text"
+                          value={cloudLLM.base_url}
+                          onChange={(e) => setCloudLLM(prev => ({ ...prev, base_url: e.target.value }))}
+                          placeholder="https://api.openai.com/v1"
+                          className="w-full bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500 mt-1"
+                        />
+                        <p className="text-[10px] font-exo text-dim-500 mt-1">
+                          OpenAI: https://api.openai.com/v1 · OpenRouter: https://openrouter.ai/api/v1 · Groq: https://api.groq.com/openai/v1
+                        </p>
+                      </div>
+
+                      {/* Save + Status */}
+                      <div className="flex items-center gap-2 pt-2">
+                        <button
+                          onClick={handleSaveCloudLLM}
+                          disabled={cloudLLMSaving}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-40"
+                        >
+                          {cloudLLMSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                          Save
+                        </button>
+                        {cloudLLMSaved && (
+                          <motion.span initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} className="text-[10px] font-exo text-green-400">
+                            {cloudLLMSaved}
+                          </motion.span>
+                        )}
+                        {cloudLLM.has_key && (
+                          <span className="badge-green flex items-center gap-1 ml-auto">
+                            <CheckCircle className="w-3 h-3" />
+                            Connected
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Quick provider presets */}
+                <div className="pt-2">
+                  <p className="text-xs font-rajdhani font-semibold text-ghost mb-2">Quick Provider Presets</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { name: 'OpenAI', model: 'gpt-4o-mini', url: 'https://api.openai.com/v1' },
+                      { name: 'OpenRouter', model: 'openai/gpt-4o-mini', url: 'https://openrouter.ai/api/v1' },
+                      { name: 'Groq (Free)', model: 'llama-3.3-70b-versatile', url: 'https://api.groq.com/openai/v1' },
+                    ].map((preset) => (
+                      <button
+                        key={preset.name}
+                        onClick={() => setCloudLLM(prev => ({ ...prev, model: preset.model, base_url: preset.url }))}
+                        className="bg-void-700/40 rounded-lg p-2.5 border border-cyan-500/10 hover:border-cyan-500/25 transition-all text-left"
+                      >
+                        <p className="text-[10px] font-orbitron font-bold text-ghost tracking-wider">{preset.name}</p>
+                        <p className="text-[9px] font-exo text-dim-500 mt-0.5 truncate">{preset.model}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}

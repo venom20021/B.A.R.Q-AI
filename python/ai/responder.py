@@ -10,6 +10,7 @@ can begin while the LLM continues generating the rest of the response.
 import hashlib
 import io
 import re
+import threading
 from pathlib import Path
 from typing import AsyncIterable
 
@@ -19,6 +20,11 @@ import numpy as np
 from ai.conversation import ConversationManager, get_small_talk
 from utils.ollama_client import OllamaClient
 from voice.speech import SpeechProcessor
+
+# Module-level speaking event — accessible cross-module without circular imports.
+# Set by BARQResponder.__init__(), consumed by speech.py's mic monitor to
+# discard audio frames during TTS playback (echo prevention).
+_speaking_event: threading.Event = threading.Event()
 
 # Audio output directory
 AUDIO_DIR = Path(__file__).parent.parent / "data" / "audio"
@@ -46,6 +52,9 @@ class BARQResponder:
         self.speech = SpeechProcessor()
         self.tts_voice: str = "en-US-JennyNeural"  # must match routes.py default
         self.is_speaking = False
+        # `is_speaking_event` is a reference to the module-level `_speaking_event`,
+        # accessible cross-module by speech.py's mic monitor without circular imports.
+        self.is_speaking_event = _speaking_event
         self.is_processing = False
         self._interrupt_requested = False  # set True to abort an active stream
         self.stt_text: str = ""  # latest interim STT transcript (for live display via WebSocket)

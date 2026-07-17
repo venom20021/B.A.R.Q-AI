@@ -1,0 +1,29 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "a",
+      "id": "a"
+    },
+    {
+      "label": "b",
+      "id": "b"
+    }
+  ],
+  "links": [
+    {
+      "relation": "RELATED_TO",
+      "weight": 1,
+      "source": "a",
+      "target": "b"
+    }
+  ],
+  "_meta": {
+    "brain_type": "general",
+    "version": 1,
+    "nodes": 2,
+    "edges": 1
+  }
+}

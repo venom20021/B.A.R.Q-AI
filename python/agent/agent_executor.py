@@ -157,7 +157,7 @@ class AgentExecutor:
                     break
 
             if success:
-                return await self._summarize(goal, completed_steps)
+                return await self._summarize(goal, completed_steps, step_results)
 
             if replan_attempts >= self.MAX_REPLAN_ATTEMPTS:
                 msg = f"Task failed after {replan_attempts} replan attempts."
@@ -227,8 +227,13 @@ class AgentExecutor:
 
         return params
 
-    async def _summarize(self, goal: str, completed_steps: list[dict]) -> str:
-        """Generate a natural summary of what was accomplished."""
+    async def _summarize(self, goal: str, completed_steps: list[dict], step_results: Optional[dict[str, str]] = None) -> str:
+        """Generate a natural summary of what was accomplished.
+
+        If the LLM is unavailable, uses the ``respond`` step's output
+        (if present) as a fallback instead of a generic "Completed N steps"
+        message.
+        """
         from utils.ollama_client import OllamaClient
 
         steps_str = "\n".join(
@@ -252,4 +257,18 @@ class AgentExecutor:
             summary = await llm.chat(messages)
             return summary.strip()
         except Exception:
+            # LLM unavailable — use the last meaningful step result as fallback
+            if step_results:
+                # Get the last step result (usually the respond step)
+                last_key = max(step_results.keys(), key=lambda k: int(k) if k.isdigit() else 0)
+                last_result = step_results.get(last_key, "")
+                if last_result and len(last_result) > 5 and "I'm here" not in last_result:
+                    return last_result
+
+                # If that didn't work, try any non-trivial result from any step
+                for key in sorted(step_results.keys(), key=lambda k: int(k) if k.isdigit() else 0, reverse=True):
+                    val = step_results[key]
+                    if val and len(val) > 20 and "Completed" not in val and "here to help" not in val:
+                        return val[:500]
+
             return f"Completed {len(completed_steps)} steps for: {goal[:60]}."

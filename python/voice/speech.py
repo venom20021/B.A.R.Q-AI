@@ -201,6 +201,50 @@ class SpeechProcessor:
         """
         return self._current_mic_level
 
+    # ── Audio Buffer Flush ──────────────────────────────────────────────
+
+    async def flush_audio_buffer(self, duration: float = 0.15) -> None:
+        """Flush/discard stale audio from the input buffer.
+
+        Opens a temporary ``sounddevice.InputStream``, reads and discards
+        audio frames for *duration* seconds, then closes it.  This clears
+        any residual audio that was captured during TTS playback, preventing
+        the echo feedback spiral where BARQ hears its own voice.
+
+        Call this AFTER TTS finishes and BEFORE the next listen cycle.
+
+        Args:
+            duration: How many seconds of audio to discard (default 0.15).
+                      Should be enough to clear the OS audio buffer.
+        """
+        import numpy as np
+        import sounddevice as sd
+
+        from .audio_device import resolve_input_device
+
+        try:
+            device = resolve_input_device(self.settings.audio_input_device)
+
+            # Open a throwaway stream, read frames and discard them
+            chunk_count = int(duration * 16000 / 1024)
+            stream = sd.InputStream(
+                device=device,
+                samplerate=16000,
+                channels=1,
+                dtype="int16",
+                blocksize=1024,
+            )
+            stream.start()
+            for _ in range(chunk_count):
+                stream.read(1024)
+            stream.stop()
+            stream.close()
+            print(f"[Speech] Flushed {chunk_count} audio chunks from input buffer")
+        except Exception as e:
+            # Non-fatal — buffer flush is a best-effort operation
+            if "No default input device" not in str(e):
+                print(f"[Speech] Buffer flush skipped: {e}")
+
     # ── Background Mic Level Monitor ────────────────────────────────
     # A lightweight background thread that continuously reads the microphone
     # RMS level when no STT stream is active.  This keeps the WebSocket mic_level
@@ -247,6 +291,11 @@ class SpeechProcessor:
         Opens a separate ``sd.InputStream`` with minimal blocksize, reads
         each chunk, computes RMS, and updates ``_current_mic_level``.
         If the stream fails (e.g. device disconnected) it retries every 500 ms.
+
+        When ``is_speaking_event`` is set (BARQ is playing TTS audio), incoming
+        audio frames are still read (to drain the buffer) but their RMS level
+        is NOT updated — effectively ignoring audio captured during TTS playback
+        to prevent echo feedback (the "mute switch" requirement).
         """
         import numpy as np
         import sounddevice as sd
@@ -254,6 +303,11 @@ class SpeechProcessor:
         from .audio_device import resolve_input_device
 
         device = resolve_input_device(self.settings.audio_input_device)
+
+        # Import the module-level speaking event for cross-module echo prevention.
+        # Avoids circular imports — responder.py defines the event and imports
+        # speech.py, so we import responder lazily inside the loop function.
+        from ai.responder import _speaking_event as _speaking_event_local
 
         while self._mic_monitor_running:
             try:
@@ -268,6 +322,14 @@ class SpeechProcessor:
 
                 while self._mic_monitor_running:
                     data, _ = stream.read(1024)
+
+                    # If BARQ is speaking (TTS playback), discard audio frames
+                    # by skipping RMS computation.  The stream is still read to
+                    # drain the OS audio buffer (prevents stale data buildup).
+                    if _speaking_event_local.is_set():
+                        self._current_mic_level = 0.0
+                        continue
+
                     try:
                         rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
                         self._current_mic_level = min(1.0, rms / 10000.0)

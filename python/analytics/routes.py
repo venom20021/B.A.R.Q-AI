@@ -4,10 +4,34 @@ Uses database DAOs for aggregating career, social, and revenue data.
 """
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from database import analytics_dao, social_dao
 
 router = APIRouter()
+
+
+# ─── Dynamic Chart (Generative UI) ────────────────────────────────────────
+
+
+class DynamicChartRequest(BaseModel):
+    query: str
+
+
+@router.post("/dynamic-chart")
+async def dynamic_chart(request: DynamicChartRequest):
+    """
+    Accept a natural language query and return a Recharts JSON schema
+    that the frontend can render on-the-fly.
+    """
+    try:
+        from analytics.dynamic_chart import DynamicChartAgent
+
+        agent = DynamicChartAgent(analytics_dao, social_dao)
+        result = await agent.build_schema(request.query)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/career")

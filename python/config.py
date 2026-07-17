@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # API Authentication
     barq_api_key: str = os.getenv("BARQ_API_KEY", "")
 
+    # Cloud LLM Fallback (when Ollama is offline)
+    cloud_llm_enabled: bool = os.getenv("CLOUD_LLM_ENABLED", "true").lower() == "true"
+    cloud_llm_model: str = os.getenv("CLOUD_LLM_MODEL", "gpt-4o-mini")
+    cloud_llm_base_url: str = os.getenv("CLOUD_LLM_BASE_URL", "https://api.openai.com/v1")  # Can use OpenRouter, Groq, etc.
+
     # External API Keys (loaded from .env)
     linkedin_email: str = os.getenv("LINKEDIN_EMAIL", "")
     linkedin_password: str = os.getenv("LINKEDIN_PASSWORD", "")

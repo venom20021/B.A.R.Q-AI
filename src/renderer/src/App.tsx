@@ -295,9 +295,9 @@ function AppContent(): JSX.Element {
       {/* Radial gradient background (replaces ParticleField) */}
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_center,var(--tw-gradient-stops))] from-zinc-950 via-black to-black pointer-events-none" />
 
-      {/* Main layout */}
-      <div className="relative z-10 h-screen flex flex-col">
-        {/* Top Navbar */}
+      {/* Main layout — header is absolute, so content fills full screen */}
+      <div className="relative z-10 h-screen">
+        {/* Floating transparent header + centered nav */}
         <Navbar
           activeTab={activeTab}
           onTabChange={handleTabChange}
@@ -311,12 +311,13 @@ function AppContent(): JSX.Element {
           ttsVoice={ttsVoice}
         />
 
-        {/* Content area: Sidebar + Main */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar is fixed-position, add left padding to main content */}
+        {/* Content area: Sidebar (fixed dock) + Main */}
+        <div className="h-full flex overflow-hidden">
+          {/* Sidebar is fixed-position at bottom */}
           <Sidebar currentRoute={location.pathname} onNavigate={navigate} />
 
-          <main className="flex-1 flex flex-col overflow-hidden">
+          {/* pt-20 avoids overlap with the absolute floating header on non-canvas pages */}
+          <main className="flex-1 flex flex-col overflow-hidden pt-20">
             <div className="flex-1 overflow-y-auto relative">
               {/* Scanline overlay */}
               <div

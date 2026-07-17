@@ -105,17 +105,22 @@ async def create_plan(goal: str, context: str = "") -> dict:
 
 
 def _fallback_plan(goal: str) -> dict:
-    """Generate a simple fallback plan when LLM planning fails."""
-    print("[AgentPlanner] FALLBACK Using fallback plan")
+    """Generate a simple fallback plan when LLM planning fails.
+
+    Uses the ``respond`` tool to return a conversational reply instead of
+    attempting a web_search (which would produce meaningless results for
+    chat-style interactions like agent workspace messages).
+    """
+    print("[AgentPlanner] FALLBACK Using conversational fallback plan")
     return {
         "goal": goal,
         "steps": [
             {
                 "step": 1,
-                "tool": "web_search",
-                "description": f"Search for: {goal}",
-                "parameters": {"query": goal},
-                "critical": True,
+                "tool": "respond",
+                "description": f"Respond conversationally to the user",
+                "parameters": {"message": goal},
+                "critical": False,
             }
         ],
     }
