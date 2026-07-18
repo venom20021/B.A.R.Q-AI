@@ -441,7 +441,7 @@ class BARQGraphBrain:
             e = self.graph.number_of_edges()
 
             if n == 0:
-                return {"nodes": 0, "edges": 0, "density": 0.0, "components": 0}
+                return {"nodes": 0, "edges": 0, "density": 0.0, "connected_components": 0}
 
             density = nx.density(self.graph)
             components = nx.number_connected_components(self.graph)

@@ -43,6 +43,14 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Tabbed visualizer** — React ForceGraph2D with distinct neon color themes per brain type
 - **Semantic search** — Highlight and zoom to entities across the knowledge graph
 
+### 📥 Gemini Chat Ingestion
+- **File watcher** — Background service monitors `data/ingest/ai_chats/` and auto-ingests Gemini chat history exports
+- **Dual-format parsing** — Handles both **Google Takeout JSON** and **HTML** export formats, extracting user prompts by stripping `"Said "` prefixes
+- **Local LLM extraction** — Sends cleaned prompts to Ollama for triplet extraction using the knowledge graph engine
+- **Watchdog mode** — Uses `watchdog` for instant file notifications (falls back to async polling when unavailable)
+- **REST API** — 6 endpoints to trigger ingestion, manage the watcher, check status, and view extractor stats (`/gemini/trigger`, `/gemini/status`, etc.)
+- **Resilience logging** — All failures recorded as evolution events in `memory/evolution/` for audit trail
+
 ### 💼 Job Search Automation
 - **Multi-board scanning** — Searches LinkedIn, Indeed, Glassdoor, Greenhouse, Lever, Ashby, Workday, and more
 - **ATS-optimized matching** — AI evaluates and scores jobs against your resume
@@ -555,6 +563,8 @@ barq/
 │   ├── documents/          # PPT, Excel, PDF generation
 │   ├── notifications/      # Multi-channel notifications
 │   ├── memory_knowledge/   # Multi-brain knowledge graphs, timeline event log, migration
+│   ├── app/                # Application services
+│   │   └── services/       #   Gemini file watcher, API routes
 │   ├── database/           # SQLite DAOs
 │   └── tests/              # Python test suite
 ├── scripts/                # Development scripts
