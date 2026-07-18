@@ -577,13 +577,101 @@ export function DashboardPage(): JSX.Element {
         reconnectTimer = setTimeout(connect, 2000); return
       }
       ws.onopen = () => { setWsConnected(true); wsFailedAt = null; if (httpPollTimer) { clearTimeout(httpPollTimer); httpPollTimer = null } }
-      ws.onmessage = (event) => { if (!mounted) return; try { const data = JSON.parse(event.data); if (data.type === 'voice_status') applyStatus(data) } catch { /* */ } }
+      // Track generation ID to prevent responseText accumulation across turns
+      let currentGeneration = 0
+
+      ws.onmessage = (event) => {
+        if (!mounted) return
+        try {
+          const data = JSON.parse(event.data)
+
+          switch (data.type) {
+            case 'state_change':
+              // Instant state push from backend (wake word, barge-in, etc.)
+              if (data.status === 'listening') {
+                setAiState('listening')
+                setVoiceListening(true)
+                setDetectorRunning(true)
+                // New turn starting — clear response text and bump generation
+                currentGeneration++
+                setResponseText('')
+                setSttText('')
+              } else if (data.status === 'processing') {
+                setAiState('thinking')
+                // Bump generation to stop stale caption_barq from appending
+                currentGeneration++
+              } else if (data.status === 'speaking') {
+                setAiState(prev => prev !== 'responding' ? 'responding' : prev)
+              } else if (data.status === 'idle') {
+                setAiState('idle')
+                setVoiceListening(false)
+              }
+              break
+
+            case 'caption_user':
+              // Real-time STT caption from conversation_listener
+              setSttText(data.text)
+              if (data.isFinal) {
+                setVoiceListening(true)
+                setDetectorRunning(true)
+                setAiState('listening')
+                // New utterance finalized — ready for response, bump generation
+                currentGeneration++
+                setResponseText('')
+              }
+              break
+
+            case 'caption_barq':
+              // Streaming AI response caption from responder
+              // Capture current generation at time of event
+              {
+                const gen = currentGeneration
+                setResponseText((prev) => {
+                  // If generation has moved on, this chunk is stale — discard
+                  if (gen !== currentGeneration) return prev
+                  return prev + data.text
+                })
+              }
+              setAiState(prev => prev !== 'responding' ? 'responding' : prev)
+              break
+
+            case 'voice_status':
+              // Legacy 100ms poll snapshot — authoritative full state
+              applyStatus(data)
+              break
+          }
+        } catch {
+          /* ignore malformed messages */
+        }
+      }
       ws.onclose = () => { setWsConnected(false); if (!mounted) return; if (!wsFailedAt) wsFailedAt = Date.now(); if (Date.now() - wsFailedAt > 5000) startHttpPoll(); reconnectTimer = setTimeout(connect, 2000) }
       ws.onerror = () => { ws?.close() }
     }
 
     connect()
-    return () => { mounted = false; if (ws) { ws.onclose = null; ws.close() }; if (reconnectTimer) clearTimeout(reconnectTimer); if (httpPollTimer) clearTimeout(httpPollTimer) }
+
+    // ── On mount: immediately fetch voice status via HTTP so the mic state
+    //    is correct from the start (avoids false "disabled" flash before WS connects)
+    ;(async () => {
+      if (!mounted) return
+      try {
+        const initial = await api('/voice/status')
+        if (initial && typeof initial === 'object' && mounted) {
+          applyStatus(initial as Record<string, unknown>)
+        }
+      } catch {
+        // backend unreachable — WS will retry
+      }
+    })()
+
+    return () => {
+      mounted = false
+      if (ws) { ws.onclose = null; ws.close() }
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (httpPollTimer) clearTimeout(httpPollTimer)
+      // ── On unmount (page switch): stop the backend voice detector cleanly
+      api('/voice/stop', {}).catch(() => {})
+    }
   }, [])
 
   // ═══════════════════════════════════════════════════════════════════

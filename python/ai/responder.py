@@ -7,10 +7,12 @@ boundaries, and each sentence is immediately sent to TTS so audio playback
 can begin while the LLM continues generating the rest of the response.
 """
 
+import asyncio
 import hashlib
 import io
 import re
 import threading
+import time
 from pathlib import Path
 from typing import AsyncIterable
 
@@ -19,7 +21,9 @@ import numpy as np
 
 from ai.conversation import ConversationManager, get_small_talk
 from utils.ollama_client import OllamaClient
+from voice.evolution_logger import get_evolution_logger
 from voice.speech import SpeechProcessor
+from voice.websocket_manager import VoiceWSManager
 
 # Module-level speaking event — accessible cross-module without circular imports.
 # Set by BARQResponder.__init__(), consumed by speech.py's mic monitor to
@@ -50,6 +54,7 @@ class BARQResponder:
         self.conversation = ConversationManager()
         self.llm = OllamaClient()
         self.speech = SpeechProcessor()
+        self.ws_manager = VoiceWSManager.get_instance()
         self.tts_voice: str = "en-US-JennyNeural"  # must match routes.py default
         self.is_speaking = False
         # `is_speaking_event` is a reference to the module-level `_speaking_event`,
@@ -60,6 +65,8 @@ class BARQResponder:
         self.stt_text: str = ""  # latest interim STT transcript (for live display via WebSocket)
         self.stt_confidence: float = 0.0  # confidence score of current/interim STT (0.0-1.0)
         self.response_text: str = ""  # accumulated AI response text (for live display via WebSocket)
+        self.evo_logger = get_evolution_logger()
+        self.wake_word_timestamp: float = 0.0  # set by routes.py _on_wake_word_callback for TTFB measurement
 
     # ── Non-streaming (legacy) respond ───────────────────────────────
 
@@ -131,6 +138,25 @@ class BARQResponder:
 
     # ── Streaming respond ───────────────────────────────────────────
 
+    async def _heartbeat_loop(self, interval: float = 5.0):
+        """Background heartbeat: broadcasts ``{"type": "state_change", "status": "processing"}``
+        at regular intervals while the LLM is actively generating.  This prevents
+        the frontend from timing out during long-running generations (e.g. code
+        snippets, large responses).
+
+        The loop exits when ``self.is_processing`` becomes False or when
+        ``self._interrupt_requested`` is set.
+
+        Args:
+            interval: Seconds between heartbeats (default 5.0).
+        """
+        while self.is_processing and not self._interrupt_requested:
+            await asyncio.sleep(interval)
+            if not self.is_processing or self._interrupt_requested:
+                break
+            asyncio.ensure_future(self.ws_manager.broadcast_state("processing"))
+            print("[Responder] Heartbeat — processing...")
+
     async def stream_respond(self, user_input: str, confidence: float = 0.0) -> AsyncIterable[dict]:
         """Stream-process user input: LLM tokens → sentence-aware TTS chunks.
 
@@ -151,6 +177,8 @@ class BARQResponder:
         """
         self.is_processing = True
         self._interrupt_requested = False
+        # Broadcast processing state to frontend
+        asyncio.ensure_future(self.ws_manager.broadcast_state("processing"))
         try:
             # ── 0. Small talk check (faster than LLM) ───────────────
             small_talk_reply = get_small_talk(user_input)
@@ -158,6 +186,12 @@ class BARQResponder:
                 self.conversation.add_user_message(user_input)
                 self.conversation.add_assistant_message(small_talk_reply)
                 self.response_text = small_talk_reply
+                # Broadcast speaking + caption_barq for small talk
+                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
+                asyncio.ensure_future(self.ws_manager.broadcast({
+                    "type": "caption_barq",
+                    "text": small_talk_reply,
+                }))
                 audio_path, audio_pcm = await self._text_to_speech_both(small_talk_reply)
                 yield {
                     "text": small_talk_reply,
@@ -174,6 +208,12 @@ class BARQResponder:
             if intent == "command":
                 self.response_text = "Processing command..."
                 result = await self.respond(user_input)
+                # Broadcast speaking + caption_barq for command response
+                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
+                asyncio.ensure_future(self.ws_manager.broadcast({
+                    "type": "caption_barq",
+                    "text": result.get("text", ""),
+                }))
                 # Add PCM data to command results (generated once)
                 if "audio_path" in result:
                     try:
@@ -190,11 +230,22 @@ class BARQResponder:
             buffer = ""
             full_text = ""
             self.response_text = ""  # reset for new turn
+            _ttfb_recorded = False  # track time-to-first-token
+
+            # Start heartbeat task to keep frontend alive during long generations
+            heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
 
             try:
                 async for token in self.llm.stream_chat(context):
                     if self._interrupt_requested:
                         break
+
+                    # Record TTFB on first token (actual wake-word-to-first-token duration)
+                    if not _ttfb_recorded:
+                        _ttfb_recorded = True
+                        ttfb_ms = (time.perf_counter() - self.wake_word_timestamp) * 1000 if self.wake_word_timestamp > 0 else 0.0
+                        self.evo_logger.record("ttfb", duration_ms=ttfb_ms, metadata={"model": "ollama"})
+
                     buffer += token
                     full_text += token
                     self.response_text = full_text  # update live display text
@@ -207,6 +258,12 @@ class BARQResponder:
                         buffer = parts[-1]  # keep the potentially-incomplete tail
                         for sentence in complete:
                             if sentence.strip():
+                                # Broadcast speaking state + caption_barq for each sentence chunk
+                                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
+                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                    "type": "caption_barq",
+                                    "text": sentence,
+                                }))
                                 audio_path, audio_pcm = await self._text_to_speech_both(sentence)
                                 yield {
                                     "text": sentence,
@@ -215,9 +272,21 @@ class BARQResponder:
                                 }
             except Exception as e:
                 print(f"[Responder] LLM streaming error: {e}")
+                # Log LLM streaming error to evolution tracker
+                self.evo_logger.record("llm_error", metadata={
+                    "source": "responder",
+                    "error": str(e)[:120],
+                    "has_partial": bool(full_text.strip()),
+                })
                 # If we got partial text, use it as-is
                 if not full_text.strip():
                     full_text = f"Sorry, I encountered an error. {e}"
+                    # Broadcast speaking + error caption
+                    asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
+                    asyncio.ensure_future(self.ws_manager.broadcast({
+                        "type": "caption_barq",
+                        "text": full_text,
+                    }))
                     audio_path, audio_pcm = await self._text_to_speech_both(full_text)
                     yield {
                         "text": full_text,
@@ -228,6 +297,12 @@ class BARQResponder:
 
             # ── 3. Flush remaining buffer ───────────────────────────
             if buffer.strip() and not self._interrupt_requested:
+                # Broadcast speaking + remaining caption
+                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
+                asyncio.ensure_future(self.ws_manager.broadcast({
+                    "type": "caption_barq",
+                    "text": buffer,
+                }))
                 audio_path, audio_pcm = await self._text_to_speech_both(buffer)
                 yield {
                     "text": buffer,
@@ -240,6 +315,11 @@ class BARQResponder:
                 self.conversation.add_assistant_message(full_text)
 
         finally:
+            # Cancel the heartbeat task if it was started
+            try:
+                heartbeat_task.cancel()
+            except (NameError, Exception):
+                pass
             self.is_processing = False
             self._interrupt_requested = False
             self.response_text = ""  # clear live display text when turn ends
@@ -354,9 +434,13 @@ class BARQResponder:
         content_hash = hashlib.md5(text.encode()).hexdigest()[:12]
         output_path = AUDIO_DIR / f"response_{content_hash}.mp3"
 
+        _tts_start = time.perf_counter()
+        was_cached = False
+
         if output_path.exists():
             # File exists — load cached bytes for PCM decode
             mp3_bytes = output_path.read_bytes()
+            was_cached = True
         else:
             # Generate TTS audio once
             communicate = edge_tts.Communicate(text, self.tts_voice)
@@ -369,6 +453,15 @@ class BARQResponder:
 
         # Decode MP3 bytes to PCM in-memory via PyAV (lazy import)
         audio = self._decode_mp3_to_pcm(mp3_bytes)
+
+        # Record TTS latency (including decode time)
+        tts_duration = (time.perf_counter() - _tts_start) * 1000
+        self.evo_logger.record("tts_latency", duration_ms=tts_duration, metadata={
+            "text_length": len(text),
+            "cached": was_cached,
+            "voice": self.tts_voice,
+        })
+
         return output_path, (audio, 24000)
 
     def _decode_mp3_to_pcm(self, mp3_bytes: bytes) -> np.ndarray:

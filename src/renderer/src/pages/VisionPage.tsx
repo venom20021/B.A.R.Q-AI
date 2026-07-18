@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Eye, Monitor, Camera, Play, Square, Loader2, CheckCircle, XCircle,
   AlertTriangle, History, Settings2, Volume2,
-  ChevronDown, ChevronUp, Trash2, Clock,
+  ChevronDown, ChevronUp, Trash2, Clock, Wifi, WifiOff,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../utils/api'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────
 
 interface Capabilities {
   screen_capture: boolean
@@ -38,7 +38,44 @@ interface VisionResponse {
   sample_rate?: number
 }
 
-// ─── Capability definitions ───────────────────────────────────────────────────
+// WebSocket message types
+interface WsStatusMsg {
+  type: 'status'
+  gemini_available: boolean
+  api_key_configured: boolean
+  ready: boolean
+}
+
+interface WsTokenMsg {
+  type: 'token'
+  text: string
+}
+
+interface WsDoneMsg {
+  type: 'done'
+  text: string
+  duration_ms: number
+}
+
+interface WsAudioMsg {
+  type: 'audio'
+  audio_base64: string
+  sample_rate: number
+}
+
+interface WsErrorMsg {
+  type: 'error'
+  message: string
+  component?: string
+}
+
+type WsMessage = WsStatusMsg | WsTokenMsg | WsDoneMsg | WsAudioMsg | WsErrorMsg
+
+// ─── WebSocket URL ────────────────────────────────────────────────────
+// Matches the backend config (default: 127.0.0.1:8956)
+const WS_BASE = `ws://${location.hostname || '127.0.0.1'}:8956`
+
+// ─── Capability definitions ───────────────────────────────────────────
 
 const CAP_DEFS: { key: keyof Capabilities; label: string; icon: typeof Monitor }[] = [
   { key: 'screen_capture', label: 'Screen Capture', icon: Monitor },
@@ -47,9 +84,9 @@ const CAP_DEFS: { key: keyof Capabilities; label: string; icon: typeof Monitor }
   { key: 'gemini_live',   label: 'Gemini Live Audio', icon: Volume2 },
 ]
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
 // VisionPage
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
 
 export function VisionPage(): JSX.Element {
   const [prompt, setPrompt] = useState("What's on my screen? Be concise.")
@@ -67,6 +104,14 @@ export function VisionPage(): JSX.Element {
   const liveRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const historyIdRef = useRef(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
+
+  // ── WebSocket state ────────────────────────────────────────────────
+  const [wsConnected, setWsConnected] = useState(false)
+  const [wsReady, setWsReady] = useState(false)        // gemini + api key ready
+  const [streamingText, setStreamingText] = useState('') // real-time partial text
+  const wsRef = useRef<WebSocket | null>(null)
+  const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const resumeAudioCtx = useCallback(async () => {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new AudioContext()
@@ -77,20 +122,160 @@ export function VisionPage(): JSX.Element {
     return audioCtxRef.current
   }, [])
 
-  // ── Fetch capabilities once ────────────────────────────────────────────
+  // ── WebSocket Connection ───────────────────────────────────────────
+
+  const connectWs = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
+    try {
+      const ws = new WebSocket(`${WS_BASE}/vision/ws/vision`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setWsConnected(true)
+        console.log('[Vision WS] Connected')
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const msg: WsMessage = JSON.parse(event.data)
+
+          switch (msg.type) {
+            case 'status':
+              setWsReady(msg.ready)
+              // Dynamically update capabilities based on WS status
+              setCaps((prev) => ({
+                screen_capture: prev?.screen_capture ?? false,
+                webcam: prev?.webcam ?? false,
+                gemini_api: msg.api_key_configured,
+                gemini_live: msg.ready, // Live ready when gemini + key ok
+              }))
+              if (!msg.api_key_configured) {
+                setSetupRequired(true)
+              }
+              break
+
+            case 'token':
+              setStreamingText((prev) => prev + msg.text)
+              break
+
+            case 'done':
+              setStreamingText('')
+              setLoading(false)
+              setResult((prev) => ({
+                ...prev,
+                text: msg.text,
+                status: 'success',
+              }))
+              historyIdRef.current += 1
+              setHistory((prev) => [
+                {
+                  id: historyIdRef.current,
+                  source,
+                  prompt: prompt.trim(),
+                  result: msg.text,
+                  timestamp: new Date().toLocaleTimeString(),
+                },
+                ...prev,
+              ].slice(0, 50))
+              break
+
+            case 'audio':
+              // Play received audio via Web Audio API
+              if (msg.audio_base64) {
+                void (async () => {
+                  try {
+                    const binaryStr = atob(msg.audio_base64)
+                    const bytes = new Uint8Array(binaryStr.length)
+                    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+                    const ctx = await resumeAudioCtx()
+                    const buffer = ctx.decodeAudioData(bytes.buffer)
+                    const sourceNode = ctx.createBufferSource()
+                    sourceNode.buffer = await buffer
+                    sourceNode.connect(ctx.destination)
+                    sourceNode.start()
+                  } catch (e) {
+                    console.warn('[Vision WS] Audio playback error:', e)
+                  }
+                })()
+              }
+              break
+
+            case 'error':
+              setError(msg.message)
+              setLoading(false)
+              setStreamingText('')
+              if (msg.component === 'Gemini Vision' || msg.message.includes('API key')) {
+                setWsReady(false)
+                setSetupRequired(true)
+                setCaps((prev) => prev ? { ...prev, gemini_api: false, gemini_live: false } : prev)
+              }
+              break
+          }
+        } catch (e) {
+          console.warn('[Vision WS] Parse error:', e)
+        }
+      }
+
+      ws.onclose = () => {
+        setWsConnected(false)
+        setWsReady(false)
+        setStreamingText('')
+        wsRef.current = null
+        // Auto-reconnect after 3s
+        wsReconnectRef.current = setTimeout(() => {
+          connectWs()
+        }, 3000)
+      }
+
+      ws.onerror = () => {
+        // onclose will fire after this
+      }
+    } catch (e) {
+      console.warn('[Vision WS] Connection error:', e)
+      setWsConnected(false)
+      // Retry after 5s
+      wsReconnectRef.current = setTimeout(() => {
+        connectWs()
+      }, 5000)
+    }
+  }, [])  // Intentionally stable — no external deps; connect is called once on mount
+
+  // Connect on mount, disconnect on unmount
+  useEffect(() => {
+    connectWs()
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+      if (wsReconnectRef.current) {
+        clearTimeout(wsReconnectRef.current)
+      }
+    }
+  }, [connectWs])
+
+  // ── Fetch REST capabilities once as fallback ───────────────────────
 
   useEffect(() => {
     (async () => {
       try {
         const data = await api<{ capabilities?: Capabilities }>('/vision/check')
-        if (data?.capabilities) setCaps(data.capabilities)
+        if (data?.capabilities) {
+          setCaps((prev) => ({
+            // WS status takes priority for gemini, REST for screen/camera
+            ...data.capabilities,
+            gemini_api: prev?.gemini_api ?? data.capabilities.gemini_api,
+            gemini_live: prev?.gemini_live ?? data.capabilities.gemini_live,
+          }))
+        }
       } catch { /* ignore */ }
     })()
   }, [])
 
   const camAvail = caps?.webcam ?? false
 
-  // ── Live mode cleanup ───────────────────────────────────────────────────
+  // ── Live mode cleanup ──────────────────────────────────────────────
 
   useEffect(() => {
     return () => {
@@ -98,10 +283,69 @@ export function VisionPage(): JSX.Element {
     }
   }, [])
 
-  // ── Error/response helpers ──────────────────────────────────────────────
+  // ── Capture image as base64 ────────────────────────────────────────
+
+  const captureImageAsBase64 = useCallback(async (): Promise<{ base64: string; mime: string } | null> => {
+    try {
+      // Use the REST endpoint to capture and get base64 image back
+      const endpoint = source === 'screen' ? '/vision/screen' : '/vision/camera'
+      const body = source === 'screen'
+        ? { prompt: 'capture' }
+        : { prompt: 'capture', camera_index: cameraIndex }
+      const data = await api<VisionResponse>(endpoint, body)
+      if (data?.image_base64) {
+        // image_base64 is "data:image/jpeg;base64,..." — strip prefix
+        const parts = data.image_base64.split(',')
+        return { base64: parts[1] ?? parts[0], mime: data.mime_type || 'image/jpeg' }
+      }
+      return null
+    } catch (e) {
+      setError(String(e))
+      return null
+    }
+  }, [source, cameraIndex])
+
+  // ── Send WebSocket analysis request ────────────────────────────────
+
+  const analyzeViaWs = useCallback(async () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setError('Vision WebSocket not connected. Reconnecting...')
+      connectWs()
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    setResult(null)
+    setStreamingText('')
+    setSetupRequired(false)
+
+    const trimmedPrompt = prompt.trim() || (source === 'screen'
+      ? "What's on my screen? Be concise."
+      : "What do you see? Be concise.")
+
+    // Capture image as base64
+    const img = await captureImageAsBase64()
+    if (!img) {
+      setError('Failed to capture image')
+      setLoading(false)
+      return
+    }
+
+    // Send over WebSocket
+    wsRef.current.send(JSON.stringify({
+      type: 'analyze',
+      image_base64: img.base64,
+      mime_type: img.mime,
+      prompt: trimmedPrompt,
+      speak: true, // Request TTS playback
+    }))
+  }, [prompt, source, captureImageAsBase64, connectWs])
+
+  // ── Error/response helpers ─────────────────────────────────────────
 
   const detectApiKeyMissing = useCallback((msg: string) => {
-    if (msg.toLowerCase().includes('gemini api key')) {
+    if (msg.toLowerCase().includes('gemini api key') || msg.toLowerCase().includes('api key')) {
       setSetupRequired(true)
     }
   }, [])
@@ -110,9 +354,16 @@ export function VisionPage(): JSX.Element {
     setHistory(prev => [entry, ...prev].slice(0, 50))
   }, [])
 
-  // ── Main capture & analyze ─────────────────────────────────────────────
+  // ── Main capture & analyze (legacy REST path as fallback) ──────────
 
   const captureAndAnalyze = useCallback(async () => {
+    // If WebSocket is connected and ready, use streaming path
+    if (wsRef.current?.readyState === WebSocket.OPEN && wsReady) {
+      await analyzeViaWs()
+      return
+    }
+
+    // Fallback to legacy REST path
     setLoading(true)
     setError('')
     setResult(null)
@@ -157,9 +408,9 @@ export function VisionPage(): JSX.Element {
       detectApiKeyMissing(msg)
     }
     setLoading(false)
-  }, [prompt, source, cameraIndex, detectApiKeyMissing, addToHistory])
+  }, [prompt, source, cameraIndex, wsReady, analyzeViaWs, detectApiKeyMissing, addToHistory])
 
-  // ── Live mode toggle ───────────────────────────────────────────────────
+  // ── Live mode toggle ───────────────────────────────────────────────
 
   const toggleLiveMode = useCallback(() => {
     if (liveMode) {
@@ -177,7 +428,7 @@ export function VisionPage(): JSX.Element {
     }
   }, [liveMode, liveInterval, captureAndAnalyze])
 
-  // ── Voice response via Gemini Live ─────────────────────────────────────
+  // ── Voice response via Gemini Live ─────────────────────────────────
 
   const captureWithVoice = useCallback(async () => {
     setLoading(true)
@@ -202,7 +453,6 @@ export function VisionPage(): JSX.Element {
           return
         }
         if (data.audio_pcm_base64) {
-          // Decode base64 PCM to Float32 and play via Web Audio API
           const binaryStr = atob(data.audio_pcm_base64)
           const bytes = new Uint8Array(binaryStr.length)
           for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
@@ -226,22 +476,22 @@ export function VisionPage(): JSX.Element {
     setLoading(false)
   }, [prompt, source, cameraIndex, detectApiKeyMissing, resumeAudioCtx])
 
-  // ── Clear history ──────────────────────────────────────────────────────
+  // ── Clear history ──────────────────────────────────────────────────
 
   const clearHistory = useCallback(() => {
     setHistory([])
     historyIdRef.current = 0
   }, [])
 
-  // ── Readiness summary ──────────────────────────────────────────────────
+  // ── Readiness summary ──────────────────────────────────────────────
 
   const readyCount = caps ? Object.values(caps).filter(Boolean).length : 0
   const capTotal = caps ? Object.keys(caps).length : 0
   const allReady = caps && readyCount === capTotal
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ── Render ──────────────────────────────────────────────────────────────
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════
+  // ── Render ─────────────────────────────────────────────────────────
+  // ═════════════════════════════════════════════════════════════════════
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -259,24 +509,36 @@ export function VisionPage(): JSX.Element {
 
           {/* Readiness badge */}
           {caps && (
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-rajdhani font-semibold ${
-              allReady
-                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-            }`}>
-              <span className={`relative w-2 h-2 ${allReady ? '' : 'animate-pulse'}`}>
-                <span className={`absolute inset-0 rounded-full ${allReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              </span>
-              {allReady ? 'All Systems Ready' : `${readyCount}/${capTotal} Ready`}
+            <div className="flex items-center gap-3">
+              {/* WS connection indicator */}
+              <div className={`flex items-center gap-1.5 px-2 py-1 rounded border text-[10px] font-share-tech ${
+                wsConnected
+                  ? 'border-emerald-500/20 text-emerald-400'
+                  : 'border-red-500/20 text-red-400'
+              }`}>
+                {wsConnected
+                  ? <><Wifi className="w-3 h-3" /> WS</>
+                  : <><WifiOff className="w-3 h-3" /> WS</>
+                }
+              </div>
+
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-rajdhani font-semibold ${
+                allReady
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                  : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+              }`}>
+                <span className={`relative w-2 h-2 ${allReady ? '' : 'animate-pulse'}`}>
+                  <span className={`absolute inset-0 rounded-full ${allReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                </span>
+                {allReady ? 'All Systems Ready' : `${readyCount}/${capTotal} Ready`}
+              </div>
             </div>
           )}
         </div>
       </motion.div>
 
-
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* ── Left: Controls ───────────────────────────────────────────── */}
+        {/* ── Left: Controls ───────────────────────────────────────── */}
         <div className="lg:col-span-2 space-y-4">
           {/* Main Control Card */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card">
@@ -426,7 +688,9 @@ export function VisionPage(): JSX.Element {
             <p className="text-hud text-dim-500 mt-2 text-xs">
               {liveMode
                 ? `Live mode active — capturing every ${liveInterval}s. Click "Stop Live" to end.`
-                : 'Uses Google Gemini 2.5 Flash. Screen captures are not stored.'}
+                : wsConnected && wsReady
+                  ? 'Streaming via WebSocket — real-time token display active.'
+                  : 'Uses Google Gemini 2.5 Flash. Screen captures are not stored.'}
             </p>
           </motion.div>
 
@@ -447,6 +711,27 @@ export function VisionPage(): JSX.Element {
                   {history.length > 0 ? `${history.length} captures` : 'Waiting...'}
                 </span>
               </div>
+            </motion.div>
+          )}
+
+          {/* ── Streaming Result (WebSocket) ────────────────────── */}
+          {loading && streamingText && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card border-cyan-500/20"
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+                <h4 className="text-sm font-rajdhani font-semibold text-ghost">
+                  Analyzing with Gemini{' '}
+                  <span className="text-dim-400 font-normal">(streaming)</span>
+                </h4>
+              </div>
+              <p className="text-sm font-exo text-dim-200 leading-relaxed whitespace-pre-wrap">
+                {streamingText}
+                <span className="inline-block w-1.5 h-4 bg-cyan-400/60 ml-0.5 animate-pulse" />
+              </p>
             </motion.div>
           )}
 
@@ -475,8 +760,8 @@ export function VisionPage(): JSX.Element {
             </motion.div>
           )}
 
-          {/* ── Loading ─────────────────────────────────────────── */}
-          {loading && !liveMode && (
+          {/* ── Loading (non-streaming fallback) ────────────────── */}
+          {loading && !streamingText && (
             <div className="glass-card text-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-300 mx-auto mb-2" />
               <p className="text-xs font-exo text-dim-400">Analyzing with Gemini...</p>
@@ -484,7 +769,7 @@ export function VisionPage(): JSX.Element {
           )}
 
           {/* ── Result ──────────────────────────────────────────── */}
-          {result && !loading && !error && (
+          {result && !loading && !error && !streamingText && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -538,7 +823,7 @@ export function VisionPage(): JSX.Element {
           )}
         </div>
 
-        {/* ── Right: Capabilities + History ─────────────────────────────── */}
+        {/* ── Right: Capabilities + History ──────────────────────────── */}
         <div className="space-y-4">
           {/* Capabilities */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card">
@@ -552,6 +837,22 @@ export function VisionPage(): JSX.Element {
                   installed={caps ? caps[key] : null}
                 />
               ))}
+            </div>
+
+            {/* WS Status */}
+            <div className="mt-3 pt-3 border-t border-cyan-500/5">
+              <div className="flex items-center justify-between py-1">
+                <div className="flex items-center gap-1.5">
+                  {wsConnected
+                    ? <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+                    : <WifiOff className="w-3.5 h-3.5 text-dim-500" />
+                  }
+                  <span className="text-xs font-exo text-dim-300">Vision WebSocket</span>
+                </div>
+                <span className={`text-[10px] font-share-tech ${wsConnected ? 'text-emerald-400' : 'text-dim-500'}`}>
+                  {wsConnected ? (wsReady ? 'Ready' : 'No Key') : 'Disconnected'}
+                </span>
+              </div>
             </div>
           </motion.div>
 
@@ -626,7 +927,7 @@ export function VisionPage(): JSX.Element {
   )
 }
 
-// ─── Capability Row ───────────────────────────────────────────────────────────
+// ─── Capability Row ───────────────────────────────────────────────────
 
 function CapabilityRow({
   label,

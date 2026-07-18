@@ -126,15 +126,17 @@ export function LiveCaptions({
   return (
     <AnimatePresence mode="wait">
       {visible && (displayStt || displayResponse || (conversationActive && !isProcessing)) && (
-        <motion.div
+       <motion.div
           key="live-captions"
-          initial={{ opacity: 0, y: 16, scale: 0.95 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 12, scale: 0.95 }}
+          // 1. Add x: "-50%" to all animation states
+          initial={{ opacity: 0, y: 16, x: "-50%", scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, x: "-50%", scale: 1 }}
+          exit={{ opacity: 0, y: 12, x: "-50%", scale: 0.95 }}
           transition={{ duration: 0.3, ease: 'easeOut' }}
-          className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50 w-full max-w-xl pointer-events-none"
+          // 2. Remove -translate-x-1/2 from the Tailwind classes
+          className="fixed bottom-40 left-1/2 z-[70] w-full max-w-xl pointer-events-none"
         >
-          <div className="mx-4 backdrop-blur-md bg-slate-950/40 border border-white/10 rounded-2xl px-6 py-4 shadow-2xl shadow-black/30">
+          <div className="mx-4 backdrop-blur-md backdrop-blur-sm border border-white/10 rounded-2xl px-6 py-4 shadow-2xl shadow-black/30">
             {/* ── User speech line ──────────────────────────────── */}
             {displayStt && (
               <div className="flex items-start gap-2.5 mb-1.5">

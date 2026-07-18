@@ -60,6 +60,13 @@ BRAIN_REGISTRY: dict[str, dict[str, Any]] = {
         "neon_glow": "rgba(168,85,247,0.5)",
         "icon": "briefcase",
     },
+    "gemini_chats": {
+        "label": "Gemini Chats",
+        "description": "Conversations and knowledge from Google Gemini interactions",
+        "color": "#d946ef",         # fuchsia / magenta
+        "neon_glow": "rgba(217,70,239,0.5)",
+        "icon": "sparkles",
+    },
     "general": {
         "label": "General Knowledge",
         "description": "Catch-all knowledge from auto-extraction and ingestion",

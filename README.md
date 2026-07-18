@@ -331,6 +331,161 @@ Configuration is managed through environment variables or a `.env` file in the p
 | `DATABASE_URL` | `sqlite+aiosqlite:///barq.db` | Database connection |
 | `CAREER_OPS_PATH` | `~/career-ops` | Path for resume/job files |
 
+### Cloud LLM Fallback Configuration
+
+BARQ automatically falls back to an OpenAI-compatible cloud API when Ollama is unavailable (offline or missing model). No code changes needed — just set the environment variables once and BARQ handles the rest transparently.
+
+#### How It Works
+
+1. **Ollama is tried first** — Every LLM request (`chat`, `generate`, `stream_chat`) attempts Ollama locally
+2. **On failure, cloud fallback kicks in** — If Ollama is unreachable, BARQ fires the same request at the configured cloud API
+3. **Transparent retry** — The caller receives the response as if it came from Ollama; streaming also works
+4. **One-time warning** — A log message is emitted the first time a fallback occurs so you know it happened
+
+Supported providers: **OpenAI**, **OpenRouter**, **Groq**, **Together AI**, **Anthropic** (via API proxy), **DeepSeek**, and any service that implements the OpenAI chat completions format.
+
+#### Step-by-Step Setup
+
+**1. Get an API key**
+
+| Provider | Free Tier | Sign Up | Model Suggestion |
+|---|---|---|---|
+| [OpenAI](https://platform.openai.com) | $5 free credits (expires) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `gpt-4o-mini` (cheap, fast) |
+| [OpenRouter](https://openrouter.ai) | Many free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `openai/gpt-4o-mini` or `meta-llama/llama-3.2-3b-instruct:free` |
+| [Groq](https://groq.com) | Rate-limited free tier | [console.groq.com/keys](https://console.groq.com/keys) | `llama3-70b-8192` (very fast) |
+| [Together AI](https://together.ai) | $25 free credits | [api.together.xyz/settings/api-keys](https://api.together.xyz/settings/api-keys) | `meta-llama/Llama-3.2-3B-Instruct-Turbo` |
+
+**2. Configure `.env`**
+
+Open (or create) `.env` in the project root and add:
+
+```bash
+# ── Required: Your API key ───────────────────────────────────
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
+
+# ── Optional overrides (defaults shown) ──────────────────────
+CLOUD_LLM_ENABLED=true
+CLOUD_LLM_MODEL=gpt-4o-mini
+CLOUD_LLM_BASE_URL=https://api.openai.com/v1
+```
+
+**3. Verify it works**
+
+```bash
+# Start the backend
+cd python && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8956
+
+# When the server starts, it prints a diagnostic:
+#   ✅ Cloud LLM fallback ready (gpt-4o-mini at https://api.openai.com/v1)
+#
+# If missing:
+#   ⚠ No cloud LLM fallback — set OPENAI_API_KEY in .env to enable
+
+# Test with Ollama stopped — the fallback should respond:
+curl -X POST http://127.0.0.1:8956/voice/chat/text \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Hello! What can you help me with?"}'
+```
+
+#### Provider-Specific Examples
+
+<details>
+<summary><strong>OpenAI</strong> (default, works out-of-the-box with an API key)</summary>
+
+```bash
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
+CLOUD_LLM_MODEL=gpt-4o-mini
+CLOUD_LLM_BASE_URL=https://api.openai.com/v1
+```
+
+Recommended models: `gpt-4o-mini` (cheapest), `gpt-4o` (best quality), `gpt-4o-mini-2024-07-18` (specific version).
+
+</details>
+
+<details>
+<summary><strong>OpenRouter</strong> (access many models with one key)</summary>
+
+```bash
+OPENAI_API_KEY=sk-or-v1-xxxxxxxxxxxx
+CLOUD_LLM_MODEL=openai/gpt-4o-mini
+CLOUD_LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Great for trying different models without multiple accounts. Use `meta-llama/llama-3.2-3b-instruct:free` for free-tier completion.
+
+Popular OpenRouter models: `openai/gpt-4o-mini`, `meta-llama/llama-3.2-3b-instruct:free`, `anthropic/claude-3.5-sonnet`, `google/gemini-2.0-flash-exp:free`.
+
+</details>
+
+<details>
+<summary><strong>Groq</strong> (blazing fast inference)</summary>
+
+```bash
+OPENAI_API_KEY=gsk_xxxxxxxxxxxx
+CLOUD_LLM_MODEL=llama3-70b-8192
+CLOUD_LLM_BASE_URL=https://api.groq.com/openai/v1
+```
+
+Groq specializes in extremely fast inference. Free tier has rate limits (~30 req/min for 7B, ~10 req/min for 70B).
+
+Recommended Groq models: `llama3-70b-8192`, `mixtral-8x7b-32768`, `gemma2-9b-it`.
+
+</details>
+
+<details>
+<summary><strong>Together AI</strong> (open-source model focus)</summary>
+
+```bash
+OPENAI_API_KEY=xxxxxxxxxxxxxxxxxxxxxx
+CLOUD_LLM_MODEL=meta-llama/Llama-3.2-3B-Instruct-Turbo
+CLOUD_LLM_BASE_URL=https://api.together.xyz/v1
+```
+
+Together AI hosts many open-source models. The $25 free credit goes a long way for experimentation.
+
+Recommended Together models: `meta-llama/Llama-3.2-3B-Instruct-Turbo`, `mistralai/Mixtral-8x7B-Instruct-v0.1`, `Qwen/Qwen2.5-7B-Instruct-Turbo`.
+
+</details>
+
+<details>
+<summary><strong>DeepSeek</strong> (cheapest option)</summary>
+
+```bash
+OPENAI_API_KEY=sk-xxxxxxxxxxxx
+CLOUD_LLM_MODEL=deepseek-chat
+CLOUD_LLM_BASE_URL=https://api.deepseek.com/v1
+```
+
+DeepSeek's API is significantly cheaper than OpenAI for comparable quality. `deepseek-chat` is their flagship model.
+
+</details>
+
+<details>
+<summary><strong>Anthropic Claude</strong> (via API proxy)</summary>
+
+```bash
+# Anthropic uses its own format — use OpenRouter or a proxy layer:
+OPENAI_API_KEY=sk-ant-xxxxxxxxxxxx
+CLOUD_LLM_MODEL=anthropic/claude-3.5-sonnet
+CLOUD_LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Claude models require the Anthropic API format, which differs from OpenAI's. Use OpenRouter (above) as a translation layer, or any proxy that converts OpenAI-format requests to Anthropic.
+
+</details>
+
+#### Disabling the Fallback
+
+If you want BARQ to fail loudly when Ollama is offline instead of falling back to the cloud:
+
+```bash
+CLOUD_LLM_ENABLED=false
+```
+
+This is useful for fully air-gapped/offline environments.
+
+---
+
 ### Model Selection
 
 For best performance, use these Ollama models:

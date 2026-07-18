@@ -16,15 +16,18 @@ Flow:
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from collections.abc import Awaitable
 from typing import Callable, Optional
 
 from ai.responder import BARQResponder
+from voice.evolution_logger import get_evolution_logger
 from voice.interrupt_handler import InterruptHandler
 from voice.pipeline import (
     TranscriptionFrame as PipelineTranscriptionFrame,
 )
+from voice.websocket_manager import VoiceWSManager
 from voice.pipeline import (
     TTSAudioFrame as PipelineTTSAudioFrame,
 )
@@ -67,6 +70,8 @@ class ConversationListener:
     ):
         self.stt = stt
         self.responder = responder
+        self.ws_manager = VoiceWSManager.get_instance()
+        self.evo_logger = get_evolution_logger()
         self.use_pipeline = use_pipeline
         self.energy_threshold = energy_threshold  # RMS energy threshold for barge-in detection
         self.interrupt_handler = InterruptHandler(energy_threshold=energy_threshold)
@@ -139,6 +144,9 @@ class ConversationListener:
         # Stop the background mic monitor (conversation is done).
         self.stt.stop_mic_monitor()
 
+        # Broadcast idle state to frontend
+        asyncio.ensure_future(self.ws_manager.broadcast_state("idle"))
+
         # Notify caller that conversation has stopped (e.g. resume wake detector)
         if self.on_stop:
             try:
@@ -179,6 +187,7 @@ class ConversationListener:
                 print("[Conversation] Listening for speech (streaming STT)...")
                 self.responder.stt_text = ""
                 text = None
+                _stt_start = time.perf_counter()
 
                 try:
                     async for result in self.stt.transcribe_streaming(
@@ -189,10 +198,30 @@ class ConversationListener:
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]
                             self.responder.stt_confidence = result.get("confidence", 0.0)
+                            # Broadcast interim STT caption to frontend
+                            asyncio.ensure_future(self.ws_manager.broadcast({
+                                "type": "caption_user",
+                                "text": result["text"],
+                                "isFinal": False,
+                            }))
                             print(f"[Conversation] STT interim: '{result['text']}' (conf: {result.get('confidence', 0.0):.2%})")
                         elif result["type"] == "final":
                             text = result["text"] if result["text"].strip() else None
                             self.responder.stt_text = ""  # clear after final
+                            # Record STT latency
+                            stt_duration = (time.perf_counter() - _stt_start) * 1000
+                            self.evo_logger.record("stt_latency", duration_ms=stt_duration, metadata={
+                                "text_length": len(result["text"]),
+                                "confidence": result.get("confidence", 0.0),
+                                "silence_timeout": self.vad_silence_timeout,
+                            })
+                            # Broadcast final STT caption to frontend
+                            if text:
+                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                    "type": "caption_user",
+                                    "text": text,
+                                    "isFinal": True,
+                                }))
                 except Exception as e:
                     print(f"[Conversation] STT streaming error: {e}")
                     text = None
@@ -332,6 +361,7 @@ class ConversationListener:
                 print("[Conversation·Pipeline] Listening for speech...")
                 self.responder.stt_text = ""
                 text = None
+                _stt_start = time.perf_counter()
 
                 try:
                     async for result in self.stt.transcribe_streaming(
@@ -342,9 +372,27 @@ class ConversationListener:
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]
                             self.responder.stt_confidence = result.get("confidence", 0.0)
+                            asyncio.ensure_future(self.ws_manager.broadcast({
+                                "type": "caption_user",
+                                "text": result["text"],
+                                "isFinal": False,
+                            }))
                         elif result["type"] == "final":
                             text = result["text"] if result["text"].strip() else None
                             self.responder.stt_text = ""
+                            # Record STT latency
+                            stt_duration = (time.perf_counter() - _stt_start) * 1000
+                            self.evo_logger.record("stt_latency", duration_ms=stt_duration, metadata={
+                                "text_length": len(result["text"]),
+                                "confidence": result.get("confidence", 0.0),
+                                "silence_timeout": self.vad_silence_timeout,
+                            })
+                            if text:
+                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                    "type": "caption_user",
+                                    "text": text,
+                                    "isFinal": True,
+                                }))
                 except Exception as e:
                     print(f"[Conversation·Pipeline] STT error: {e}")
                     text = None

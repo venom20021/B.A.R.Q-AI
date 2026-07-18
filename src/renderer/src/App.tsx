@@ -31,6 +31,7 @@ import { AgentPage } from './pages/AgentPage'
 import { VisionPage } from './pages/VisionPage'
 import { BrainPage } from './pages/BrainPage'
 import { PublicApisPage } from './pages/PublicApisPage'
+import { EvolutionPage } from './pages/EvolutionPage'
 
 // Lazy loaded views for the main navbar tabs
 const NotesView = lazy(() => import('./views/NotesView'))
@@ -297,18 +298,10 @@ function AppContent(): JSX.Element {
 
       {/* Main layout — header is absolute, so content fills full screen */}
       <div className="relative z-10 h-screen">
-        {/* Floating transparent header + centered nav */}
+        {/* Centered nav (floating) */}
         <Navbar
           activeTab={activeTab}
           onTabChange={handleTabChange}
-          isConnected={isConnected}
-          isSpeaking={isSpeaking}
-          isMuted={isMuted}
-          isConversationActive={isConversationActive}
-          onMicToggle={handleMicToggle}
-          aiState={aiState}
-          language={language}
-          ttsVoice={ttsVoice}
         />
 
         {/* Content area: Sidebar (fixed dock) + Main */}
@@ -316,8 +309,7 @@ function AppContent(): JSX.Element {
           {/* Sidebar is fixed-position at bottom */}
           <Sidebar currentRoute={location.pathname} onNavigate={navigate} />
 
-          {/* pt-20 avoids overlap with the absolute floating header on non-canvas pages */}
-          <main className="flex-1 flex flex-col overflow-hidden pt-20">
+          <main className="flex-1 flex flex-col overflow-hidden pt-2">
             <div className="flex-1 overflow-y-auto relative">
               {/* Scanline overlay */}
               <div
@@ -372,6 +364,7 @@ function AppContent(): JSX.Element {
                   <Route path="/brain" element={<AnimatedPage><BrainPage /></AnimatedPage>} />
                   <Route path="/apis" element={<AnimatedPage><PublicApisPage /></AnimatedPage>} />
                   <Route path="/widgets" element={<AnimatedPage><WidgetsPage /></AnimatedPage>} />
+                  <Route path="/evolution" element={<AnimatedPage><EvolutionPage /></AnimatedPage>} />
                 </Routes>
               </AnimatePresence>
             </div>

@@ -158,22 +158,37 @@ class CloudLLMClient:
                         "top_p": 0.9,
                     },
                 ) as response:
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
-                        # SSE format: "data: {...}"
-                        if line.startswith("data: "):
-                            payload = line[6:].strip()
-                            if payload == "[DONE]":
-                                break
-                            try:
-                                data = _json.loads(payload)
-                                delta = data.get("choices", [{}])[0].get("delta", {})
-                                token = delta.get("content", "")
-                                if token:
-                                    yield token
-                            except (_json.JSONDecodeError, KeyError, IndexError):
+                    try:
+                        async for line in response.aiter_lines():
+                            if not line.strip():
                                 continue
+                            # SSE format: "data: {...}"
+                            if line.startswith("data: "):
+                                payload = line[6:].strip()
+                                if payload == "[DONE]":
+                                    break
+                                try:
+                                    data = _json.loads(payload)
+                                    delta = data.get("choices", [{}])[0].get("delta", {})
+                                    token = delta.get("content", "")
+                                    if token:
+                                        yield token
+                                except (_json.JSONDecodeError, KeyError, IndexError):
+                                    continue
+                    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.StreamError,
+                             httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout,
+                             TimeoutError, ConnectionResetError, ConnectionAbortedError) as mid_err:
+                        error_msg = str(mid_err)[:120]
+                        print(f"[CloudLLM] Mid-stream error: {error_msg}")
+                        yield "\n\n[Sorry, the cloud AI engine encountered a stream error. Please try again.]"
+                        try:
+                            from voice.evolution_logger import get_evolution_logger
+                            get_evolution_logger().record(
+                                "llm_error",
+                                metadata={"source": "cloud", "error": error_msg, "phase": "stream"},
+                            )
+                        except Exception:
+                            pass
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise CloudLLMNotConfiguredError() from e
@@ -319,18 +334,35 @@ class OllamaClient:
                         "options": {"temperature": 0.7, "top_p": 0.9},
                     },
                 ) as response:
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
+                    try:
+                        async for line in response.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                data = _json.loads(line)
+                                if data.get("done"):
+                                    break
+                                token = data.get("message", {}).get("content", "")
+                                if token:
+                                    yield token
+                            except (_json.JSONDecodeError, KeyError):
+                                continue
+                    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.StreamError,
+                             httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout,
+                             TimeoutError, ConnectionResetError, ConnectionAbortedError) as mid_err:
+                        error_msg = str(mid_err)[:120]
+                        print(f"[Ollama] Mid-stream error in _ollama_stream_chat: {error_msg}")
+                        # Yield a fallback error token so the caller doesn't hang with partial output
+                        yield "\n\n[Sorry, the local AI engine encountered a stream error. Please try again.]"
+                        # Log to evolution tracker
                         try:
-                            data = _json.loads(line)
-                            if data.get("done"):
-                                break
-                            token = data.get("message", {}).get("content", "")
-                            if token:
-                                yield token
-                        except (_json.JSONDecodeError, KeyError):
-                            continue
+                            from voice.evolution_logger import get_evolution_logger
+                            get_evolution_logger().record(
+                                "llm_error",
+                                metadata={"source": "ollama", "error": error_msg, "phase": "stream"},
+                            )
+                        except Exception:
+                            pass
         except httpx.ConnectError:
             raise OllamaNotAvailableError(self.host, self.model)
 

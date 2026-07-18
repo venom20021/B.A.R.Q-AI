@@ -51,6 +51,7 @@ BRAIN_FOLDER_MAP: dict[str, str] = {
     "google_docs": "google_docs",
     "ai_chats": "ai_chats",
     "career": "career",
+    "gemini_chats": "gemini_chats",
     "general": "general",
 }
 
@@ -119,9 +120,11 @@ class IngestionParser:
     def _parse_json_chat(self, raw: str) -> str:
         """Convert an AI chat JSON export to Markdown conversation format.
 
-        Expects either:
-        - A JSON array of ``{"role": "user"|"assistant"|"system", "content": "..."}``
-        - A dict with a ``"messages"`` key containing such an array
+        Supports:
+        - Generic: JSON array of ``{"role", "content"}`` objects
+        - Dict with ``"messages"`` / ``"conversation"`` / ``"chats"`` key
+        - **Google Takeout** format: ``{"conversations": [{...}]}``
+        - **Google AI Studio** format: ``{"contents": [{role, parts}]}``
         """
         try:
             data = json.loads(raw)
@@ -134,9 +137,16 @@ class IngestionParser:
         if isinstance(data, list):
             messages = data
         elif isinstance(data, dict):
+            # Google Takeout format
+            if "conversations" in data:
+                convs = data["conversations"]
+                return self._parse_takeout_conversations(convs)
+            # Google AI Studio format
+            if "contents" in data:
+                return self._parse_ai_studio_contents(data["contents"])
+            # Generic dict formats
             messages = data.get("messages", data.get("conversation", data.get("chats", [])))
             if not messages and "title" in data and "content" in data:
-                # Single message with title+content keys
                 return self._clean_text(f"# {data['title']}\n\n{data['content']}")
 
         if not messages or not isinstance(messages, list):
@@ -144,13 +154,51 @@ class IngestionParser:
 
         md_parts: list[str] = []
         for msg in messages:
-            role = str(msg.get("role", msg.get("from", "unknown"))).capitalize()
+            role = str(msg.get("role", msg.get("author", msg.get("from", "unknown")))).capitalize()
             content = str(msg.get("content", msg.get("text", "")))
             if content:
                 md_parts.append(f"**{role}:** {content.strip()}")
 
         result = "\n\n".join(md_parts) if md_parts else self._clean_text(raw)
         return result
+
+    def _parse_takeout_conversations(self, conversations: list[dict]) -> str:
+        """Parse Google Takeout conversations array into Markdown."""
+        md_parts: list[str] = []
+        for conv in conversations[:50]:  # Limit to first 50 conversations
+            title = conv.get("title", "Untitled")
+            md_parts.append(f"# Conversation: {title}")
+            for msg in conv.get("messages", []):
+                author = str(msg.get("author", "unknown")).capitalize()
+                content_parts = msg.get("content", [])
+                if isinstance(content_parts, list):
+                    text = " ".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in content_parts
+                    )
+                else:
+                    text = str(content_parts)
+                if text.strip():
+                    md_parts.append(f"**{author}:** {text.strip()}")
+            md_parts.append("")
+        return "\n\n".join(md_parts) if md_parts else ""
+
+    def _parse_ai_studio_contents(self, contents: list[dict]) -> str:
+        """Parse Google AI Studio contents array into Markdown."""
+        md_parts: list[str] = []
+        for msg in contents:
+            role = str(msg.get("role", "unknown")).capitalize()
+            parts = msg.get("parts", [])
+            text_parts: list[str] = []
+            for part in parts:
+                if isinstance(part, dict):
+                    text_parts.append(part.get("text", ""))
+                else:
+                    text_parts.append(str(part))
+            text = " ".join(tp for tp in text_parts if tp.strip())
+            if text.strip():
+                md_parts.append(f"**{role}:** {text.strip()}")
+        return "\n\n".join(md_parts) if md_parts else ""
 
     # ── HTML Parser ─────────────────────────────────────────────────────
 

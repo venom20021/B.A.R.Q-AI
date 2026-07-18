@@ -1,22 +1,26 @@
 """
 FastAPI routes for the Knowledge module: Obsidian vault configuration,
-manual extraction triggers, and graph snapshot dumping.
+manual extraction triggers, graph snapshot dumping, and Gemini chat import.
 """
 
+import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from graph_brain import graph_brain
 
 from .auto_extractor import AutoExtractor, run_auto_extraction
 from .obsidian_dumper import ObsidianDumper, get_obsidian_dumper
+from .gemini_importer import GeminiChatImporter, ImportResult, get_gemini_importer
 
+logger = logging.getLogger("barq.knowledge_routes")
 router = APIRouter()
 
 # Singleton instances
 _auto_extractor = AutoExtractor()
+_gemini_importer = GeminiChatImporter()
 
 
 # ─── Models ─────────────────────────────────────────────────────────
@@ -39,7 +43,21 @@ class DumpRequest(BaseModel):
     facts_count: int = 0
 
 
-# ─── Obsidian Vault Configuration ──────────────────────────────────
+class GeminiImportRequest(BaseModel):
+    file_path: str
+    """Path to a Gemini export JSON file (Takeout, AI Studio, or generic chat JSON)."""
+
+
+class GeminiImportTextRequest(BaseModel):
+    json_text: str
+    """Raw JSON text containing Gemini conversation data."""
+    source_name: str = "direct_input"
+    """Optional label for the import source."""
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Obsidian Vault Configuration
+# ═════════════════════════════════════════════════════════════════════
 
 @router.get("/obsidian/config", summary="Get Obsidian vault configuration")
 async def get_obsidian_config():
@@ -91,7 +109,9 @@ async def set_obsidian_config(request: ObsidianConfigRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── Manual Extraction ─────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+#  Manual Extraction
+# ═════════════════════════════════════════════════════════════════════
 
 @router.post("/extract/run", summary="Run extraction on all unprocessed content")
 async def trigger_extraction():
@@ -135,7 +155,9 @@ async def extract_trends(limit: int = 10):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── Obsidian Dumping ─────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+#  Obsidian Dumping
+# ═════════════════════════════════════════════════════════════════════
 
 @router.post("/obsidian/dump/research", summary="Dump research report to Obsidian")
 async def dump_research(request: DumpRequest):
@@ -199,4 +221,198 @@ async def dump_graph_snapshot():
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Gemini Chat Import
+# ═════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/gemini/import",
+    summary="Import Gemini chat file by path",
+)
+async def gemini_import_file(request: GeminiImportRequest) -> dict[str, Any]:
+    """Import Gemini conversations from a JSON file on disk into the
+    ``gemini_chats`` knowledge graph brain.
+
+    Supports:
+    - Google Takeout export (``Takeout/Gemini/MyActivity.json``)
+    - Google AI Studio export
+    - Generic chat JSON (array of ``{role, content}`` messages)
+
+    The file is parsed, entities are extracted from conversations using
+    lightweight NLP heuristics, and knowledge triplets are added to the
+    ``gemini_chats`` brain and persisted to disk.
+    """
+    try:
+        result = _gemini_importer.import_file(request.file_path)
+        if result.errors:
+            return {
+                "status": "partial" if result.triplets_added > 0 else "error",
+                **result.to_dict(),
+            }
+        return {
+            "status": "ok",
+            **result.to_dict(),
+        }
+    except Exception as e:
+        logger.error("Gemini import failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/gemini/import/text",
+    summary="Import Gemini conversations from raw JSON text",
+)
+async def gemini_import_text(request: GeminiImportTextRequest) -> dict[str, Any]:
+    """Import Gemini conversations from a raw JSON string into the
+    ``gemini_chats`` knowledge graph brain.
+
+    Useful for API clients that have the JSON data in memory rather than
+    as a file on disk.
+    """
+    try:
+        result = _gemini_importer.import_text(
+            request.json_text,
+            source_name=request.source_name,
+        )
+        if result.errors:
+            return {
+                "status": "partial" if result.triplets_added > 0 else "error",
+                **result.to_dict(),
+            }
+        return {
+            "status": "ok",
+            **result.to_dict(),
+        }
+    except Exception as e:
+        logger.error("Gemini import text failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/gemini/import/upload",
+    summary="Import Gemini conversations from an uploaded JSON file",
+)
+async def gemini_import_upload(
+    file: UploadFile = File(..., description="Gemini export JSON file"),
+) -> dict[str, Any]:
+    """Upload and import a Gemini export JSON file.
+
+    The file is read in memory, parsed, and triplets are added to the
+    ``gemini_chats`` brain. Supported formats:
+    - Google Takeout ``.json``
+    - Google AI Studio ``.json``
+    - Generic chat ``.json``
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    if not file.filename.endswith(".json"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.filename}. Only .json files are accepted.",
+        )
+
+    try:
+        content = await file.read()
+        json_text = content.decode("utf-8", errors="replace")
+        result = _gemini_importer.import_text(
+            json_text,
+            source_name=file.filename,
+        )
+        if result.errors:
+            return {
+                "status": "partial" if result.triplets_added > 0 else "error",
+                **result.to_dict(),
+            }
+        return {
+            "status": "ok",
+            **result.to_dict(),
+        }
+    except Exception as e:
+        logger.error("Gemini import upload failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/gemini/import/directory",
+    summary="Import all Gemini chat files from a directory",
+)
+async def gemini_import_directory(
+    dir_path: str = Query(..., description="Path to directory containing Gemini export JSON files"),
+) -> dict[str, Any]:
+    """Import all Gemini conversation JSON files from a directory.
+
+    Scans recursively for ``*.json`` files and imports each one.
+    Returns a summary of all imports.
+    """
+    import os
+
+    if not os.path.isdir(dir_path):
+        raise HTTPException(status_code=400, detail=f"Directory not found: {dir_path}")
+
+    try:
+        results = _gemini_importer.import_directory(dir_path)
+        total_triplets = sum(r.triplets_added for r in results)
+        total_convs = sum(r.conversations_imported for r in results)
+        total_files = len(results)
+        errors = [r.to_dict() for r in results if r.errors]
+
+        return {
+            "status": "ok",
+            "directory": dir_path,
+            "files_processed": total_files,
+            "conversations_imported": total_convs,
+            "triplets_added": total_triplets,
+            "files_with_errors": len(errors),
+            "details": [r.to_dict() for r in results] if total_files <= 20 else [],
+        }
+    except Exception as e:
+        logger.error("Gemini import directory failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/gemini/status",
+    summary="Get gemini_chats brain statistics",
+)
+async def gemini_import_status() -> dict[str, Any]:
+    """Return current statistics for the ``gemini_chats`` brain.
+
+    Includes node/edge counts, density, connected components,
+    and top entities by centrality.
+    """
+    try:
+        stats = _gemini_importer.get_brain_stats()
+        return {
+            "status": "ok",
+            "brain_type": stats.get("brain_type", "gemini_chats"),
+            "nodes": stats.get("nodes", 0),
+            "edges": stats.get("edges", 0),
+            "density": stats.get("density", 0.0),
+            "connected_components": stats.get("connected_components", 0),
+            "top_entities": stats.get("top_entities", []),
+            "supported_formats": _gemini_importer.list_formats(),
+        }
+    except Exception as e:
+        logger.error("Gemini status check failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/gemini/formats",
+    summary="List supported Gemini import formats",
+)
+async def gemini_import_formats() -> dict[str, Any]:
+    """Return the list of supported Gemini import formats with descriptions."""
+    try:
+        formats = _gemini_importer.list_formats()
+        return {
+            "status": "ok",
+            "formats": formats,
+        }
+    except Exception as e:
+        logger.error("Gemini formats check failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

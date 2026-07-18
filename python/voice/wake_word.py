@@ -635,6 +635,15 @@ class WakeWordDetector:
                                 break
             except OSError as e:
                 if "Input overflowed" in str(e) or str(e).startswith("Buffer") or str(e).startswith("Overflow"):
+                    # Log buffer overflow to evolution tracker
+                    try:
+                        from .evolution_logger import get_evolution_logger
+                        get_evolution_logger().record(
+                            "buffer_overflow",
+                            metadata={"device": stream.device if hasattr(stream, "device") else "unknown"},
+                        )
+                    except Exception:
+                        pass
                     continue
                 print(f"[WakeWord] Stream error: {e}")
                 continue

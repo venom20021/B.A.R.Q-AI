@@ -88,6 +88,17 @@ BRAIN_KEYWORDS: dict[str, dict[str, Any]] = {
             r"NOTE_", r"REMINDER_", r"JOURNAL_", r"IDEA_",
         ],
     },
+    "gemini_chats": {
+        "entity_keywords": [
+            "gemini", "google gemini", "gemini flash", "gemini pro",
+            "gemini vision", "gemini live", "gemini ultra",
+            "gemini nano", "gemini 2", "gemini 1.5", "gemini 2.5",
+            "bard", "google ai", "vertex ai",
+        ],
+        "relation_patterns": [
+            r"GEMINI_", r"GENERATED_", r"VISION_", r"LIVE_",
+        ],
+    },
     "google_docs": {
         "entity_keywords": [
             "document", "google doc", "report", "proposal",
@@ -148,7 +159,7 @@ def _default_brain(subject: str, relation: str, object_: str) -> str:
         return candidates[0]
 
     # Tie-break by priority
-    priority = ["career", "ai_chats", "apple_notes", "google_docs"]
+    priority = ["career", "ai_chats", "gemini_chats", "apple_notes", "google_docs"]
     for bt in priority:
         if bt in candidates:
             return bt

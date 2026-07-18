@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import {
   Info, RotateCw, AlertCircle, Search, X, Zap, GitBranch,
-  StickyNote, FileText, MessageCircle, Briefcase, Brain,
+  StickyNote, FileText, MessageCircle, Briefcase, Brain, Sparkles,
   BarChart3, Network, Clock, Filter,
 } from 'lucide-react'
 import { formatDistanceToNow } from '../utils/time'
@@ -86,6 +86,7 @@ const BRAIN_ICONS: Record<string, typeof Brain> = {
   'file-text': FileText,
   'message-circle': MessageCircle,
   'briefcase': Briefcase,
+  'sparkles': Sparkles,
   'brain': Brain,
 }
 

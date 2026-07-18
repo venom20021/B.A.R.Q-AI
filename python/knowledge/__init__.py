@@ -8,5 +8,6 @@ Provides:
 
 from .obsidian_dumper import ObsidianDumper
 from .auto_extractor import AutoExtractor
+from .gemini_importer import GeminiChatImporter, ImportResult, get_gemini_importer
 
-__all__ = ["ObsidianDumper", "AutoExtractor"]
+__all__ = ["ObsidianDumper", "AutoExtractor", "GeminiChatImporter", "ImportResult", "get_gemini_importer"]
