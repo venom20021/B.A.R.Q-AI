@@ -40,6 +40,7 @@ from documents.routes import router as documents_router
 from external_apis.routes import router as external_apis_router
 from graph_brain import graph_brain
 from jobs.routes import router as jobs_router
+from app.services.gemini_routes import router as gemini_router
 from memory_knowledge.brain_api import router as brain_api_router
 from memory_knowledge.graph_routes import router as graph_router
 from memory_knowledge.ingestion_routes import router as ingestion_router
@@ -266,6 +267,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[BARQ Sidecar] Ingestion watcher start error: {e}")
 
+    # Start the Gemini file watcher (background ingestion of Gemini chat history)
+    _gemini_watcher_inst = None
+    try:
+        from app.services.gemini_watcher import GeminiFileWatcher
+        from app.services.gemini_routes import set_monitor as _set_gemini_monitor
+
+        _gemini_watcher_inst = GeminiFileWatcher()
+        _gemini_watcher_inst.process_all_existing()
+        _gemini_watcher_inst.start()
+        _set_gemini_monitor(_gemini_watcher_inst)
+        print("[BARQ Sidecar] Gemini file watcher started")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Gemini file watcher start error: {e}")
+
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown
@@ -274,6 +289,13 @@ async def lifespan(app: FastAPI):
         try:
             _ingestion_monitor.stop()
             print("[BARQ Sidecar] Ingestion watcher stopped")
+        except Exception:
+            pass
+    # Stop the Gemini file watcher
+    if _gemini_watcher_inst is not None:
+        try:
+            _gemini_watcher_inst.close()
+            print("[BARQ Sidecar] Gemini file watcher stopped")
         except Exception:
             pass
     await stop_scheduler()
@@ -337,6 +359,7 @@ app.include_router(research_router, prefix="/research", tags=["Deep Research Age
 app.include_router(knowledge_router, prefix="/knowledge", tags=["Knowledge Management"])
 app.include_router(ingestion_router, tags=["Ingestion Pipeline"])
 app.include_router(migration_router, tags=["Graph Migration"])
+app.include_router(gemini_router, tags=["Gemini File Watcher"])
 app.include_router(settings_router, tags=["Settings"])
 app.include_router(external_apis_router, tags=["Free Public APIs"])
 
