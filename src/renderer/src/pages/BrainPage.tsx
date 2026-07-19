@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, startTransition } from 'react'
 import { motion } from 'framer-motion'
 import {
   Info, RotateCw, AlertCircle, Search, X, Zap, GitBranch,
@@ -68,15 +68,6 @@ interface TimelineEntry {
   relation: string
   object_: string
   is_new_edge: boolean
-}
-
-interface TimelineSummaryEntry {
-  brain_type: string
-  label: string
-  color: string
-  total_events: number
-  new_edges: number
-  latest_timestamp: string
 }
 
 // ─── Icon Map ──────────────────────────────────────────────────────────────
@@ -199,6 +190,7 @@ export function BrainPage(): JSX.Element {
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null)
   const [dimension, setDimension] = useState({ width: 800, height: 600 })
   const containerRef = useRef<HTMLDivElement>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null)
   const [highlightNodes, setHighlightNodes] = useState<Set<string>>(new Set())
   const [highlightLinks, setHighlightLinks] = useState<Set<string>>(new Set())
@@ -243,7 +235,6 @@ export function BrainPage(): JSX.Element {
   }, [graphData?._meta, brainsList, activeBrain])
 
   const theme = useMemo(() => buildTheme(graphData?._meta, FALLBACK_META), [graphData?._meta])
-  const activeBrainMeta = brainsList.find(b => b.type === activeBrain)
 
   // ── Derived search helpers ───────────────────────────────────────────
   const matchingNodeIds = useMemo(() => {
@@ -279,8 +270,10 @@ export function BrainPage(): JSX.Element {
   // ── Highlight updates on search ──────────────────────────────────────
   useEffect(() => {
     if (!matchingNodeIds || !graphData) {
+      /* eslint-disable react-hooks/set-state-in-effect */
       setHighlightNodes(new Set())
       setHighlightLinks(new Set())
+      /* eslint-enable react-hooks/set-state-in-effect */
       return
     }
 
@@ -475,47 +468,16 @@ export function BrainPage(): JSX.Element {
   }, [activeBrain, timelineAllBrains])
 
   // ── Re-fetch when activeBrain or timeline toggle changes ────────────
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     fetchGraph()
     fetchBrainStats()
     if (showTimeline) {
-      // Reset init flag so filter/brain switches don't flash stale entries
       timelineInitializedRef.current = false
       fetchTimeline()
     }
   }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline])
-
-  // ── Detect graph changes & trigger synaptic pulse ────────────────────
-  useEffect(() => {
-    if (!graphData?._meta) return
-    const meta = graphData._meta
-    const prev = prevMetaRef.current
-
-    const isNewData = !prev || prev.nodes !== meta.nodes || prev.edges !== meta.edges
-    prevMetaRef.current = meta
-
-    if (isNewData) {
-      triggerPulse()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphData?._meta?.nodes, graphData?._meta?.edges])
-
-  // ── Auto-poll backend for new graph data ─────────────────────────────
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchGraph()
-    }, AUTO_POLL_INTERVAL_MS)
-    return () => clearInterval(interval)
-  }, [fetchGraph])
-
-  // ── Auto-poll timeline entries while panel is open ────────────────────
-  useEffect(() => {
-    if (!showTimeline) return
-    const interval = setInterval(() => {
-      fetchTimeline()
-    }, AUTO_POLL_INTERVAL_MS)
-    return () => clearInterval(interval)
-  }, [showTimeline, fetchTimeline])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Synaptic pulse animation loop ────────────────────────────────────
   const triggerPulse = useCallback(() => {
@@ -549,6 +511,41 @@ export function BrainPage(): JSX.Element {
     }
     pulseAnimRef.current = requestAnimationFrame(animate)
   }, [])
+
+  // ── Detect graph changes & trigger synaptic pulse ────────────────────
+  useEffect(() => {
+    if (!graphData?._meta) return
+    const meta = graphData._meta
+    const prev = prevMetaRef.current
+
+    const isNewData = !prev || prev.nodes !== meta.nodes || prev.edges !== meta.edges
+    prevMetaRef.current = meta
+
+    if (isNewData) {
+      startTransition(() => {
+        triggerPulse()
+      })
+    }
+    // We intentionally depend on nodes/edges changes only, not the full meta object
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphData?._meta?.nodes, graphData?._meta?.edges])
+
+  // ── Auto-poll backend for new graph data ─────────────────────────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchGraph()
+    }, AUTO_POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [fetchGraph])
+
+  // ── Auto-poll timeline entries while panel is open ────────────────────
+  useEffect(() => {
+    if (!showTimeline) return
+    const interval = setInterval(() => {
+      fetchTimeline()
+    }, AUTO_POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [showTimeline, fetchTimeline])
 
   // Cleanup animation frame + flash timers on unmount
   useEffect(() => {

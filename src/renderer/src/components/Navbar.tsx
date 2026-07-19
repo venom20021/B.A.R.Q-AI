@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -77,11 +77,9 @@ export function Navbar({
 
   // Dashboard: always visible. Non-dashboard: start hidden.
   useEffect(() => {
-    if (isDashboard) {
-      setIsVisible(true)
-    } else {
-      setIsVisible(false)
-    }
+    startTransition(() => {
+      setIsVisible(isDashboard)
+    })
   }, [isDashboard])
 
   // ── Mouse tracking: reveal/hide based on cursor Y position ────────

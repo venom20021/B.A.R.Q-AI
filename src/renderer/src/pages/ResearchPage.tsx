@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, startTransition } from 'react'
 import { Search, Building2, BrainCircuit, Globe, Loader2, TrendingUp, ExternalLink, FileText, BookOpen, Sparkles, RefreshCw, Clock, ChevronRight, Layers, Download, Save, Eye, X, Zap } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../utils/api'
@@ -87,16 +87,6 @@ function PhaseIcon({ phase, cardType, className }: { phase: string; cardType: st
   if (phase === 'elaborating') return <Sparkles className={cls} />
   if (phase === 'editing') return <BookOpen className={cls} />
   return <Layers className={cls} />
-}
-
-function PhaseColor(phase: string): string {
-  switch (phase) {
-    case 'gathering': return 'text-cyan-400 border-cyan-500/20 bg-cyan-500/8'
-    case 'elaborating': return 'text-violet-400 border-violet-500/20 bg-violet-500/8'
-    case 'editing': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/8'
-    case 'complete': return 'text-green-400 border-green-500/20 bg-green-500/8'
-    default: return 'text-zinc-400 border-zinc-500/20 bg-zinc-500/8'
-  }
 }
 
 function StatusDot({ status }: { status: string }): JSX.Element {
@@ -234,7 +224,11 @@ export function ResearchPage(): JSX.Element {
     const data = await api('/memory/rag/status')
     if (data && typeof data === 'object') setRagStatus(data as RagStatus)
   }, [])
-  useEffect(() => { fetchRagStatus() }, [fetchRagStatus])
+  useEffect(() => {
+    startTransition(() => {
+      void fetchRagStatus()
+    })
+  }, [fetchRagStatus])
 
   // ── Deep Research ───────────────────────────────────────────────────
   const handleDeepResearch = useCallback(async () => {
@@ -535,7 +529,7 @@ export function ResearchPage(): JSX.Element {
                         {/* Live workspace cards */}
                         {deepCards.length > 0 && (
                           <div className="space-y-1.5">
-                            {deepCards.map((card, i) => (
+                            {deepCards.map((card) => (
                               <motion.div key={card.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }}>
                                 <div className={`flex items-start gap-2.5 px-3 py-2 rounded-lg border transition-all duration-300 ${
                                   card.status === 'active'
@@ -803,7 +797,7 @@ export function ResearchPage(): JSX.Element {
                 { text: 'Research company Google', icon: Building2 },
                 { text: 'Query knowledge base about auth', icon: BookOpen },
                 { text: 'Deep research quantum computing', icon: Zap },
-              ].map((item, i) => {
+              ].map(item => {
                 const Icon = item.icon
                 return (
                   <button key={i} onClick={() => setQuery(item.text)}

@@ -124,6 +124,9 @@ export function VisionPage(): JSX.Element {
 
   // ── WebSocket Connection ───────────────────────────────────────────
 
+  // Store self-reference for setTimeout callbacks
+  const connectWsRef = useRef<() => void>(() => { /* noop */ })
+
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
@@ -224,7 +227,7 @@ export function VisionPage(): JSX.Element {
         wsRef.current = null
         // Auto-reconnect after 3s
         wsReconnectRef.current = setTimeout(() => {
-          connectWs()
+          connectWsRef.current()
         }, 3000)
       }
 
@@ -236,14 +239,20 @@ export function VisionPage(): JSX.Element {
       setWsConnected(false)
       // Retry after 5s
       wsReconnectRef.current = setTimeout(() => {
-        connectWs()
+        connectWsRef.current()
       }, 5000)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])  // Intentionally stable — no external deps; connect is called once on mount
+
+  // Keep ref in sync so setTimeout callbacks can call connectWs without TDZ issues
+  useEffect(() => {
+    connectWsRef.current = connectWs
+  }, [connectWs])
 
   // Connect on mount, disconnect on unmount
   useEffect(() => {
-    connectWs()
+    connectWs()  // eslint-disable-line react-hooks/set-state-in-effect
     return () => {
       if (wsRef.current) {
         wsRef.current.close()
@@ -310,7 +319,7 @@ export function VisionPage(): JSX.Element {
   const analyzeViaWs = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError('Vision WebSocket not connected. Reconnecting...')
-      connectWs()
+      // connectWs() will be called by the auto-reconnect handler
       return
     }
 
@@ -340,7 +349,7 @@ export function VisionPage(): JSX.Element {
       prompt: trimmedPrompt,
       speak: true, // Request TTS playback
     }))
-  }, [prompt, source, captureImageAsBase64, connectWs])
+  }, [prompt, source, captureImageAsBase64])
 
   // ── Error/response helpers ─────────────────────────────────────────
 

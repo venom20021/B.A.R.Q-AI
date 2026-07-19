@@ -9,7 +9,6 @@ import { useId } from 'react'
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  type BarProps, type LineProps, type AreaProps,
 } from 'recharts'
 import { motion } from 'framer-motion'
 

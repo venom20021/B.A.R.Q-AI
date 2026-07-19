@@ -90,3 +90,4 @@ rich>=13.8.0
 
 # Knowledge Graph
 networkx>=3.2.1
+aiogram

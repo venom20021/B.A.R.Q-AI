@@ -183,7 +183,7 @@ export function EvolutionPage(): JSX.Element {
   }, [fetchData])
 
   const summary = response?.summary ?? null
-  const events = response?.events ?? []
+  const events = useMemo(() => response?.events ?? [], [response?.events])
 
   // ── Memoized chart schemas ─────────────────────────────────────────
 
@@ -279,11 +279,8 @@ export function EvolutionPage(): JSX.Element {
 
   // ── Combined latency chart (TTFB + STT + TTS on one chart) ───────
 
-  const latencyColors = ['#818cf8', '#34d399', '#f472b6']
-  const latencyTypes = ['ttfb', 'stt_latency', 'tts_latency']
-
   const combinedLatencyChart = useMemo<DynamicChartSchema | null>(() => {
-    const data = prepareMultiTypeTimeline(events, latencyTypes, 30)
+    const data = prepareMultiTypeTimeline(events, ['ttfb', 'stt_latency', 'tts_latency'], 30)
     if (data.length === 0) return null
     return {
       type: 'LineChart',
@@ -294,7 +291,7 @@ export function EvolutionPage(): JSX.Element {
         showLegend: true,
         showGrid: true,
         yLabel: 'ms',
-        colors: latencyColors,
+        colors: ['#818cf8', '#34d399', '#f472b6'],
       },
     }
   }, [events])

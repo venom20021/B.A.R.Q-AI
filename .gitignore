@@ -67,3 +67,4 @@ nul
 *.dmg
 *.exe
 *.AppImage
+.gstack/

@@ -1,4 +1,4 @@
-import { Suspense, useState, useEffect, useRef, useCallback, lazy, useMemo } from 'react'
+import { Suspense, useState, useEffect, useRef, useCallback, lazy, useMemo, startTransition } from 'react'
 import type { MutableRefObject } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -264,7 +264,17 @@ function useWeatherData(): WeatherData | null {
             console.warn(`[Weather] Fetch returned no data, retry ${retryCount}/${WEATHER_RETRY_MS.length} in ${delay}ms`)
             retryTimer = setTimeout(attemptFetch, delay)
           } else {
-            console.warn('[Weather] All retries exhausted — weather unavailable')
+            console.warn('[Weather] All retries exhausted — using fallback')
+            if (mounted) {
+              setData({
+                city: cityRef.current,
+                temperature_c: 15,
+                feels_like_c: 13,
+                humidity: 50,
+                description: 'Weather currently unavailable',
+                source: 'default',
+              })
+            }
           }
         }
       } catch (err) {
@@ -453,7 +463,9 @@ export function DashboardPage(): JSX.Element {
 
   // Reset confirmClear when switching agents
   useEffect(() => {
-    setConfirmClear(false)
+    startTransition(() => {
+      setConfirmClear(false)
+    })
   }, [activeAgent])
 
   const weather = useWeatherData()
@@ -468,7 +480,9 @@ export function DashboardPage(): JSX.Element {
 
   useEffect(() => {
     if (editingCity && weatherInputRef.current) {
-      weatherInputRef.current.focus()
+      startTransition(() => {
+        weatherInputRef.current.focus()
+      })
     }
   }, [editingCity])
 

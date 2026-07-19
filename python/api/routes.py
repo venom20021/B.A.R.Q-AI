@@ -123,6 +123,92 @@ async def refresh_resume():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Resume Generation ───────────────────────────────────────────────────
+
+class ResumeGenerateRequest(BaseModel):
+    """Request to generate a tailored resume PDF for a specific job."""
+    job_description: str = Field(
+        default="",
+        description="Raw job description text for AI tailoring",
+    )
+    job_title: str = Field(
+        default="",
+        description="Job title for filename and context",
+    )
+    company: str = Field(
+        default="",
+        description="Company name for filename and context",
+    )
+    template: str = Field(
+        default="modern",
+        description="AI_Resume_Generator template: modern, classic, or minimal",
+    )
+    timeout: int = Field(
+        default=90,
+        description="Maximum seconds to wait for generation",
+        ge=10,
+        le=300,
+    )
+
+
+class ResumeGenerateResponse(BaseModel):
+    """Response from resume generation."""
+    status: str = Field(..., description="generated | ai_resume_fallback | static_fallback | error")
+    pdf_path: str = Field("", description="Absolute path to the generated PDF")
+    source: str = Field("", description="barq_native | ai_resume_generator | static | empty on error")
+    file_size_bytes: int = Field(0, description="Size of the generated PDF in bytes")
+    error: str = Field("", description="Error message if status is error")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata (elapsed, template, etc.)")
+
+
+@router.post(
+    "/resume/generate",
+    summary="Generate a tailored resume PDF for a job description",
+    response_model=ResumeGenerateResponse,
+)
+async def generate_resume(request: ResumeGenerateRequest):
+    """
+    Generate a job-tailored resume PDF using the 3-tier fallback system.
+
+    Uses:
+      - Tier 1: BARQ's native ResumePDFGenerator + ResumeOptimizer + Ollama
+      - Tier 2: AI_Resume_Generator HTTP bridge (3 templates: modern/classic/minimal)
+      - Tier 3: Static base_resume.pdf (guaranteed fallback)
+
+    Returns the absolute path to the generated PDF along with metadata.
+    """
+    try:
+        from jobs.auto_applier.resume.dynamic_builder import DynamicResumeBuilder
+
+        builder = DynamicResumeBuilder()
+        result = await builder.build(
+            job_description=request.job_description,
+            job_title=request.job_title,
+            company=request.company,
+            template=request.template,
+            timeout=request.timeout,
+        )
+
+        return ResumeGenerateResponse(
+            status=result.status,
+            pdf_path=result.pdf_path,
+            source=result.source,
+            file_size_bytes=result.file_size_bytes,
+            error=result.error,
+            metadata={
+                "generated_at": result.generated_at,
+                "template_used": result.template_used,
+                "elapsed_seconds": result.metadata.get("elapsed_seconds", 0),
+            },
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Resume generation failed: {exc}",
+        )
+
+
 # ─── Jobs ────────────────────────────────────────────────────────────────────
 
 @router.post("/jobs/search")

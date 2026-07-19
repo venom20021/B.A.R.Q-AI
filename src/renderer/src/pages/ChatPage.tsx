@@ -1,6 +1,6 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, startTransition } from 'react'
 import { MessageSquare, Mic, MicOff, Send, Loader2, Trash2, User, Bot, Volume2, StopCircle } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import { api } from '../utils/api'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -47,23 +47,25 @@ function useSpeechRecognition(): {
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [interimTranscript, setInterimTranscript] = useState('')
-  const recognitionRef = useRef<any>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const isListeningRef = useRef(false)
   const supported = typeof window !== 'undefined' &&
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
 
   // Keep ref in sync with state
-  isListeningRef.current = isListening
+  useEffect(() => {
+    isListeningRef.current = isListening
+  }, [isListening])
 
   useEffect(() => {
     if (!supported) return
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    const recognition = new SpeechRecognition()
+    const SpeechRecognitionCls = (window as Record<string, unknown>).SpeechRecognition || (window as Record<string, unknown>).webkitSpeechRecognition
+    const recognition = new (SpeechRecognitionCls as new () => SpeechRecognition)()
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'en-US'
 
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       let final = ''
       let interim = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -162,7 +164,9 @@ export function ChatPage(): JSX.Element {
   // Consume speech transcript when it arrives
   useEffect(() => {
     if (transcript) {
-      setInput(transcript)
+      startTransition(() => {
+        setInput(transcript)
+      })
     }
   }, [transcript])
 
@@ -172,7 +176,11 @@ export function ChatPage(): JSX.Element {
     if (data && typeof data === 'object') setVoiceStatus(data as typeof voiceStatus)
   }, [])
 
-  useEffect(() => { fetchVoiceStatus() }, [fetchVoiceStatus])
+  useEffect(() => {
+    startTransition(() => {
+      void fetchVoiceStatus()
+    })
+  }, [fetchVoiceStatus])
 
   // Send message
   const sendMessage = useCallback(async (text?: string) => {

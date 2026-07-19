@@ -158,14 +158,16 @@ function ParticleCore({ particleCount }: { particleCount: number }): JSX.Element
   const pointsRef = useRef<Points>(null!)
   const wakeProgressRef = useRef(0)
   const wakeDoneRef = useRef(false)
+  const startTimeRef = useRef<number | null>(null)
 
   // Regenerate particle data when count changes
   const particleData = useMemo(() => generateParticleData(particleCount), [particleCount])
   const colors = particleData.colors
   const softTexture = useSoftTexture()
 
-  useFrame((state) => {
-    const t = state.clock.elapsedTime
+  useFrame(() => {
+    if (startTimeRef.current === null) startTimeRef.current = performance.now()
+    const t = (performance.now() - startTimeRef.current) / 1000
     if (!wakeDoneRef.current) {
       wakeProgressRef.current += (1 - wakeProgressRef.current) * WAKE_EASE_RATE
       if (wakeProgressRef.current > 0.999) { wakeProgressRef.current = 1; wakeDoneRef.current = true }
@@ -206,10 +208,13 @@ function ParticleCore({ particleCount }: { particleCount: number }): JSX.Element
 
 function GoldRing(): JSX.Element {
   const ringRef = useRef<Group>(null!)
-  useFrame((state) => {
+  const startTimeRef = useRef<number | null>(null)
+  useFrame(() => {
     if (ringRef.current) {
-      ringRef.current.rotation.y = state.clock.elapsedTime * 0.15
-      ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.05) * 0.1
+      if (startTimeRef.current === null) startTimeRef.current = performance.now()
+      const t = (performance.now() - startTimeRef.current) / 1000
+      ringRef.current.rotation.y = t * 0.15
+      ringRef.current.rotation.x = Math.sin(t * 0.05) * 0.1
     }
   })
   return (
@@ -236,12 +241,15 @@ function ResourceRing({ systemLoad }: { systemLoad: number }): JSX.Element {
   const ringRef = useRef<Group>(null!)
   const matRef = useRef<MeshBasicMaterial>(null!)
 
-  useFrame((state) => {
+  const resRingStartRef = useRef<number | null>(null)
+  useFrame(() => {
     if (!ringRef.current || !matRef.current) return
+    if (resRingStartRef.current === null) resRingStartRef.current = performance.now()
+    const t = (performance.now() - resRingStartRef.current) / 1000
     const normalizedLoad = systemLoad / 100
     const speed = 0.025 + normalizedLoad * 0.025
     ringRef.current.rotation.y += speed
-    ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.08) * 0.06
+    ringRef.current.rotation.x = Math.sin(t * 0.08) * 0.06
     const opacity = 0.1 + normalizedLoad * 0.2
     matRef.current.opacity = Math.min(opacity, 0.3)
     const r = 0.05 + normalizedLoad * 0.5
@@ -393,8 +401,10 @@ function AgentNode({
     return m
   }, [node.position])
 
-  useFrame((state) => {
-    const t = state.clock.elapsedTime
+  const nodeStartRef = useRef<number | null>(null)
+  useFrame(() => {
+    if (nodeStartRef.current === null) nodeStartRef.current = performance.now()
+    const t = (performance.now() - nodeStartRef.current) / 1000
     const float = Math.sin(t * 0.5 + floatOffset.current) * 0.2
     const isHovered = hoveredRef.current
     const pulseActive = isActive && !isHovered
@@ -551,10 +561,13 @@ function NodeConstellation({
   onRadialAction: (label: string, action: 'quick-execute' | 'view-details' | 'share-link') => void
 }): JSX.Element {
   const groupRef = useRef<Group>(null!)
+  const startTimeRef = useRef<number | null>(null)
 
-  useFrame((state) => {
+  useFrame(() => {
+    if (startTimeRef.current === null) startTimeRef.current = performance.now()
+    const t = (performance.now() - startTimeRef.current) / 1000
     if (groupRef.current) {
-      groupRef.current.rotation.y = state.clock.elapsedTime * 0.1
+      groupRef.current.rotation.y = t * 0.1
     }
   })
 

@@ -363,6 +363,10 @@ app.include_router(gemini_router, tags=["Gemini File Watcher"])
 app.include_router(settings_router, tags=["Settings"])
 app.include_router(external_apis_router, tags=["Free Public APIs"])
 
+# Register auto-apply router (DynamicResumeBuilder, pipeline, etc.)
+from jobs.auto_applier.routes import router as auto_apply_router
+app.include_router(auto_apply_router, prefix="/api/jobs", tags=["Auto Apply"])
+
 
 @app.get("/health")
 async def health():

@@ -534,7 +534,7 @@ function NoteDetailModal({ note, onClose, onDelete, onUpdate }: {
       setEditing(false)
     } catch { /* ignore */ }
     setSaving(false)
-  }, [note.id, title, content, tags, onUpdate])
+  }, [note, title, content, tags, onUpdate])
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}

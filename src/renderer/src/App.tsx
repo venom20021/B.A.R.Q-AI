@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
-import { api } from './utils/api'
 import {
   MemoryRouter, Routes, Route, useNavigate, useLocation,
 } from 'react-router-dom'
@@ -142,13 +141,6 @@ function AppContent(): JSX.Element {
     position: { x: number; y: number }
   }>({ visible: false, position: { x: 0, y: 0 } })
   const [recentCommands, setRecentCommands] = useState<string[]>([])
-  const [isConnected, setIsConnected] = useState(false)
-  const [isSpeaking, setIsSpeaking] = useState(false)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isConversationActive, setIsConversationActive] = useState(false)
-  const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
-  const [language, setLanguage] = useState('en')           // 'en' or 'hi'
-  const [ttsVoice, setTtsVoice] = useState('en-US-JennyNeural')
 
   const activeTab = routeToTab(location.pathname)
 
@@ -162,62 +154,6 @@ function AppContent(): JSX.Element {
     }
     navigate(routeMap[tab])
   }, [navigate])
-
-  const handleMicToggle = useCallback(() => {
-    const nextMuted = !isMuted
-    setIsMuted(nextMuted)
-    if (nextMuted) {
-      void window.barq?.voice.stop()
-    } else {
-      void window.barq?.voice.start()
-    }
-  }, [isMuted])
-
-  // Poll connection status
-  useEffect(() => {
-    const check = async () => {
-      try {
-        const resp = await api('/health')
-        setIsConnected(resp !== undefined)
-      } catch {
-        setIsConnected(false)
-      }
-    }
-    check()
-    const interval = setInterval(check, 10000)
-    return () => clearInterval(interval)
-  }, [])
-
-  // Listen for voice status from DashboardPage's WebSocket
-  useEffect(() => {
-    const handler = (e: CustomEvent<{
-      conversation_active: boolean
-      is_listening: boolean
-      is_speaking: boolean
-      is_processing: boolean
-      language: string
-      tts_voice: string
-    }>): void => {
-      const detail = e.detail
-      setIsConversationActive(detail.conversation_active)
-      setIsSpeaking(detail.is_speaking)
-      setLanguage(detail.language ?? 'en')
-      setTtsVoice(detail.tts_voice ?? 'en-US-JennyNeural')
-
-      // Derive AI state from backend status (same logic as DashboardPage)
-      if (detail.is_speaking) {
-        setAiState('responding')
-      } else if (detail.is_processing) {
-        setAiState('thinking')
-      } else if (detail.conversation_active) {
-        setAiState('listening')
-      } else {
-        setAiState('idle')
-      }
-    }
-    window.addEventListener('barq:voice-status', handler as EventListener)
-    return () => window.removeEventListener('barq:voice-status', handler as EventListener)
-  }, [])
 
   // Listen for barq:voice-command events from ChatPage and voice pipeline
   useEffect(() => {
@@ -394,7 +330,12 @@ function AppContent(): JSX.Element {
 function App(): JSX.Element {
   return (
     <ThemeProvider>
-      <MemoryRouter>
+      <MemoryRouter
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true,
+        }}
+      >
         <AppContent />
       </MemoryRouter>
     </ThemeProvider>
