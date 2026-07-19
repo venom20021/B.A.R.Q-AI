@@ -13,7 +13,7 @@ sounddevice>=0.5.1
 webrtcvad>=2.0.10
 
 # Local LLM
-ollama>=0.4.0
+ollama>=0.6.2
 
 # Web Scraping & Browsing
 playwright>=1.48.0
