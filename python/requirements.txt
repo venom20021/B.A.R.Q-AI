@@ -43,7 +43,7 @@ tweepy>=4.14.0
 apscheduler>=3.10.4
 
 # Notifications
-python-telegram-bot>=20.8.0
+python-telegram-bot>=22.8
 aiosmtplib>=3.0.2
 
 # ═══ v2.0 NEW DEPENDENCIES ═══
