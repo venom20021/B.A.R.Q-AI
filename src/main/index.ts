@@ -168,7 +168,7 @@ app.whenReady().then(async () => {
 
   // Auto-start wake word detection in Python sidecar
   try {
-    await pythonSidecar.request('/voice/start', {}, 5000)
+    await pythonSidecar.request('/voice/start', {}, 30_000)
     console.log('[Main] Wake word detection auto-started on Python sidecar')
   } catch (err) {
     console.warn('[Main] Could not auto-start wake detection:', err)

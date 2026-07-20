@@ -37,7 +37,7 @@ class JobsDAO:
             job.get("employment_type", "full_time"),
             job.get("remote_status", "unknown"),
             job.get("source_board", ""),
-            job.get("source_url", ""),
+            job.get("source_url", "") or job.get("url", ""),
             job.get("posted_date", datetime.now(timezone.utc).isoformat()),
             job.get("company_rating", 0.0),
             job.get("skills_required", "[]"),

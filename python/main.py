@@ -123,7 +123,21 @@ async def _auto_scan_jobs():
         )
         count = 0
         for job in jobs[:50]:
-            await jobs_dao.insert_job_listing(job)
+            listing_id = await jobs_dao.insert_job_listing(job)
+            # Insert evaluation if scanner already evaluated the job
+            if "overall_score" in job:
+                try:
+                    await jobs_dao.insert_evaluation({
+                        "job_listing_id": listing_id,
+                        "overall_score": float(job.get("overall_score", 3.0)),
+                        "match_percentage": float(job.get("match_percentage", 0)),
+                        "reasoning": job.get("reasoning", ""),
+                        "pros": json.dumps(job.get("pros", [])),
+                        "cons": json.dumps(job.get("cons", [])),
+                        "evaluated_by": "scanner",
+                    })
+                except Exception as eval_err:
+                    logger.warning(f"[AutoScan] Failed to insert evaluation: {eval_err}")
             count += 1
 
         await analytics_dao.log_activity(
@@ -280,6 +294,15 @@ async def lifespan(app: FastAPI):
         print("[BARQ Sidecar] Gemini file watcher started")
     except Exception as e:
         print(f"[BARQ Sidecar] Gemini file watcher start error: {e}")
+
+    # Preload faster-whisper model in background so first transcription
+    # does not block the event loop.  Uses ``run_in_executor`` internally
+    # to keep the health endpoint responsive even during model download.
+    try:
+        from voice.routes import _preload_whisper_model
+        asyncio.ensure_future(_preload_whisper_model())
+    except Exception:
+        pass
 
     print("[BARQ Sidecar] Ready for requests")
     yield

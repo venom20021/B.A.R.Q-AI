@@ -124,7 +124,8 @@ class PythonSidecar {
         env: {
           ...process.env,
           SIDECAR_PORT: String(SIDECAR_PORT),
-          SIDECAR_HOST: SIDECAR_HOST
+          SIDECAR_HOST: SIDECAR_HOST,
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
         }
       })
 

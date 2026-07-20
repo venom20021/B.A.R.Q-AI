@@ -11,6 +11,7 @@ import { TransientDiagnostics } from './components/TransientDiagnostics'
 import { Navbar } from './components/Navbar'
 import type { NavTab } from './components/Navbar'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { VoiceProvider } from './contexts/VoiceContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { JobsPage } from './pages/JobsPage'
@@ -330,14 +331,15 @@ function AppContent(): JSX.Element {
 function App(): JSX.Element {
   return (
     <ThemeProvider>
+      <VoiceProvider>
       <MemoryRouter
         future={{
           v7_startTransition: true,
           v7_relativeSplatPath: true,
         }}
       >
-        <AppContent />
-      </MemoryRouter>
+        <AppContent />        </MemoryRouter>
+      </VoiceProvider>
     </ThemeProvider>
   )
 }

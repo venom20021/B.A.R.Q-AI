@@ -2,6 +2,8 @@ import { useState, useCallback, useRef, useEffect, startTransition } from 'react
 import { MessageSquare, Mic, MicOff, Send, Loader2, Trash2, User, Bot, Volume2, StopCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { api } from '../utils/api'
+import { usePersistentState } from '../hooks/usePersistentState'
+import { useVoice } from '../contexts/VoiceContext'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -144,11 +146,12 @@ function useTextToSpeech() {
 
 export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>(loadChatHistory)
-  const [input, setInput] = useState('')
+  const [input, setInput] = usePersistentState('ChatPage.input', '')
   const [sending, setSending] = useState(false)
-  const [voiceStatus, setVoiceStatus] = useState<{ is_listening?: boolean; recent_commands?: { transcript: string; created_at: string }[] } | null>(null)
+  const [recentCommands, setRecentCommands] = useState<{ transcript: string; created_at: string }[]>([])
   const chatEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const { detectorRunning } = useVoice()
   const { isListening, transcript, interimTranscript, startListening, stopListening, supported: voiceSupported } = useSpeechRecognition()
   const { speak, stop: stopTts, speaking: ttsSpeaking } = useTextToSpeech()
 
@@ -170,17 +173,18 @@ export function ChatPage(): JSX.Element {
     }
   }, [transcript])
 
-  // Fetch voice backend status
-  const fetchVoiceStatus = useCallback(async () => {
-    const data = await api('/voice/status')
-    if (data && typeof data === 'object') setVoiceStatus(data as typeof voiceStatus)
-  }, [])
-
+  // Fetch recent voice commands (voice detector state comes from VoiceContext)
   useEffect(() => {
-    startTransition(() => {
-      void fetchVoiceStatus()
+    startTransition(async () => {
+      try {
+        const data = await api('/voice/status')
+        if (data && typeof data === 'object') {
+          const d = data as { recent_commands?: { transcript: string; created_at: string }[] }
+          if (d.recent_commands) setRecentCommands(d.recent_commands)
+        }
+      } catch { /* silent */ }
     })
-  }, [fetchVoiceStatus])
+  }, [])
 
   // Send message
   const sendMessage = useCallback(async (text?: string) => {
@@ -234,18 +238,16 @@ export function ChatPage(): JSX.Element {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {/* Voice status badge */}
-            {voiceStatus?.is_listening && (
+            {/* Voice status badge — sourced from VoiceContext */}
+            {detectorRunning && (
               <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-rajdhani font-semibold">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
                 Voice Active
               </span>
             )}
-            <button onClick={fetchVoiceStatus}
-              className="px-3 py-1.5 rounded-lg bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 text-[10px] font-rajdhani font-semibold hover:bg-zinc-700/60 transition-all"
-            >
-              {voiceStatus?.is_listening ? '🎤 Live' : '🎤 Check'}
-            </button>
+            <span className="px-3 py-1.5 rounded-lg bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 text-[10px] font-rajdhani font-semibold">
+              {detectorRunning ? '🎤 Live' : '🎤 Check'}
+            </span>
             <button onClick={clearHistory} disabled={messages.length === 0}
               className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
               title="Clear chat history"
@@ -266,10 +268,10 @@ export function ChatPage(): JSX.Element {
               <MessageSquare className="w-12 h-12 text-zinc-700 mb-3" />
               <p className="text-sm font-exo text-zinc-500">Start a conversation with BARQ</p>
               <p className="text-xs font-exo text-zinc-600 mt-1">Type a message or use the microphone</p>
-              {voiceStatus?.recent_commands && voiceStatus.recent_commands.length > 0 && (
+              {recentCommands.length > 0 && (
                 <div className="mt-6 space-y-1.5">
                   <p className="text-[10px] font-mono text-zinc-600 uppercase tracking-wider text-center mb-2">Recent voice commands</p>
-                  {voiceStatus.recent_commands.slice(0, 3).map((c, i) => (
+                  {recentCommands.slice(0, 3).map((c, i) => (
                     <button key={i} onClick={() => sendMessage(c.transcript)}
                       className="block text-xs font-exo text-zinc-500 hover:text-zinc-300 bg-zinc-800/30 hover:bg-zinc-800/50 px-3 py-1.5 rounded-lg transition-all"
                     >

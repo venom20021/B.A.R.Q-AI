@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     wake_word: str = os.getenv("WAKE_WORD", "computer")
     vosk_model_path: str = os.getenv("VOSK_MODEL_PATH", "models/vosk")
     vosk_hindi_model_path: str = os.getenv("VOSK_HINDI_MODEL_PATH", "models/vosk-hi")
-    whisper_model: str = os.getenv("WHISPER_MODEL", "base")
+    whisper_model: str = os.getenv("WHISPER_MODEL", "medium")
     voice_language: str = os.getenv("VOICE_LANGUAGE", "en")  # "en" or "hi"
 
     # Audio device selection (empty = system default)
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # LLM
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
     # Job Search
     job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))

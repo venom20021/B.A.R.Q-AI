@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../utils/api'
+import { usePersistentState } from '../hooks/usePersistentState'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ const TABS: TabDef[] = [
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function SystemPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<TabKey>('windows')
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>('SystemPage.activeTab', 'windows')
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -182,9 +183,9 @@ function WindowManagement(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function WallpaperPanel(): JSX.Element {
-  const [prompt, setPrompt] = useState('')
-  const [status, setStatus] = useState('')
-  const [url, setUrl] = useState('')
+  const [prompt, setPrompt] = usePersistentState('WallpaperPanel.prompt', '')
+  const [status, setStatus] = usePersistentState('WallpaperPanel.status', '')
+  const [url, setUrl] = usePersistentState('WallpaperPanel.url', '')
   const [applying, setApplying] = useState(false)
 
   const setWallpaper = useCallback(async () => {
@@ -278,16 +279,16 @@ function ProtocolsPanel(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function DropZonePanel(): JSX.Element {
-  const [rules, setRules] = useState<DropZoneRule[]>([])
+  const [rules, setRules] = usePersistentState<DropZoneRule[]>('DropZonePanel.rules', [])
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [name, setName] = useState('')
-  const [desc, setDesc] = useState('')
-  const [action, setAction] = useState('move')
-  const [targetFolder, setTargetFolder] = useState('')
-  const [conditionField, setConditionField] = useState('extension')
-  const [conditionOp, setConditionOp] = useState('in')
-  const [conditionVal, setConditionVal] = useState('')
+  const [showForm, setShowForm] = usePersistentState('DropZonePanel.showForm', false)
+  const [name, setName] = usePersistentState('DropZonePanel.name', '')
+  const [desc, setDesc] = usePersistentState('DropZonePanel.desc', '')
+  const [action, setAction] = usePersistentState('DropZonePanel.action', 'move')
+  const [targetFolder, setTargetFolder] = usePersistentState('DropZonePanel.targetFolder', '')
+  const [conditionField, setConditionField] = usePersistentState('DropZonePanel.conditionField', 'extension')
+  const [conditionOp, setConditionOp] = usePersistentState('DropZonePanel.conditionOp', 'in')
+  const [conditionVal, setConditionVal] = usePersistentState('DropZonePanel.conditionVal', '')
 
   const loadRules = useCallback(async () => {
     setLoading(true)
@@ -454,13 +455,13 @@ const SORT_STRATEGIES = [
 ]
 
 function SortWizardPanel(): JSX.Element {
-  const [directory, setDirectory] = useState('')
-  const [strategy, setStrategy] = useState('type')
-  const [reverse, setReverse] = useState(false)
-  const [preview, setPreview] = useState<SortPreview | null>(null)
-  const [undoId, setUndoId] = useState<string | null>(null)
+  const [directory, setDirectory] = usePersistentState('SortWizardPanel.directory', '')
+  const [strategy, setStrategy] = usePersistentState('SortWizardPanel.strategy', 'type')
+  const [reverse, setReverse] = usePersistentState('SortWizardPanel.reverse', false)
+  const [preview, setPreview] = usePersistentState<SortPreview | null>('SortWizardPanel.preview', null)
+  const [undoId, setUndoId] = usePersistentState<string | null>('SortWizardPanel.undoId', null)
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const [result, setResult] = usePersistentState<string | null>('SortWizardPanel.result', null)
 
   const runPreview = useCallback(async () => {
     if (!directory.trim()) return
@@ -600,10 +601,10 @@ function SortWizardPanel(): JSX.Element {
 const GIT_OPS = ['status', 'log', 'diff', 'branch', 'pull', 'push', 'add', 'commit', 'checkout']
 
 function GitPanel(): JSX.Element {
-  const [repoPath, setRepoPath] = useState('')
-  const [operation, setOperation] = useState('status')
-  const [message, setMessage] = useState('')
-  const [output, setOutput] = useState('')
+  const [repoPath, setRepoPath] = usePersistentState('GitPanel.repoPath', '')
+  const [operation, setOperation] = usePersistentState('GitPanel.operation', 'status')
+  const [message, setMessage] = usePersistentState('GitPanel.message', '')
+  const [output, setOutput] = usePersistentState('GitPanel.output', '')
   const [loading, setLoading] = useState(false)
 
   const runGit = useCallback(async () => {
@@ -678,12 +679,12 @@ function GitPanel(): JSX.Element {
 const PACKAGE_MANAGERS = ['npm', 'pip', 'brew', 'pnpm', 'yarn', 'cargo']
 
 function PackagePanel(): JSX.Element {
-  const [manager, setManager] = useState('npm')
-  const [operation, setOperation] = useState('install')
-  const [packageName, setPackageName] = useState('')
-  const [output, setOutput] = useState('')
+  const [manager, setManager] = usePersistentState('PackagePanel.manager', 'npm')
+  const [operation, setOperation] = usePersistentState('PackagePanel.operation', 'install')
+  const [packageName, setPackageName] = usePersistentState('PackagePanel.packageName', '')
+  const [output, setOutput] = usePersistentState('PackagePanel.output', '')
   const [loading, setLoading] = useState(false)
-  const [cwd, setCwd] = useState('')
+  const [cwd, setCwd] = usePersistentState('PackagePanel.cwd', '')
 
   const runPkg = useCallback(async () => {
     setLoading(true)
@@ -766,7 +767,7 @@ function PackagePanel(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function MonitorPanel(): JSX.Element {
-  const [monitors, setMonitors] = useState<Monitor[]>([])
+  const [monitors, setMonitors] = usePersistentState<Monitor[]>('MonitorPanel.monitors', [])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -840,8 +841,8 @@ function MonitorPanel(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function TerminalPanel(): JSX.Element {
-  const [command, setCommand] = useState('')
-  const [output, setOutput] = useState('')
+  const [command, setCommand] = usePersistentState('TerminalPanel.command', '')
+  const [output, setOutput] = usePersistentState('TerminalPanel.output', '')
   const [loading, setLoading] = useState(false)
   const termRef = useCallback((node: HTMLPreElement | null) => {
     if (node) node.scrollTop = node.scrollHeight
@@ -900,10 +901,10 @@ function TerminalPanel(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function SystemInfoPanel(): JSX.Element {
-  const [status, setStatus] = useState<SystemStatus | null>(null)
+  const [status, setStatus] = usePersistentState<SystemStatus | null>('SystemInfoPanel.status', null)
   const [loading, setLoading] = useState(true)
-  const [micLevel, setMicLevel] = useState(0)
-  const [isListening, setIsListening] = useState(false)
+  const [micLevel, setMicLevel] = usePersistentState('SystemInfoPanel.micLevel', 0)
+  const [isListening, setIsListening] = usePersistentState('SystemInfoPanel.isListening', false)
 
   useEffect(() => {
     (async () => {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../utils/api'
+import { usePersistentState } from '../hooks/usePersistentState'
 import {
   Video, Lightbulb, FileText, Globe, Play, CheckCircle, Loader2,
   Calendar, TrendingUp, Clock, Plus, X, ChevronLeft, ChevronRight,
@@ -165,23 +166,23 @@ function formatTime(dateStr: string): string {
 // ─── Content Page Component ──────────────────────────────────────────────
 
 export function ContentPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<Tab>('pipeline')
+  const [activeTab, setActiveTab] = usePersistentState<Tab>('ContentPage.activeTab', 'pipeline')
   const [loading, setLoading] = useState(true)
-  const [pipelineCounts, setPipelineCounts] = useState<Record<string, number>>({})
-  const [scripts, setScripts] = useState<ContentIdea[]>([])
-  const [selectedIdea, setSelectedIdea] = useState<string | null>(null)
+  const [pipelineCounts, setPipelineCounts] = usePersistentState<Record<string, number>>('ContentPage.pipelineCounts', {})
+  const [scripts, setScripts] = usePersistentState<ContentIdea[]>('ContentPage.scripts', [])
+  const [selectedIdea, setSelectedIdea] = usePersistentState<string | null>('ContentPage.selectedIdea', null)
 
   // Calendar state
-  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear())
-  const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth() + 1)
-  const [calendarData, setCalendarData] = useState<CalendarData | null>(null)
-  const [calendarStats, setCalendarStats] = useState<CalendarStats | null>(null)
-  const [selectedDay, setSelectedDay] = useState<string | null>(null)
+  const [calendarYear, setCalendarYear] = usePersistentState('ContentPage.calendarYear', new Date().getFullYear())
+  const [calendarMonth, setCalendarMonth] = usePersistentState('ContentPage.calendarMonth', new Date().getMonth() + 1)
+  const [calendarData, setCalendarData] = usePersistentState<CalendarData | null>('ContentPage.calendarData', null)
+  const [calendarStats, setCalendarStats] = usePersistentState<CalendarStats | null>('ContentPage.calendarStats', null)
+  const [selectedDay, setSelectedDay] = usePersistentState<string | null>('ContentPage.selectedDay', null)
 
   // Trends state
-  const [trends, setTrends] = useState<Trend[]>([])
+  const [trends, setTrends] = usePersistentState<Trend[]>('ContentPage.trends', [])
   const [trendsLoading, setTrendsLoading] = useState(false)
-  const [trendSourceFilter, setTrendSourceFilter] = useState<string>('all')
+  const [trendSourceFilter, setTrendSourceFilter] = usePersistentState<string>('ContentPage.trendSourceFilter', 'all')
 
   // ─── Fetch Pipeline Data ────────────────────────────────────────────────
 

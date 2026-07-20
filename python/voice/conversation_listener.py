@@ -39,10 +39,11 @@ ParseCommandFn = Callable[[str, bool, Optional[str]], Awaitable[dict]]
 ExecuteCommandFn = Callable[[str, dict], Awaitable[str]]
 
 
-# Aggressive silence endpointing defaults (overridable per-instance)
-# Use conversation_listener.vad_silence_timeout to customise at runtime
-VAD_SILENCE_TIMEOUT = 0.25       # seconds of silence before cutting (250ms for faster response)
-VAD_ENERGY_THRESHOLD = 300.0     # RMS floor
+# Silence endpointing defaults (overridable per-instance)
+# Use conversation_listener.vad_silence_timeout to customise at runtime.
+# 400ms balances responsiveness with not cutting off natural pauses.
+# Increase to 0.6-0.8s for slower-paced conversations.
+VAD_SILENCE_TIMEOUT = 0.4       # seconds of silence before cutting (400ms for natural feel)
 VAD_MAX_DURATION = 15.0          # safety cap
 
 
@@ -193,7 +194,7 @@ class ConversationListener:
                     async for result in self.stt.transcribe_streaming(
                         max_duration=VAD_MAX_DURATION,
                         silence_timeout=self.vad_silence_timeout,
-                        energy_threshold=VAD_ENERGY_THRESHOLD,
+                        energy_threshold=self.energy_threshold,
                     ):
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]
@@ -367,7 +368,7 @@ class ConversationListener:
                     async for result in self.stt.transcribe_streaming(
                         max_duration=VAD_MAX_DURATION,
                         silence_timeout=self.vad_silence_timeout,
-                        energy_threshold=VAD_ENERGY_THRESHOLD,
+                        energy_threshold=self.energy_threshold,
                     ):
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]

@@ -11,6 +11,7 @@ import type { DynamicChartSchema } from '../components/DynamicChart'
 import { BarChart3 as ChartIcon } from 'lucide-react'
 import { api } from '../utils/api'
 import { Vector3 } from 'three'
+import { useVoice } from '../contexts/VoiceContext'
 
 // ─── User Name ─────────────────────────────────────────────────────────
 
@@ -353,12 +354,16 @@ function AudioWaveformBars({ isActive }: { isActive: boolean }): JSX.Element {
 // ─── Main Dashboard Page ───────────────────────────────────────────────
 
 export function DashboardPage(): JSX.Element {
-  const [voiceListening, setVoiceListening] = useState(false)
-  const [detectorRunning, setDetectorRunning] = useState(false)
-  const [wsConnected, setWsConnected] = useState(false)
-  const [aiState, setAiState] = useState<'idle' | 'listening' | 'thinking' | 'responding'>('idle')
-  const [sttText, setSttText] = useState('')
-  const [responseText, setResponseText] = useState('')
+  const voice = useVoice()
+  const {
+    voiceListening,
+    detectorRunning,
+    wsConnected,
+    aiState,
+    sttText,
+    responseText,
+    toggleDetector,
+  } = voice
   const [userName, setUserName] = useState(getStoredUserName)
 
   // ── Clickable agent node state ───────────────────────────────────
@@ -543,150 +548,8 @@ export function DashboardPage(): JSX.Element {
   const greeting = getGreetingForDisplay(sttText, responseText, aiState, userName)
   const subGreeting = getSubGreeting(sttText, responseText, aiState, weather)
 
-  // ── Voice detector ───────────────────────────────────────────────
-  const toggleDetector = useCallback(async () => {
-    const wasRunning = detectorRunning
-    setDetectorRunning(!detectorRunning)
-    try {
-      if (wasRunning) await api('/voice/stop', {})
-      else await api('/voice/start', {})
-    } catch { setDetectorRunning(wasRunning) }
-  }, [detectorRunning])
-
-  // ── WebSocket ────────────────────────────────────────────────────
-  useEffect(() => {
-    const WS_URL = 'ws://127.0.0.1:8970/voice/ws/status'
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let httpPollTimer: ReturnType<typeof setTimeout> | null = null
-    let wsFailedAt: number | null = null
-    let mounted = true
-
-    const applyStatus = (data: Record<string, unknown>) => {
-      setVoiceListening(Boolean(data.conversation_active))
-      setDetectorRunning(Boolean(data.is_listening))
-      setSttText((data.stt_text as string) ?? '')
-      setResponseText((data.response_text as string) ?? '')
-      if (data.is_speaking) setAiState('responding')
-      else if (data.is_processing) setAiState('thinking')
-      else if (data.conversation_active) setAiState('listening')
-      else setAiState('idle')
-      window.dispatchEvent(new CustomEvent('barq:voice-status', { detail: { conversation_active: Boolean(data.conversation_active), is_listening: Boolean(data.is_listening), is_speaking: Boolean(data.is_speaking), is_processing: Boolean(data.is_processing), language: data.language ?? 'en', tts_voice: data.tts_voice ?? 'en-US-JennyNeural' } }))
-    }
-
-    const startHttpPoll = () => {
-      if (httpPollTimer) return
-      const poll = async () => {
-        if (!mounted) return
-        try { const d = await api('/voice/status'); if (d && typeof d === 'object' && !mounted) return; if (d && typeof d === 'object') applyStatus(d as Record<string, unknown>) } catch { /* */ }
-        if (mounted) httpPollTimer = setTimeout(poll, 2000)
-      }
-      poll()
-    }
-
-    const connect = () => {
-      try { ws = new WebSocket(WS_URL); wsFailedAt = null } catch {
-        if (!wsFailedAt) wsFailedAt = Date.now()
-        if (wsFailedAt && Date.now() - wsFailedAt > 5000) startHttpPoll()
-        reconnectTimer = setTimeout(connect, 2000); return
-      }
-      ws.onopen = () => { setWsConnected(true); wsFailedAt = null; if (httpPollTimer) { clearTimeout(httpPollTimer); httpPollTimer = null } }
-      // Track generation ID to prevent responseText accumulation across turns
-      let currentGeneration = 0
-
-      ws.onmessage = (event) => {
-        if (!mounted) return
-        try {
-          const data = JSON.parse(event.data)
-
-          switch (data.type) {
-            case 'state_change':
-              // Instant state push from backend (wake word, barge-in, etc.)
-              if (data.status === 'listening') {
-                setAiState('listening')
-                setVoiceListening(true)
-                setDetectorRunning(true)
-                // New turn starting — clear response text and bump generation
-                currentGeneration++
-                setResponseText('')
-                setSttText('')
-              } else if (data.status === 'processing') {
-                setAiState('thinking')
-                // Bump generation to stop stale caption_barq from appending
-                currentGeneration++
-              } else if (data.status === 'speaking') {
-                setAiState(prev => prev !== 'responding' ? 'responding' : prev)
-              } else if (data.status === 'idle') {
-                setAiState('idle')
-                setVoiceListening(false)
-              }
-              break
-
-            case 'caption_user':
-              // Real-time STT caption from conversation_listener
-              setSttText(data.text)
-              if (data.isFinal) {
-                setVoiceListening(true)
-                setDetectorRunning(true)
-                setAiState('listening')
-                // New utterance finalized — ready for response, bump generation
-                currentGeneration++
-                setResponseText('')
-              }
-              break
-
-            case 'caption_barq':
-              // Streaming AI response caption from responder
-              // Capture current generation at time of event
-              {
-                const gen = currentGeneration
-                setResponseText((prev) => {
-                  // If generation has moved on, this chunk is stale — discard
-                  if (gen !== currentGeneration) return prev
-                  return prev + data.text
-                })
-              }
-              setAiState(prev => prev !== 'responding' ? 'responding' : prev)
-              break
-
-            case 'voice_status':
-              // Legacy 100ms poll snapshot — authoritative full state
-              applyStatus(data)
-              break
-          }
-        } catch {
-          /* ignore malformed messages */
-        }
-      }
-      ws.onclose = () => { setWsConnected(false); if (!mounted) return; if (!wsFailedAt) wsFailedAt = Date.now(); if (Date.now() - wsFailedAt > 5000) startHttpPoll(); reconnectTimer = setTimeout(connect, 2000) }
-      ws.onerror = () => { ws?.close() }
-    }
-
-    connect()
-
-    // ── On mount: immediately fetch voice status via HTTP so the mic state
-    //    is correct from the start (avoids false "disabled" flash before WS connects)
-    ;(async () => {
-      if (!mounted) return
-      try {
-        const initial = await api('/voice/status')
-        if (initial && typeof initial === 'object' && mounted) {
-          applyStatus(initial as Record<string, unknown>)
-        }
-      } catch {
-        // backend unreachable — WS will retry
-      }
-    })()
-
-    return () => {
-      mounted = false
-      if (ws) { ws.onclose = null; ws.close() }
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (httpPollTimer) clearTimeout(httpPollTimer)
-      // ── On unmount (page switch): stop the backend voice detector cleanly
-      api('/voice/stop', {}).catch(() => {})
-    }
-  }, [])
+  // ── Note: Voice state (detectorRunning, aiState, etc.) and the WebSocket
+  //    connection are managed globally by VoiceContext, not per-page.
 
   // ═══════════════════════════════════════════════════════════════════
   //  GLOBAL STATE: systemLoad, drag-drop, radial menu, transfers

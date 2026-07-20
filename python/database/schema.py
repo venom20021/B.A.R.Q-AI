@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS job_evaluations (
     pros TEXT NOT NULL DEFAULT '[]',              -- JSON array
     cons TEXT NOT NULL DEFAULT '[]',              -- JSON array
     evaluated_by TEXT NOT NULL DEFAULT 'llm'
-        CHECK (evaluated_by IN ('llm', 'keyword', 'manual')),
+        CHECK (evaluated_by IN ('llm', 'keyword', 'manual', 'scanner')),
     evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (job_listing_id) REFERENCES job_listings(id) ON DELETE CASCADE
 );

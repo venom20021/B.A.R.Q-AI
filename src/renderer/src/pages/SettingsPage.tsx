@@ -44,11 +44,6 @@ const TTS_VOICES = [
   { value: 'en-IN-NeerjaNeural', label: 'Neerja (Female - IN)' },
 ]
 
-const LANGUAGE_OPTIONS = [
-  { value: 'en', label: '🇬🇧 English' },
-  { value: 'hi', label: '🇮🇳 Hindi' },
-]
-
 const SENSITIVITY_LEVELS = ['low', 'medium', 'high']
 
 // ── Accent Color Picker (module-level component, not created during render) ──
@@ -184,8 +179,6 @@ export function SettingsPage(): JSX.Element {
   const [voiceLoading, setVoiceLoading] = useState(false)
   const [togglingVoice, setTogglingVoice] = useState(false)
   const [selectedVoice, setSelectedVoice] = useState('en-US-JennyNeural')
-  const [selectedLanguage, setSelectedLanguage] = useState('en')  // 'en' or 'hi'
-  const [languageUpdating, setLanguageUpdating] = useState(false)
   const [lastDetectedLanguage, setLastDetectedLanguage] = useState('')  // last auto-detected language
   const [lastDetectedAt, setLastDetectedAt] = useState('')  // ISO timestamp of last auto-detection
   const [sensitivity, setSensitivity] = useState('medium')
@@ -195,7 +188,9 @@ export function SettingsPage(): JSX.Element {
   const [wakeGreetingEnabled, setWakeGreetingEnabled] = useState(true)
   const [weatherCity, setWeatherCity] = useState('Lucknow')
   const [vadSilenceTimeout, setVadSilenceTimeout] = useState(0.4)
-  const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
+  const [energyThreshold, setEnergyThreshold] = useState(300)
+  const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
+  const [voiceSettingsLanguage, setVoiceSettingsLanguage] = useState('en')
   // TTS backend selection
   const [ttsBackend, setTtsBackend] = useState('edge')
   const [ttsBackendUpdating, setTtsBackendUpdating] = useState(false)
@@ -341,9 +336,6 @@ export function SettingsPage(): JSX.Element {
         if (data.weather_city) {
           setWeatherCity(data.weather_city)
         }
-        if (data.language) {
-          setSelectedLanguage(data.language)
-        }
         if (data.tts_voice) {
           setSelectedVoice(data.tts_voice)
         }
@@ -414,27 +406,48 @@ export function SettingsPage(): JSX.Element {
     } catch { /* ignore */ }
   }, [])
 
-  const fetchVadSettings = useCallback(async () => {
-    setVadSettingsLoading(true)
+  const fetchVoiceSettings = useCallback(async () => {
+    setVoiceSettingsLoading(true)
     try {
-      const resp = await api('/voice/vad-settings')
+      const resp = await api('/voice/settings')
       if (resp && typeof resp === 'object') {
         const data = resp as Record<string, unknown>
-        if (typeof data.silence_timeout === 'number') {
-          setVadSilenceTimeout(data.silence_timeout)
-        }
+        if (typeof data.vad_silence_timeout === 'number') setVadSilenceTimeout(data.vad_silence_timeout)
+        if (typeof data.energy_threshold === 'number') setEnergyThreshold(data.energy_threshold)
+        if (typeof data.language === 'string') setVoiceSettingsLanguage(data.language)
       }
     } catch { /* ignore */ }
-    setVadSettingsLoading(false)
+    setVoiceSettingsLoading(false)
+  }, [])
+
+  const handleVoiceSettingsUpdate = useCallback(async (partial: Record<string, unknown>) => {
+    try {
+      const resp = await api('/voice/settings', partial)
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (typeof data.vad_silence_timeout === 'number') setVadSilenceTimeout(data.vad_silence_timeout)
+        if (typeof data.energy_threshold === 'number') setEnergyThreshold(data.energy_threshold)
+        if (typeof data.language === 'string') setVoiceSettingsLanguage(data.language)
+      }
+    } catch { /* ignore */ }
   }, [])
 
   const handleVadTimeoutChange = useCallback(async (value: number) => {
     const clamped = Math.round(Math.max(0.1, Math.min(3.0, value)) * 100) / 100
     setVadSilenceTimeout(clamped)
-    try {
-      await api('/voice/vad-settings', { silence_timeout: clamped })
-    } catch { /* ignore */ }
-  }, [])
+    await handleVoiceSettingsUpdate({ vad_silence_timeout: clamped })
+  }, [handleVoiceSettingsUpdate])
+
+  const handleEnergyThresholdChange = useCallback(async (value: number) => {
+    const clamped = Math.round(Math.max(50, Math.min(2000, value)))
+    setEnergyThreshold(clamped)
+    await handleVoiceSettingsUpdate({ energy_threshold: clamped })
+  }, [handleVoiceSettingsUpdate])
+
+  const handleLanguageLockChange = useCallback(async (lang: string) => {
+    setVoiceSettingsLanguage(lang)
+    await handleVoiceSettingsUpdate({ language: lang })
+  }, [handleVoiceSettingsUpdate])
 
   const handleWakeGreetingToggle = useCallback(async () => {
     const newVal = !wakeGreetingEnabled
@@ -464,17 +477,6 @@ export function SettingsPage(): JSX.Element {
       await window.barq?.voice.setTtsVoice(voice)
     } catch { /* ignore */ }
     setVoiceUpdating(false)
-  }, [])
-
-  const handleLanguageChange = useCallback(async (lang: string) => {
-    setSelectedLanguage(lang)
-    setLanguageUpdating(true)
-    try {
-      await api('/voice/language', { language: lang })
-    } catch (err) {
-      console.error('[Settings] Language switch failed:', err)
-    }
-    setLanguageUpdating(false)
   }, [])
 
   const handleSensitivityChange = useCallback(async (level: string) => {
@@ -710,12 +712,12 @@ export function SettingsPage(): JSX.Element {
       void fetchSettings()
       void fetchSoundSettings()
       void fetchWhitelistRules()
-      void fetchVadSettings()
+      void fetchVoiceSettings()
       void fetchTtsBackend()
       void fetchTelegramCredentials()
       void fetchCloudLLM()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVadSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -819,17 +821,6 @@ export function SettingsPage(): JSX.Element {
                     <p className="text-xs font-exo text-dim-400">{voiceStatus?.stt_model || 'whisper'} (local)</p>
                   </div>
                   <span className="badge-cyan">Local</span>
-                </div>
-
-                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
-                  <div>
-                    <p className="text-sm font-rajdhani font-semibold text-ghost">Language</p>
-                    <p className="text-xs font-exo text-dim-400">Recognition & response language (auto-detected from speech unless locked)</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {renderSelect(selectedLanguage, LANGUAGE_OPTIONS, handleLanguageChange)}
-                    {languageUpdating && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
-                  </div>
                 </div>
 
                 {/* Auto-detection status indicator */}
@@ -1014,8 +1005,65 @@ export function SettingsPage(): JSX.Element {
                     </div>
                     <div className="flex items-center gap-1 text-[10px] font-exo">
                       <span className="text-dim-500">{vadSilenceTimeout.toFixed(2)}s silence</span>
-                      {vadSettingsLoading && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
+                      {voiceSettingsLoading && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
                     </div>
+                  </div>
+                </div>
+
+                {/* ── Energy Threshold Slider ── */}
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div className="flex-1">
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Energy Threshold</p>
+                    <p className="text-xs font-exo text-dim-400 mt-1">
+                      {energyThreshold < 200 && 'Very sensitive — catches whispers & soft speech (may trigger on background noise)'}
+                      {energyThreshold >= 200 && energyThreshold < 500 && 'Normal sensitivity — works well in quiet to moderate environments'}
+                      {energyThreshold >= 500 && 'High threshold — ignores quiet sounds, requires louder speech (good in noisy rooms)'}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 w-48">
+                    <div className="flex items-center gap-3 w-full">
+                      <span className="text-[10px] font-exo text-dim-500 w-auto">Sensitive</span>
+                      <input
+                        type="range"
+                        min="50"
+                        max="2000"
+                        value={energyThreshold}
+                        onChange={(e) => handleEnergyThresholdChange(Number(e.target.value))}
+                        disabled={voiceSettingsLoading}
+                        className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-40"
+                        style={{
+                          background: `linear-gradient(to right, #06b6d4 0%, #06b6d4 ${((energyThreshold - 50) / 1950) * 100}%, #1e293b ${((energyThreshold - 50) / 1950) * 100}%)`,
+                        }}
+                      />
+                      <span className="text-[10px] font-exo text-dim-500 w-auto">Loud</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] font-exo">
+                      <span className="text-dim-500">{energyThreshold} RMS</span>
+                      {voiceSettingsLoading && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Language Lock (replaces the old language selector) ── */}
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Language</p>
+                    <p className="text-xs font-exo text-dim-400">Lock STT to a specific language — prevents auto-detection from misidentifying short/noisy phrases on wake</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={voiceSettingsLanguage}
+                      onChange={(e) => handleLanguageLockChange(e.target.value)}
+                      className="bg-void-800/80 text-ghost/80 text-xs font-exo px-2 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 cursor-pointer"
+                    >
+                      <option value="en" className="bg-void-900 text-ghost">🇬🇧 English</option>
+                      <option value="hi" className="bg-void-900 text-ghost">🇮🇳 Hindi</option>
+                    </select>
+                    {lastDetectedLanguage && voiceSettingsLanguage !== lastDetectedLanguage && (
+                      <span className="text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/15" title="Language is locked — auto-detection overridden">
+                        LOCKED
+                      </span>
+                    )}
                   </div>
                 </div>
 

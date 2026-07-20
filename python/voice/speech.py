@@ -365,8 +365,10 @@ class SpeechProcessor:
         """
         Transcribe an audio file to text using faster-whisper.
 
-        Auto-detects the spoken language from the audio (language=None)
-        and switches the system language + TTS voice accordingly.
+        Uses the configured STT language (``self.stt_language``) instead of
+        auto-detecting, which prevents misdetection of short/noisy phrases.
+        Language auto-detection + switching only runs when ``stt_language``
+        is None (not the default).
 
         Args:
             audio_path: Path to the audio file (WAV/MP3/OGG)
@@ -375,15 +377,21 @@ class SpeechProcessor:
             Transcribed text
         """
         model = self._get_model()
-        # language=None → faster-whisper auto-detects the language
-        segments, info = model.transcribe(str(audio_path), language=None, beam_size=3, vad_filter=True)
+        # Lock STT to the configured language instead of auto-detecting.
+        # Auto-detection (language=None) can misdetect short/noisy phrases
+        # (e.g. "hi" detected as Hindi for an English greeting).
+        # When stt_language is "en" (default) we explicitly pass "en".
+        # User can change language at runtime via /voice/language endpoint.
+        transcribe_language = self.stt_language if self.stt_language else None
+        segments, info = model.transcribe(str(audio_path), language=transcribe_language, beam_size=3, vad_filter=True)
         # Build segments list once for both text and confidence
         segments_list = list(segments)
         text = " ".join(seg.text.strip() for seg in segments_list)
         confidence = self._compute_confidence(segments_list)
 
-        # ── Auto-detect and switch language ────────────────────────
-        self._handle_detected_language(info, text, confidence)
+        # Only auto-switch language when using auto-detect (language=None)
+        if transcribe_language is None:
+            self._handle_detected_language(info, text, confidence)
 
         return text
 
@@ -704,8 +712,9 @@ class SpeechProcessor:
     async def _transcribe_frames(self, frames: list) -> dict:
         """Helper: save audio frames to a temp WAV and return transcription + confidence.
 
-        Auto-detects language from the audio (language=None) and switches
-        the system language + TTS voice if a different language is detected.
+        Uses the configured STT language (``self.stt_language``) for consistent
+        recognition. Language auto-detection + switching only runs when
+        ``stt_language`` is None.
 
         Returns a dict with:
             {"text": "...", "confidence": 0.0-1.0, "language": "en"|"hi"}
@@ -726,14 +735,16 @@ class SpeechProcessor:
 
         try:
             model = self._get_model()
-            # language=None → faster-whisper auto-detects the language from audio
-            segments, info = model.transcribe(str(temp_path), language=None, beam_size=3, vad_filter=True)
+            # Lock to configured language for consistency with transcribe()
+            transcribe_language = self.stt_language if self.stt_language else None
+            segments, info = model.transcribe(str(temp_path), language=transcribe_language, beam_size=3, vad_filter=True)
             segments_list = list(segments)
             text = " ".join(seg.text.strip() for seg in segments_list)
             confidence = self._compute_confidence(segments_list)
 
-            # ── Auto-detect and switch language ────────────────────
-            self._handle_detected_language(info, text, confidence)
+            # Only auto-switch language when using auto-detect
+            if transcribe_language is None:
+                self._handle_detected_language(info, text, confidence)
             detected_lang = getattr(info, "language", None) or "en"
 
             return {

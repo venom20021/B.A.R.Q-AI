@@ -15,6 +15,17 @@ from .base import (
     NotificationResult,
     Priority,
 )
+
+
+# Map activity_log types to valid notification categories.
+# Activity types not in this map fall back to GENERAL.
+_ACTIVITY_TYPE_TO_CATEGORY: dict[str, Category] = {
+    "job": Category.JOB_MATCH,
+    "content": Category.CONTENT,
+    "analytics": Category.ANALYTICS,
+    "system": Category.SYSTEM,
+    "error": Category.ERROR,
+}
 from .desktop import DesktopChannel
 from .email_smtp import EmailChannel
 from .telegram import TelegramChannel
@@ -172,11 +183,13 @@ class NotificationManager:
         recent_events = []
 
         for activity in activities:
+            activity_type = activity.get("type", "")
+            category = _ACTIVITY_TYPE_TO_CATEGORY.get(activity_type, Category.GENERAL)
             event = NotificationEvent(
                 title=activity.get("action", "Activity"),
                 body=activity.get("description", ""),
                 priority=Priority.NORMAL,
-                category=Category(activity.get("type", "general")),
+                category=category,
             )
             recent_events.append(event)
 

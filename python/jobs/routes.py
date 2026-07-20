@@ -3,6 +3,7 @@ FastAPI routes for job search automation.
 Uses database DAOs for all CRUD operations.
 """
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -38,12 +39,31 @@ async def _run_scan():
         )
         count = 0
         for job in jobs[:50]:
-            await jobs_dao.insert_job_listing(job)
+            # Insert job listing
+            listing_id = await jobs_dao.insert_job_listing(job)
+            # Insert evaluation data if the scanner already evaluated it
+            if "overall_score" in job:
+                try:
+                    await jobs_dao.insert_evaluation({
+                        "job_listing_id": listing_id,
+                        "overall_score": float(job.get("overall_score", 3.0)),
+                        "match_percentage": float(job.get("match_percentage", 0)),
+                        "reasoning": job.get("reasoning", ""),
+                        "pros": json.dumps(job.get("pros", [])),
+                        "cons": json.dumps(job.get("cons", [])),
+                        "evaluated_by": "scanner",
+                    })
+                except Exception as eval_err:
+                    print(f"[Scan] Failed to insert evaluation for job #{listing_id}: {eval_err}")
             count += 1
 
+        source_boards = len(set(
+            j.get("source_board", "") or j.get("source", "")
+            for j in jobs if j.get("source_board") or j.get("source")
+        ))
         await analytics_dao.log_activity(
             "job", "scan",
-            f"Scanned {count} new job listings from {len(set(j.get('source_board', '') or j.get('source', '') for j in jobs))} boards"
+            f"Scanned {count} new job listings from {source_boards} boards"
         )
     except Exception as e:
         set_scan_error(f"Scan failed: {e}")

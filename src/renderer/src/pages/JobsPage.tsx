@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
 import { api } from '../utils/api'
+import { usePersistentState } from '../hooks/usePersistentState'
 import {
   Search, Filter, ExternalLink, CheckCircle,
   Loader2, Activity, BarChart3, Mail, Send, RefreshCw,
@@ -114,7 +115,7 @@ const phaseIcons = ['🌐', '🔍', '🧠', '✅']
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function JobsPage(): JSX.Element {
-  const [activeTab, setActiveTab] = useState<TabKey>('listings')
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>('JobsPage.activeTab', 'listings')
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-4">
@@ -166,20 +167,19 @@ export function JobsPage(): JSX.Element {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function JobListings(): JSX.Element {
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [filter, setFilter] = useState<Job['status'] | 'all'>('all')
-  const [sortBy, setSortBy] = useState<'match' | 'date'>('match')
+  const [jobs, setJobs] = usePersistentState<Job[]>('JobsPage.jobs', [])
+  const [filter, setFilter] = usePersistentState<Job['status'] | 'all'>('JobsPage.filter', 'all')
+  const [sortBy, setSortBy] = usePersistentState<'match' | 'date'>('JobsPage.sortBy', 'match')
   const [loading, setLoading] = useState(true)
-  const [scanning, setScanning] = useState(false)
-  const [progress, setProgress] = useState<ScanProgress | null>(null)
+  const [scanning, setScanning] = usePersistentState('JobsPage.scanning', false)
+  const [progress, setProgress] = usePersistentState<ScanProgress | null>('JobsPage.scanProgress', null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchJobs = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await api('/jobs/matches?limit=50')
-      const data = (resp as { success?: boolean; data?: { matches?: Record<string, unknown>[] } })?.data
-      const matches = data?.matches ?? []
+      const resp = await api<{ matches?: Record<string, unknown>[] }>('/jobs/matches?limit=50')
+      const matches = resp?.matches ?? []
       setJobs(matches.map((m) => {
         const prosRaw = String(m['pros'] ?? '[]')
         const consRaw = String(m['cons'] ?? '[]')
@@ -258,7 +258,7 @@ function JobListings(): JSX.Element {
       message: 'Starting scan (13 boards)...', started_at: Date.now() / 1000, elapsed_seconds: 0,
     })
     try {
-      await api('/jobs/scan')
+      await api('/jobs/scan', {})
       startPolling()
       setTimeout(() => {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; setScanning(false); fetchJobs() }
@@ -274,6 +274,14 @@ function JobListings(): JSX.Element {
   const filteredJobs = jobs
     .filter((job) => filter === 'all' || job.status === filter)
     .sort((a, b) => sortBy === 'match' ? b.match_percentage - a.match_percentage : a.posted_date.localeCompare(b.posted_date))
+
+  // On mount: resume polling if a scan was in progress (page was navigated away and back)
+  useEffect(() => {
+    if (scanning && !pollRef.current && (progress?.status === 'scanning' || progress?.status === 'evaluating')) {
+      startPolling()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const isActiveScan = scanning && progress && ['scanning', 'evaluating', 'starting'].includes(progress.status)
 
@@ -663,9 +671,9 @@ function AnimatedCounter({ value, label, color = 'text-cyan-300' }: { value: num
 // ═══════════════════════════════════════════════════════════════════════════
 
 function PipelinePanel(): JSX.Element {
-  const [progress, setProgress] = useState<PipelineProgress | null>(null)
-  const [running, setRunning] = useState(false)
-  const [settings, setSettings] = useState<PipelineSettings>({
+  const [progress, setProgress] = usePersistentState<PipelineProgress | null>('JobsPage.pipeline.progress', null)
+  const [running, setRunning] = usePersistentState('JobsPage.pipeline.running', false)
+  const [settings, setSettings] = usePersistentState<PipelineSettings>('JobsPage.pipeline.settings', {
     mode: 'notify',
     auto_apply: false,
     max_per_run: 10,
@@ -673,8 +681,8 @@ function PipelinePanel(): JSX.Element {
     send_telegram: true,
     min_match_score: 60,
   })
-  const [showResults, setShowResults] = useState(false)
-  const [liveLogs, setLiveLogs] = useState<string[]>([])
+  const [showResults, setShowResults] = usePersistentState('JobsPage.pipeline.showResults', false)
+  const [liveLogs, setLiveLogs] = usePersistentState<string[]>('JobsPage.pipeline.liveLogs', [])
   const logEndRef = useRef<HTMLDivElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -692,14 +700,16 @@ function PipelinePanel(): JSX.Element {
   // Fetch resume info on mount
   useEffect(() => {
     (async () => {
-      const data = await api('/jobs/resume')
-      if (data && typeof data === 'object') {
-        const d = data as Record<string, unknown>
+      const data = await api<{
+        exists?: boolean; parsed?: { full_name?: string; skills_count?: number };
+        char_count?: number
+      }>('/jobs/resume')
+      if (data) {
         setResumeInfo({
-          exists: Boolean(d.exists),
-          full_name: (d.parsed as Record<string, unknown>)?.full_name as string || '',
-          skills_count: Number((d.parsed as Record<string, unknown>)?.skills_count || 0),
-          char_count: Number(d.char_count || 0),
+          exists: Boolean(data.exists),
+          full_name: data?.parsed?.full_name || '',
+          skills_count: Number(data?.parsed?.skills_count || 0),
+          char_count: Number(data?.char_count || 0),
         })
       }
     })()

@@ -500,16 +500,30 @@ async def _preload_whisper_model():
 
     This removes the multi-second loading delay from the first transcription.
     The model stays resident in RAM for the lifetime of the server process.
+
+    Uses ``run_in_executor`` so that the synchronous model download from
+    HuggingFace Hub (``requests``-based in ``huggingface_hub``) does **not**
+    block the asyncio event loop.  Without this, the health-check endpoint
+    becomes unresponsive during a first-time model download and the Electron
+    sidecar manager will trigger a restart loop.
     """
     try:
         from faster_whisper import WhisperModel
         model_size = get_settings().whisper_model
         print(f"[Voice] Preloading faster-whisper model '{model_size}'...")
-        speech_processor._whisper_model = WhisperModel(
-            model_size,
-            device="cpu",
-            compute_type="int8",
-        )
+
+        def _load():
+            return WhisperModel(
+                model_size,
+                device="cpu",
+                compute_type="int8",
+            )
+
+        # Run the blocking model load/download in a thread pool so it does
+        # NOT block the asyncio event loop
+        loop = asyncio.get_running_loop()
+        speech_processor._whisper_model = await loop.run_in_executor(None, _load)
+
         print("[Voice] faster-whisper model preloaded at startup")
     except Exception as e:
         print(f"[Voice] Failed to preload faster-whisper model: {e}")
@@ -690,6 +704,22 @@ async def load_sound_settings():
     # Propagate to the conversation listener
     conversation_listener.vad_silence_timeout = _vad_silence_timeout
 
+    # Load energy threshold from DB
+    energy_val = await settings_dao.get_setting("vad_energy_threshold")
+    if energy_val is not None:
+        try:
+            global _energy_threshold
+            _energy_threshold = float(energy_val)
+            if _energy_threshold < 50 or _energy_threshold > 2000:
+                _energy_threshold = 300.0
+            print(f"[Voice] VAD energy threshold loaded from DB: {_energy_threshold}")
+        except (ValueError, TypeError):
+            pass
+    else:
+        print(f"[Voice] No saved energy threshold in DB, using default: {_energy_threshold}")
+    # Propagate to the conversation listener
+    conversation_listener.energy_threshold = _energy_threshold
+
     # Load saved sensitivity level from DB
     sens_val = await settings_dao.get_setting("wake_word_sensitivity")
     if sens_val is not None and sens_val.lower() in ("low", "medium", "high"):
@@ -738,6 +768,7 @@ _last_detected_at: str = ""  # ISO timestamp of last auto-detection
 _hands_free_mode: bool = True  # Alexa/Gemini-style hands-free conversation mode
 _wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected (separate from hands-free)
 _vad_silence_timeout: float = 0.4  # VAD endpointing silence threshold in seconds (300-500ms range)
+_energy_threshold: float = 300.0   # RMS energy threshold for voice activity detection
 # Conversation manager is now managed by the shared responder instance
 # _responder and conversation_listener are the canonical singletons above
 
@@ -791,6 +822,13 @@ class ConversationModeRequest(BaseModel):
 
 class WeatherCityRequest(BaseModel):
     city: str  # city name for weather in wake greeting
+
+
+class VoiceSettingsRequest(BaseModel):
+    """Unified voice settings — all fields optional, only provided fields are updated."""
+    vad_silence_timeout: Optional[float] = None  # seconds (0.1–3.0)
+    energy_threshold: Optional[float] = None     # RMS floor (50–2000)
+    language: Optional[str] = None               # "en" or "hi"
 
 
 class VADSettingsRequest(BaseModel):
@@ -1345,6 +1383,108 @@ async def voice_execute_approved_command(request: CommandRequest):
         "source": "voice",
         "tier": tier,
         **result,
+    }
+
+
+# ─── Unified Voice Settings API ────────────────────────────────────
+
+
+@router.get("/settings")
+async def get_voice_settings():
+    """Get all current voice processing settings.
+
+    Returns the live runtime values for VAD endpointing, energy threshold,
+    language lock, and whisper model.  Values can be changed at runtime
+    via POST /voice/settings.
+    """
+    return {
+        "vad_silence_timeout": _vad_silence_timeout,
+        "vad_silence_timeout_range": [0.1, 3.0],
+        "energy_threshold": _energy_threshold,
+        "energy_threshold_range": [50, 2000],
+        "language": _language,
+        "languages_available": ["en", "hi"],
+        "whisper_model": get_settings().whisper_model,
+        "ollama_model": get_settings().ollama_model,
+    }
+
+
+@router.post("/settings")
+async def set_voice_settings(request: VoiceSettingsRequest):
+    """Update voice processing settings at runtime.
+
+    All fields are optional — only provided fields are updated and persisted.
+    Changes take effect immediately (no restart needed).
+
+    - ``vad_silence_timeout``: Seconds of silence before VAD endpoint cuts (0.1–3.0).
+      Lower = faster response, higher = less cutting off natural pauses.
+    - ``energy_threshold``: RMS energy floor for voice activity detection (50–2000).
+      Lower = more sensitive, higher = less false triggers from background noise.
+    - ``language``: Lock STT to this language ("en" or "hi"). Prevents auto-detection
+      from misidentifying the language on short/noisy phrases.
+    """
+    global _vad_silence_timeout, _energy_threshold, _language, _tts_voice
+
+    changes = []
+
+    # ── Update VAD silence timeout ─────────────────────────────────
+    if request.vad_silence_timeout is not None:
+        if request.vad_silence_timeout < 0.1 or request.vad_silence_timeout > 3.0:
+            raise HTTPException(status_code=400, detail="vad_silence_timeout must be between 0.1 and 3.0")
+        _vad_silence_timeout = request.vad_silence_timeout
+        conversation_listener.vad_silence_timeout = _vad_silence_timeout
+        await settings_dao.set_setting("vad_silence_timeout", str(_vad_silence_timeout), "voice")
+        changes.append(f"vad_silence_timeout={_vad_silence_timeout}s")
+        print(f"[Voice] VAD silence timeout updated: {_vad_silence_timeout}s")
+
+    # ── Update energy threshold ────────────────────────────────────
+    if request.energy_threshold is not None:
+        if request.energy_threshold < 50 or request.energy_threshold > 2000:
+            raise HTTPException(status_code=400, detail="energy_threshold must be between 50 and 2000")
+        _energy_threshold = request.energy_threshold
+        conversation_listener.energy_threshold = _energy_threshold
+        await settings_dao.set_setting("vad_energy_threshold", str(_energy_threshold), "voice")
+        changes.append(f"energy_threshold={_energy_threshold}")
+        print(f"[Voice] VAD energy threshold updated: {_energy_threshold}")
+
+    # ── Update language lock ───────────────────────────────────────
+    if request.language is not None:
+        if request.language not in ("en", "hi"):
+            raise HTTPException(status_code=400, detail="Language must be 'en' or 'hi'")
+        _language = request.language
+        speech_processor.stt_language = request.language
+        # Also update wake word detector language
+        detector = get_wake_word_detector()
+        detector.set_language(request.language)
+        # Auto-switch TTS voice to match
+        if request.language == "hi":
+            _set_tts_voice_internal("hi-IN-SwaraNeural")
+        else:
+            _set_tts_voice_internal("en-US-JennyNeural")
+        await settings_dao.set_setting("voice_language", request.language, "voice")
+        changes.append(f"language={request.language}")
+        print(f"[Voice] Language updated: {request.language}")
+
+    if changes:
+        await analytics_dao.log_activity(
+            "voice", "voice_settings",
+            f"Voice settings updated: {', '.join(changes)}",
+        )
+
+        # ── Broadcast settings change to all connected WebSocket clients ──
+        asyncio.ensure_future(_voice_ws.broadcast({
+            "type": "settings_changed",
+            "vad_silence_timeout": _vad_silence_timeout,
+            "energy_threshold": _energy_threshold,
+            "language": _language,
+        }))
+
+    return {
+        "status": "updated" if changes else "no_changes",
+        "changes": changes,
+        "vad_silence_timeout": _vad_silence_timeout,
+        "energy_threshold": _energy_threshold,
+        "language": _language,
     }
 
 
