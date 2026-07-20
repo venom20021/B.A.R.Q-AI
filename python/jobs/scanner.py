@@ -133,8 +133,32 @@ class JobScanner:
         _scan_progress["progress_pct"] = 10
         _scan_progress["message"] = "Starting parallel board scans..."
 
-        tasks = [self._scan_board(board, keywords, location) for board in JOB_BOARDS]
-        board_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # ── Concurrency-limited board scanning ────────────────────────
+        # Running all 27 boards in parallel via asyncio.gather(*) hogs the
+        # event loop and hangs the scan if even ONE board hangs (Playwright
+        # timeout, slow HTTP response, etc.).  Use a semaphore to limit
+        # concurrent scans to 5 at a time, with a per-board timeout wrapper.
+        _sem = asyncio.Semaphore(5)
+
+        async def _scan_with_limits(board: str, _kw: list[str], _loc: str) -> list:
+            """Wrapper: acquire semaphore + apply per-board timeout."""
+            async with _sem:
+                try:
+                    return await asyncio.wait_for(
+                        self._scan_board(board, _kw, _loc),
+                        timeout=25.0,  # per-board timeout — 25s max
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[Scanner] Board '{board}' timed out after 25s")
+                    return []
+                except Exception as e:
+                    print(f"[Scanner] Board '{board}' error: {e}")
+                    return []
+
+        board_results = await asyncio.gather(
+            *[_scan_with_limits(board, keywords, location) for board in JOB_BOARDS],
+            return_exceptions=True,
+        )
 
         for board_idx, board_result in enumerate(board_results):
             if isinstance(board_result, list):

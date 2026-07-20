@@ -446,6 +446,12 @@ def _on_wake_word_callback(utterance: str = ""):
     if wake_word_detector is not None:
         wake_word_detector.pause()
         print("[Voice] Wake word detector paused — microphone released")
+        # ── Let the audio device settle between Vosk release and STT open ──
+        # Without this delay, sounddevice can fail to open a new InputStream
+        # because the OS still holds the device from the wake word detector's
+        # now-closed stream.  50ms is enough for Windows WASAPI to release.
+        import time as _time
+        _time.sleep(0.05)
     else:
         print("[Voice] No wake word detector to pause")
 

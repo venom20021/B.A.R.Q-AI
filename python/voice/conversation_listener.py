@@ -65,7 +65,7 @@ class ConversationListener:
         responder: BARQResponder,
         on_stop: Optional[Callable] = None,
         use_pipeline: bool = True,
-        energy_threshold: float = 500.0,
+        energy_threshold: float = 300.0,  # RMS threshold for VAD — 300 matches transcribe_streaming default
         parse_command: Optional[ParseCommandFn] = None,
         execute_command: Optional[ExecuteCommandFn] = None,
     ):
