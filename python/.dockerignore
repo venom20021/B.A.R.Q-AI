@@ -1,0 +1,53 @@
+# ─── BARQ .dockerignore — exclude from Docker build context ──────────
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local database files (not needed in cloud — uses Turso)
+*.db
+*.db-shm
+*.db-wal
+
+# Local data
+data/audio/
+data/memory_bus.db
+data/graph.json
+lancedb/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Voice models (large, downloaded per-instance)
+models/
+vosk_model/
+
+# Generated files
+generated/
+wallpapers/
+
+# OS files
+.DS_Store
+Desktop.ini
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/
+test-results/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

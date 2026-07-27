@@ -40,7 +40,13 @@ if %ERRORLEVEL% neq 0 (
 REM Wait for Python to boot
 timeout /t 4 /nobreak >nul
 
-echo [2/2] Starting Electron app...
+echo [2/3] Starting Telegram Ingestion Bot...
+start "BARQ-Telegram" cmd /c "cd /d %~dp0..\python && python telegram_ingestion_bot.py"
+echo        Bot window should appear. If it flashes and closes, check:
+echo          - TELEGRAM_BOT_TOKEN is set in .env
+echo          - .env file exists in project root (%~dp0..)
+
+echo [3/3] Starting Electron app...
 start "BARQ-Electron" cmd /c "cd /d %~dp0.. && npm run dev"
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Failed to start Electron.

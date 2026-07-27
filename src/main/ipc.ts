@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, Notification } from 'electron'
+import { ipcMain, BrowserWindow, Notification, shell } from 'electron'
 import { pythonBridge } from './python-bridge'
 
 export function registerIpcHandlers(): void {
@@ -19,6 +19,32 @@ export function registerIpcHandlers(): void {
     try {
       const result = await pythonBridge.request('/health')
       return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Get Python sidecar configuration (URL, WS URL, remote mode status)
+  ipcMain.handle('python:get-config', async () => {
+    try {
+      const config = pythonBridge.getBackendConfig()
+      return { success: true, data: config }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Set remote mode at runtime
+  ipcMain.handle('python:set-remote-mode', async (_event, enabled: boolean, url?: string) => {
+    try {
+      pythonBridge.setRemoteMode(enabled, url)
+      if (enabled) {
+        // Restart connection in remote mode
+        await pythonBridge.stop()
+        await pythonBridge.start()
+      }
+      const config = pythonBridge.getBackendConfig()
+      return { success: true, data: config }
     } catch (error) {
       return { success: false, error: String(error) }
     }
@@ -609,6 +635,15 @@ export function registerIpcHandlers(): void {
 
   // ─── Phase 3: Job Analytics & Follow-ups ──────────────────────────
 
+  ipcMain.handle('jobs:match-analytics', async () => {
+    try {
+      const result = await pythonBridge.request('/jobs/analytics/matches')
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   ipcMain.handle('jobs:response-analytics', async () => {
     try {
       const result = await pythonBridge.request('/jobs/analytics/responses')
@@ -859,6 +894,68 @@ export function registerIpcHandlers(): void {
       pythonBridge.showWhisperLogs = enabled
       return { success: true, data: { enabled } }
     } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // ─── Secure External URL Opener ──────────────────────────────────
+
+  ipcMain.handle('open-external-url', async (_event, url: string) => {
+    // 🚨 DIAGNOSTIC: Log every URL attempt with a stack trace
+    console.log('[IPC] open-external-url called with:', JSON.stringify(url))
+    console.log('[IPC] Stack trace:', new Error().stack?.split('\n').slice(2, 6).join('\n') || 'N/A')
+
+    // Strict sanitization: reject empty, undefined, or malformed URLs
+    if (!url || typeof url !== 'string' || url.trim().length === 0) {
+      console.warn('[IPC] Rejected empty/invalid URL:', JSON.stringify(url))
+      return { success: false, error: 'URL is empty or invalid' }
+    }
+
+    let formattedUrl = url.trim()
+
+    // BLOCK Windows drive paths (B:/, C:\, etc.) BEFORE prepending protocol
+    if (/^[a-zA-Z]:[\\/]/.test(formattedUrl)) {
+      console.warn('[IPC] Rejected Windows drive path URL:', formattedUrl)
+      return { success: false, error: 'Rejected Windows drive path — not a valid web URL' }
+    }
+
+    // BLOCK bare hostnames and local paths that look like drive letters
+    if (/^[a-zA-Z]:/.test(formattedUrl) && formattedUrl.length <= 3) {
+      console.warn('[IPC] Rejected bare drive letter URL:', formattedUrl)
+      return { success: false, error: 'Rejected bare drive letter — not a valid web URL' }
+    }
+
+    // If URL has no protocol, reject — don't auto-prepend (too dangerous)
+    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+      console.warn('[IPC] Rejected URL with no http/https protocol:', formattedUrl)
+      return { success: false, error: 'URL must start with http:// or https://' }
+    }
+
+    // Final URL validation
+    try {
+      const parsed = new URL(formattedUrl)
+      // Block dangerous protocols
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        console.warn(`[IPC] Rejected non-http protocol: ${parsed.protocol}`)
+        return { success: false, error: 'Only http/https URLs are allowed' }
+      }
+      // Block empty hostnames (e.g., https:///path)
+      if (!parsed.hostname || parsed.hostname.length === 0) {
+        console.warn(`[IPC] Rejected URL with no hostname: ${formattedUrl}`)
+        return { success: false, error: 'URL must have a valid hostname' }
+      }
+    } catch {
+      console.warn(`[IPC] Rejected unparseable URL: ${formattedUrl}`)
+      return { success: false, error: 'Invalid URL format' }
+    }
+
+    try {
+      // Open in the user's default OS browser
+      await shell.openExternal(formattedUrl)
+      console.log(`[IPC] Opened external URL: ${formattedUrl}`)
+      return { success: true }
+    } catch (error) {
+      console.error(`[IPC] Failed to open URL: ${formattedUrl}`, error)
       return { success: false, error: String(error) }
     }
   })

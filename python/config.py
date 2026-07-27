@@ -10,13 +10,16 @@ from pydantic_settings import BaseSettings
 
 # Load .env file from the project root
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-load_dotenv(env_path)
+load_dotenv(env_path, override=True)  # .env file values take precedence over OS env vars
 
 
 class Settings(BaseSettings):
     # Sidecar server
+    # IMPORTANT: Port 8956 is the standard port used by all startup scripts
+    # (start.bat, start_backend.vbs, watchdog.ps1) and the Electron frontend.
+    # Do NOT change this default without updating ALL callers.
     host: str = os.getenv("SIDECAR_HOST", "127.0.0.1")
-    port: int = int(os.getenv("SIDECAR_PORT", "8970"))
+    port: int = int(os.getenv("SIDECAR_PORT", "8956"))
     debug: bool = os.getenv("BARQ_DEBUG", "false").lower() == "true"
 
     # Voice
@@ -32,8 +35,9 @@ class Settings(BaseSettings):
     audio_output_device: str = os.getenv("AUDIO_OUTPUT_DEVICE", "auto")
 
     # LLM
+    llm_backend: str = os.getenv("LLM_BACKEND", "auto")  # "auto", "ollama", or "openai"
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
     # Job Search
     job_scan_interval_hours: int = int(os.getenv("JOB_SCAN_INTERVAL_HOURS", "6"))
@@ -71,10 +75,19 @@ class Settings(BaseSettings):
     # API Authentication
     barq_api_key: str = os.getenv("BARQ_API_KEY", "")
 
-    # Cloud LLM Fallback (when Ollama is offline)
+    # Cloud LLM Fallback (when Ollama/LM Studio is offline)
     cloud_llm_enabled: bool = os.getenv("CLOUD_LLM_ENABLED", "true").lower() == "true"
     cloud_llm_model: str = os.getenv("CLOUD_LLM_MODEL", "gpt-4o-mini")
     cloud_llm_base_url: str = os.getenv("CLOUD_LLM_BASE_URL", "https://api.openai.com/v1")  # Can use OpenRouter, Groq, etc.
+    # Secondary cloud fallback (e.g. Groq when LM Studio is unreachable)
+    cloud_llm_fallback_enabled: bool = os.getenv("CLOUD_LLM_FALLBACK_ENABLED", "false").lower() == "true"
+    cloud_llm_fallback_base_url: str = os.getenv("CLOUD_LLM_FALLBACK_BASE_URL", "")
+    cloud_llm_fallback_model: str = os.getenv("CLOUD_LLM_FALLBACK_MODEL", "gpt-4o-mini")
+
+    # Turso Cloud Database
+    turso_enabled: bool = os.getenv("TURSO_ENABLED", "false").lower() == "true"
+    turso_database_url: str = os.getenv("TURSO_DATABASE_URL", "")
+    turso_auth_token: str = os.getenv("TURSO_AUTH_TOKEN", "")
 
     # External API Keys (loaded from .env)
     linkedin_email: str = os.getenv("LINKEDIN_EMAIL", "")

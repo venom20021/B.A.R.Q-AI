@@ -355,7 +355,7 @@ async def _speak_wake_greeting():
         await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected — lightweight greeting")
 
         # Fire off background info gathering (fire-and-forget)
-        asyncio.ensure_future(_inject_background_info())
+        _voice_ws.fire(_inject_background_info())
 
         print("[WakeGreeting] Lightweight greeting — entering conversation mode immediately")
 
@@ -456,10 +456,13 @@ def _on_wake_word_callback(utterance: str = ""):
         print("[Voice] No wake word detector to pause")
 
     # ── Step 2: Push instant "listening" state to frontend ──
-    try:
-        asyncio.run(_voice_ws.broadcast_state("listening"))
-    except Exception:
-        pass
+    # Broadcast is handled inside _lightweight_wake_greeting() which runs
+    # inside the proper event loop (loop.run_until_complete). We can't
+    # broadcast here because _on_wake_word_callback is a synchronous
+    # function called from the Vosk thread — no running event loop.
+    # The broadcast_state("listening") fires as the first line of
+    # _lightweight_wake_greeting below.
+    pass
 
     # ── Step 3: Extract command after wake word ──
     command_text = _extract_command_after_wake_word(utterance)
@@ -617,6 +620,10 @@ async def _lightweight_wake_greeting(command_text: str = ""):
     - Fire a background task to gather system info (jobs, weather, etc.)
     - Enter conversation mode so the user can speak immediately
     """
+    # ── Step 0: Broadcast "listening" state immediately ──
+    # This runs inside the proper event loop (created by _on_wake_word_callback)
+    _voice_ws.fire(_voice_ws.broadcast_state("listening"))
+
     responder.is_processing = True
     try:
         # Log wake activity
@@ -629,14 +636,24 @@ async def _lightweight_wake_greeting(command_text: str = ""):
             await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected")
 
         # Fire background info gathering (fire-and-forget)
-        asyncio.ensure_future(_inject_background_info())
+        _voice_ws.fire(_inject_background_info())
 
-        # If there's a command after the wake word, process it
+        # ═══ START CONVERSATION FIRST ═══
+        # Start the conversation loop BEFORE processing the command, so that
+        # even if the LLM call fails (asyncio timeout, Ollama unavailable, etc.),
+        # the conversation loop is already active and the user can speak again.
+        # This fixes the "no response after wake" bug where the LLM error
+        # prevented start_conversation() from ever being called.
+        await conversation_listener.start_conversation()
+
+        # ═══ THEN process command text (if any) ═══
         if command_text:
             print(f"[Voice] Processing wake command: '{command_text}' — streaming response")
             try:
                 responder.is_speaking_event.set()
                 async for chunk in responder.stream_respond(command_text):
+                    if not conversation_listener.is_active:
+                        break
                     audio_pcm = chunk.get("audio_pcm")
                     if audio_pcm is not None:
                         pcm_array, sr = audio_pcm
@@ -658,9 +675,6 @@ async def _lightweight_wake_greeting(command_text: str = ""):
                     pass
         else:
             print("[Voice] No command — entering conversation mode directly")
-
-        # Enter conversation mode for follow-ups
-        await conversation_listener.start_conversation()
 
     except Exception as e:
         print(f"[Voice] Lightweight greeting error: {e}")
@@ -894,8 +908,7 @@ async def start_listening():
 
     # Start whisper model preloading in the background so it doesn't block
     # the startup. The first download can take 30-60s on slow connections.
-    import asyncio
-    asyncio.ensure_future(_preload_whisper_model())
+    _voice_ws.fire(_preload_whisper_model())
 
     detector = get_wake_word_detector()
 
@@ -1478,7 +1491,7 @@ async def set_voice_settings(request: VoiceSettingsRequest):
         )
 
         # ── Broadcast settings change to all connected WebSocket clients ──
-        asyncio.ensure_future(_voice_ws.broadcast({
+        _voice_ws.fire(_voice_ws.broadcast({
             "type": "settings_changed",
             "vad_silence_timeout": _vad_silence_timeout,
             "energy_threshold": _energy_threshold,

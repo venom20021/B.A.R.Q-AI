@@ -15,10 +15,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from utils import safe_filename
 from config import get_settings
 
 # Output directory for generated PDFs
 GENERATED_DIR = Path(__file__).parent.parent / "generated" / "resumes"
+
+# Optional career-ops bridge for professional Playwright-based PDFs
+try:
+    from .career_ops_bridge import CareerOpsBridge
+except ImportError:
+    CareerOpsBridge = None  # type: ignore
 
 
 def _find_pdflatex() -> str | None:
@@ -270,49 +277,11 @@ def _sanitize_fpdf_text(text: str) -> str:
 
 # ─── fpdf Fallback ──────────────────────────────────────────────────────────
 
-def _build_fpdf_pdf(resume_data: dict[str, Any], output_path: str) -> str:
-    """Generate a PDF using fpdf (pure Python, no LaTeX needed)."""
-    try:
-        from fpdf import FPDF
-    except ImportError:
-        raise ImportError("fpdf is required for PDF generation. Install: pip install fpdf")
-
-    pdf = FPDF()
-    pdf.add_page()
-
-    # Colors
-    primary = (26, 54, 93)      # Dark blue
-    accent = (43, 108, 192)    # Medium blue
-    muted = (113, 128, 150)    # Gray
-
-    # Title
-    pdf.set_font("Helvetica", "B", 24)
-    pdf.set_text_color(*primary)
-    name = _sanitize_fpdf_text(resume_data.get("full_name", "Your Name"))
-    pdf.cell(0, 12, name, new_x="LMARGIN", new_y="NEXT", align="C")
-
-    # Contact info
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(*muted)
-    contact_parts = [p for p in [
-        _sanitize_fpdf_text(resume_data.get("email", "")),
-        _sanitize_fpdf_text(resume_data.get("phone", "")),
-    ] if p]
-    contact = " | ".join(contact_parts)
-    if contact:
-        pdf.cell(0, 6, contact, new_x="LMARGIN", new_y="NEXT", align="C")
-
-    # Links
-    links = []
-    for url_key in ["linkedin_url", "github_url", "portfolio_url"]:
-        url = resume_data.get(url_key, "")
-        if url:
-            display = url.replace("https://", "").replace("http://", "").rstrip("/")
-            links.append(_sanitize_fpdf_text(display))
-    if links:
-        pdf.cell(0, 5, " | ".join(links), new_x="LMARGIN", new_y="NEXT", align="C")
-
-    pdf.ln(4)
+def _build_fpdf_pdf_structured(pdf: Any, resume_data: dict[str, Any]) -> None:
+    """Render structured resume fields into an fpdf document."""
+    primary = (26, 54, 93)
+    accent = (43, 108, 192)
+    muted = (113, 128, 150)
 
     def _section(title: str):
         pdf.set_font("Helvetica", "B", 13)
@@ -345,7 +314,6 @@ def _build_fpdf_pdf(resume_data: dict[str, Any], output_path: str) -> str:
         pdf.ln(2)
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(*accent)
-        # Skills as comma-separated
         skill_text = ", ".join(_sanitize_fpdf_text(s) for s in skills[:25])
         if len(skills) > 25:
             skill_text += " and more"
@@ -415,6 +383,137 @@ def _build_fpdf_pdf(resume_data: dict[str, Any], output_path: str) -> str:
                 pdf.multi_cell(0, 4.5, desc[:200])
             pdf.ln(1)
 
+
+def _build_fpdf_pdf_from_md(pdf: Any, resume_data: dict[str, Any], raw_md: str) -> None:
+    """Render optimized markdown resume content into an fpdf document."""
+    primary = (26, 54, 93)
+
+    def _md_section(title: str):
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_text_color(*primary)
+        pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_draw_color(*primary)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(2)
+
+    def _md_text(text: str, size: int = 10, bold: bool = False):
+        style = "B" if bold else ""
+        pdf.set_font("Helvetica", style, size)
+        pdf.set_text_color(30, 30, 30)
+        pdf.multi_cell(0, 5, _sanitize_fpdf_text(text))
+        pdf.ln(0.5)
+
+    def _md_bullet(text: str):
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(60, 60, 60)
+        pdf.l_margin += 4
+        pdf.cell(0, 4.5, f"  -  {_sanitize_fpdf_text(text[:400])}", new_x="LMARGIN", new_y="NEXT")
+        pdf.l_margin -= 4
+
+    # Parse markdown line by line
+    lines = raw_md.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        if not line:
+            i += 1
+            continue
+
+        # Section headings (## or ###)
+        if line.startswith("## "):
+            section_name = line.replace("## ", "").replace("### ", "").strip()
+            _md_section(section_name)
+            i += 1
+            continue
+
+        # Bullet points
+        if line.startswith("* ") or line.startswith("- "):
+            bullet_text = line[2:].strip()
+            # Bold prefix before colon/dash
+            if ":" in bullet_text:
+                parts = bullet_text.split(":", 1)
+                _md_bullet(f"{parts[0].strip()}: {parts[1].strip()}")
+            elif " — " in bullet_text:
+                parts = bullet_text.split(" — ", 1)
+                _md_bullet(f"{parts[0].strip()} — {parts[1].strip()}")
+            else:
+                _md_bullet(bullet_text)
+            i += 1
+            continue
+
+        # Bold text (**) — likely a project name or role
+        if "**" in line:
+            clean = line.replace("**", "").strip()
+            _md_text(clean, 10, bold=True)
+            i += 1
+            continue
+
+        # Regular text — Professional Summary, context lines, links
+        if "#" not in line:
+            _md_text(line, 10)
+        i += 1
+
+
+def _write_header(pdf: Any, resume_data: dict[str, Any]) -> None:
+    """Write the name, contact, and links header block on the PDF."""
+    primary = (26, 54, 93)
+    muted = (113, 128, 150)
+
+    pdf.set_font("Helvetica", "B", 24)
+    pdf.set_text_color(*primary)
+    name = _sanitize_fpdf_text(resume_data.get("full_name", "Your Name"))
+    pdf.cell(0, 12, name, new_x="LMARGIN", new_y="NEXT", align="C")
+
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(*muted)
+    contact_parts = [p for p in [
+        _sanitize_fpdf_text(resume_data.get("email", "")),
+        _sanitize_fpdf_text(resume_data.get("phone", "")),
+    ] if p]
+    contact = " | ".join(contact_parts)
+    if contact:
+        pdf.cell(0, 6, contact, new_x="LMARGIN", new_y="NEXT", align="C")
+
+    links = []
+    for url_key in ["linkedin_url", "github_url", "portfolio_url"]:
+        url = resume_data.get(url_key, "")
+        if url:
+            display = url.replace("https://", "").replace("http://", "").rstrip("/")
+            links.append(_sanitize_fpdf_text(display))
+    if links:
+        pdf.cell(0, 5, " | ".join(links), new_x="LMARGIN", new_y="NEXT", align="C")
+
+    pdf.ln(4)
+
+
+def _build_fpdf_pdf(resume_data: dict[str, Any], output_path: str) -> str:
+    """Generate a PDF using fpdf (pure Python, no LaTeX needed).
+
+    If the resume_data contains 'raw_md' with optimized content (>=100 chars),
+    uses that markdown content directly instead of the structured fields.
+    This ensures job-tailored resumes are rendered correctly in the PDF.
+    """
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        raise ImportError("fpdf is required for PDF generation. Install: pip install fpdf")
+
+    pdf = FPDF()
+    pdf.add_page()
+
+    # Always write the header (name + contact) from structured data
+    _write_header(pdf, resume_data)
+
+    # Check if we have optimized markdown content
+    raw_md = resume_data.get("raw_md", "")
+    if raw_md and len(raw_md) >= 100:
+        # Use optimized markdown content directly
+        _build_fpdf_pdf_from_md(pdf, resume_data, raw_md)
+    else:
+        # Fall back to structured fields (original resume content)
+        _build_fpdf_pdf_structured(pdf, resume_data)
+
     pdf.output(output_path)
     return output_path
 
@@ -433,6 +532,12 @@ class ResumePDFGenerator:
         self.settings = get_settings()
         self.pdflatex_path = _find_pdflatex()
         self._has_fpdf = True  # Checked at runtime
+        self._career_ops = CareerOpsBridge() if CareerOpsBridge is not None else None
+
+    @property
+    def is_career_ops_available(self) -> bool:
+        """Whether the external career-ops tool (Playwright/HTML→PDF) is available."""
+        return self._career_ops is not None and self._career_ops.is_available
 
     @property
     def is_latex_available(self) -> bool:
@@ -442,11 +547,17 @@ class ResumePDFGenerator:
     @property
     def is_available(self) -> bool:
         """Whether any PDF generation method is available."""
-        return self.is_latex_available or self._has_fpdf
+        return self.is_career_ops_available or self.is_latex_available or self._has_fpdf
 
     def get_available_backends(self) -> list[dict[str, str]]:
-        """List available PDF generation backends."""
+        """List available PDF generation backends (ordered by preference)."""
         backends = []
+        if self.is_career_ops_available:
+            backends.append({
+                "name": "career_ops",
+                "label": "Career-Ops (Playwright)",
+                "description": "Professional HTML→PDF via career-ops Playwright pipeline",
+            })
         if self.is_latex_available:
             backends.append({
                 "name": "latex",
@@ -466,6 +577,7 @@ class ResumePDFGenerator:
         resume_data: dict[str, Any],
         output_dir: str | Path | None = None,
         filename: str | None = None,
+        job_description: str = "",
     ) -> dict[str, Any]:
         """Generate a PDF resume from parsed resume data.
 
@@ -474,6 +586,9 @@ class ResumePDFGenerator:
             output_dir: Directory to save the PDF. Defaults to generated/resumes/
             filename: Output filename (without extension). Defaults to
                      "{full_name}_Resume.pdf"
+            job_description: Job description text used by career-ops bridge to
+                            filter and rank experiences/projects by relevance.
+                            Empty = show all entries (backward compat).
 
         Returns:
             Dict with pdf_path, backend_used, file_size_bytes, and generated_at
@@ -481,11 +596,36 @@ class ResumePDFGenerator:
         output_dir = Path(output_dir or GENERATED_DIR)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        name_slug = resume_data.get("full_name", "Resume").replace(" ", "_")
+        name_slug = safe_filename(resume_data.get("full_name", "Resume").replace(" ", "_"), max_len=40)
         filename = filename or f"{name_slug}_Resume"
         output_path = str(output_dir / f"{filename}.pdf")
 
-        # Try pdflatex first
+        # Priority 1: Career-Ops (LaTeX first, falls back to Playwright) — full-page professional PDFs
+        if self.is_career_ops_available:
+            try:
+                raw_md = resume_data.get("raw_md", "")
+                result = await self._career_ops.generate_pdf(
+                    resume_data,
+                    optimized_md=raw_md if len(raw_md) >= 100 else None,
+                    output_path=output_path,
+                    backend="latex",  # LaTeX for full-page typesetting, falls back to Playwright
+                    job_description=job_description,  # Pass JD for smart filtering
+                )
+                if result.get("status") == "completed":
+                    return {
+                        "status": "completed",
+                        "pdf_path": result["pdf_path"],
+                        "backend": "career_ops",
+                        "file_size_bytes": result.get("file_size_bytes", 0),
+                        "page_count": result.get("page_count", 0),
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                # If career_ops fails, fall through to LaTeX/FPDF
+                print(f"[PDFGenerator] Career-Ops failed: {result.get('message')}, falling back")
+            except Exception as e:
+                print(f"[PDFGenerator] Career-Ops error: {e}, falling back")
+
+        # Priority 2: LaTeX (pdflatex)
         if self.is_latex_available:
             try:
                 result = await self._generate_via_latex(resume_data, output_path)
@@ -493,7 +633,7 @@ class ResumePDFGenerator:
             except Exception as e:
                 print(f"[PDFGenerator] LaTeX failed: {e}, falling back to fpdf")
 
-        # Fallback to fpdf
+        # Priority 3: fpdf (pure Python fallback)
         try:
             result = await self._generate_via_fpdf(resume_data, output_path)
             return result

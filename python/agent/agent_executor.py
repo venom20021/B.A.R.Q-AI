@@ -6,6 +6,9 @@ If a step fails, the ``AgentErrorHandler`` analyzes the error and decides
 whether to retry, skip, replan, or abort.  Supports cancellation via
 an optional ``asyncio.Event``.
 
+All LLM calls are routed through the ``AgentKernel`` for rate limiting,
+concurrency control, and context tracking.
+
 Inspired by MARK XXXIX-OR's executor.py but adapted for BARQ's async
 FastAPI backend and existing tool routes.
 """
@@ -13,6 +16,7 @@ FastAPI backend and existing tool routes.
 import asyncio
 from typing import Any, Callable, Optional
 
+from .agent_kernel import get_agent_kernel
 from .agent_planner import create_plan, replan
 from .error_handler import ErrorDecision, analyze_error
 from .skill_registry import get_skill_registry
@@ -230,11 +234,11 @@ class AgentExecutor:
     async def _summarize(self, goal: str, completed_steps: list[dict], step_results: Optional[dict[str, str]] = None) -> str:
         """Generate a natural summary of what was accomplished.
 
-        If the LLM is unavailable, uses the ``respond`` step's output
-        (if present) as a fallback instead of a generic "Completed N steps"
-        message.
+        Routes the LLM call through the AgentKernel for rate limiting
+        and context tracking. Falls back to step results when the kernel
+        is unavailable.
         """
-        from utils.ollama_client import OllamaClient
+        kernel = get_agent_kernel()
 
         steps_str = "\n".join(
             f"- {s.get('description', '')}" for s in completed_steps
@@ -253,20 +257,26 @@ class AgentExecutor:
         ]
 
         try:
-            llm = OllamaClient()
-            summary = await llm.chat(messages)
+            summary = await kernel.chat(messages, agent_name="executor_summarize")
             return summary.strip()
         except Exception:
             # LLM unavailable — use the last meaningful step result as fallback
             if step_results:
-                # Get the last step result (usually the respond step)
-                last_key = max(step_results.keys(), key=lambda k: int(k) if k.isdigit() else 0)
-                last_result = step_results.get(last_key, "")
-                if last_result and len(last_result) > 5 and "I'm here" not in last_result:
-                    return last_result
+                last_key = max(
+                    (k for k in step_results if k.isdigit()),
+                    key=lambda k: int(k),
+                    default=None,
+                )
+                if last_key:
+                    last_result = step_results.get(last_key, "")
+                    if last_result and len(last_result) > 5 and "I'm here" not in last_result:
+                        return last_result
 
-                # If that didn't work, try any non-trivial result from any step
-                for key in sorted(step_results.keys(), key=lambda k: int(k) if k.isdigit() else 0, reverse=True):
+                for key in sorted(
+                    (k for k in step_results if k.isdigit()),
+                    key=lambda k: int(k),
+                    reverse=True,
+                ):
                     val = step_results[key]
                     if val and len(val) > 20 and "Completed" not in val and "here to help" not in val:
                         return val[:500]

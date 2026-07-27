@@ -15,6 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Override the conftest.py autouse DB fixture — these tests are pure
+# function tests and do not need a database connection.
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Override conftest's autouse DB fixture — no DB needed for these tests."""
+    return
+
+
 from voice.conversation_listener import (
     VAD_SILENCE_TIMEOUT,
     ConversationListener,

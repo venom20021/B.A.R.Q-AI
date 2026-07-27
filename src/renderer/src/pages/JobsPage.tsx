@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
 import { api } from '../utils/api'
+import { getBackendConfig } from '../utils/backendConfig'
 import { usePersistentState } from '../hooks/usePersistentState'
 import {
-  Search, Filter, ExternalLink, CheckCircle,
+  Search, Filter, ExternalLink, CheckCircle, XCircle,
   Loader2, Activity, BarChart3, Mail, Send, RefreshCw,
-  TrendingUp, Target, AlertCircle, UserCheck,
+  TrendingUp, Target, AlertCircle, UserCheck, Upload,
+  X, MapPin, FileText, Brain, Lightbulb,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -21,6 +23,8 @@ interface Job {
   source: string
   posted_date: string
   status: 'new' | 'reviewing' | 'approved' | 'applied' | 'rejected'
+  description: string
+  source_url: string
   reasoning: string
   pros: string[]
   cons: string[]
@@ -80,6 +84,29 @@ interface ResponseAnalytics {
   }>
 }
 
+interface MatchAnalytics {
+  total_jobs: number
+  total_evaluated: number
+  score_tiers: Array<{
+    tier: string
+    count: number
+    avg_percentage: number
+  }>
+  top_sources: Array<{
+    source: string
+    job_count: number
+    avg_match: number
+  }>
+  recent_scans: Array<{
+    date: string
+    summary: string
+  }>
+  application_statuses: Array<{
+    status: string
+    count: number
+  }>
+}
+
 interface FollowupCandidate {
   id: number
   title: string
@@ -89,12 +116,26 @@ interface FollowupCandidate {
   submitted_at: string
 }
 
+function _mapJobStatus(backendStatus: string): Job['status'] {
+  /* Map backend application statuses to the frontend Job status type. */
+  const map: Record<string, Job['status']> = {
+    'new': 'new',
+    'queued': 'approved',
+    'submitted': 'applied',
+    'ready_for_review': 'applied',
+    'failed': 'rejected',
+    'draft': 'new',
+  }
+  return map[backendStatus] || 'new'
+}
+
 // ─── Tab Config ───────────────────────────────────────────────────────────────
 
-type TabKey = 'listings' | 'analytics' | 'followups' | 'pipeline'
+type TabKey = 'listings' | 'suggestions' | 'analytics' | 'followups' | 'pipeline'
 
 const TABS: { key: TabKey; label: string; icon: typeof Search }[] = [
   { key: 'listings', label: 'Job Listings', icon: Search },
+  { key: 'suggestions', label: 'Suggestions', icon: Lightbulb },
   { key: 'pipeline', label: 'Pipeline', icon: Activity },
   { key: 'analytics', label: 'Analytics', icon: BarChart3 },
   { key: 'followups', label: 'Follow-Ups', icon: Mail },
@@ -114,11 +155,23 @@ const phaseIcons = ['🌐', '🔍', '🧠', '✅']
 // Main Component
 // ═══════════════════════════════════════════════════════════════════════════════
 
+interface DrillTarget {
+  status?: Job['status']
+  minScore?: number
+  sourceBoard?: string
+}
+
 export function JobsPage(): JSX.Element {
   const [activeTab, setActiveTab] = usePersistentState<TabKey>('JobsPage.activeTab', 'listings')
+  const [drillFilter, setDrillFilter] = useState<DrillTarget | null>(null)
+
+  const handleDrillDown = useCallback((target: DrillTarget) => {
+    setDrillFilter(target)
+    setActiveTab('listings')
+  }, [])
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-4">
+    <div className="p-6 max-w-7xl mx-auto space-y-4 h-full overflow-y-auto scroll-cyan">
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
         <h1 className="text-xl font-orbitron font-bold text-ghost tracking-wider">JOB SEARCH</h1>
         <p className="text-sm font-rajdhani text-dim-400 mt-1">
@@ -152,9 +205,10 @@ export function JobsPage(): JSX.Element {
           exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.15 }}
         >
-          {activeTab === 'listings' && <JobListings />}
+          {activeTab === 'listings' && <JobListings drillFilter={drillFilter} onDrillConsumed={() => setDrillFilter(null)} />}
+          {activeTab === 'suggestions' && <RoleSuggestions onSearchRole={(role) => { navigator.clipboard.writeText(role); setActiveTab('listings'); }} />}
           {activeTab === 'pipeline' && <PipelinePanel />}
-          {activeTab === 'analytics' && <ResponseAnalytics />}
+          {activeTab === 'analytics' && <ResponseAnalytics onNavigateToFilter={handleDrillDown} />}
           {activeTab === 'followups' && <FollowUpPanel />}
         </motion.div>
       </AnimatePresence>
@@ -166,20 +220,40 @@ export function JobsPage(): JSX.Element {
 // 1. Job Listings (existing functionality + enhanced sources)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function JobListings(): JSX.Element {
+function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarget | null; onDrillConsumed?: () => void }): JSX.Element {
   const [jobs, setJobs] = usePersistentState<Job[]>('JobsPage.jobs', [])
   const [filter, setFilter] = usePersistentState<Job['status'] | 'all'>('JobsPage.filter', 'all')
   const [sortBy, setSortBy] = usePersistentState<'match' | 'date'>('JobsPage.sortBy', 'match')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = usePersistentState('JobsPage.scanning', false)
   const [progress, setProgress] = usePersistentState<ScanProgress | null>('JobsPage.scanProgress', null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const eventSourceRef = useRef<EventSource | null>(null)
+
+  // Toast state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const [applyingJobs, setApplyingJobs] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({})
+
+  // Scan history state
+  const [scanHistory, setScanHistory] = useState<Array<{ id: number; action: string; description: string; severity: string; created_at: string }>>([])
+  const [showHistory, setShowHistory] = useState(false)
+  const [autoScanEnabled, setAutoScanEnabled] = useState(false)
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null)
+  const [minScoreFilter, setMinScoreFilter] = useState<number | null>(null)
+  const [sourceBoardFilter, setSourceBoardFilter] = useState<string | null>(null)
+
+  const showToast = useCallback((message: string, type: 'success' | 'error') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 4000)
+  }, [])
 
   const fetchJobs = useCallback(async () => {
     setLoading(true)
     try {
       const resp = await api<{ matches?: Record<string, unknown>[] }>('/jobs/matches?limit=50')
       const matches = resp?.matches ?? []
+      // 🚨 DIAGNOSTIC: Log raw payload from backend
+      console.log('🔍 FETCHED JOBS PAYLOAD:', JSON.stringify(matches.map(m => ({id: m['id'], status: m['status'], title: m['title']}))));
+      console.log('🔍 usePersistentState jobs BEFORE overwrite:', JSON.stringify(jobs.map(j => ({id: j.id, status: j.status}))));
       setJobs(matches.map((m) => {
         const prosRaw = String(m['pros'] ?? '[]')
         const consRaw = String(m['cons'] ?? '[]')
@@ -199,7 +273,9 @@ function JobListings(): JSX.Element {
           match_percentage: Math.round(Number(m['match_percentage'] ?? 0)),
           source: String(m['source'] ?? ''),
           posted_date: String(m['posted_date'] ?? ''),
-          status: 'new' as Job['status'],
+          description: String(m['description'] ?? ''),
+          source_url: String(m['source_url'] ?? ''),
+          status: _mapJobStatus(String(m['status'] ?? 'new')),
           reasoning: String(m['reasoning'] ?? ''),
           pros,
           cons,
@@ -209,76 +285,191 @@ function JobListings(): JSX.Element {
     setLoading(false)
   }, [])
 
+  // Apply drill-down filter on mount
+  useEffect(() => {
+    if (drillFilter && onDrillConsumed) {
+      if (drillFilter.status) setFilter(drillFilter.status)
+      if (drillFilter.minScore != null) setMinScoreFilter(drillFilter.minScore)
+      if (drillFilter.sourceBoard != null) setSourceBoardFilter(drillFilter.sourceBoard)
+      onDrillConsumed()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchJobs() }, [fetchJobs])
 
+  // Fetch scan history on mount
   useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+    (async () => {
+      try {
+        const [historyResp, autoStatusResp] = await Promise.all([
+          api<{ scans?: Array<{ id: number; action: string; description: string; severity: string; created_at: string }> }>('/jobs/scan/history?hours=24'),
+          api<{ enabled?: boolean }>('/jobs/scan/auto-status'),
+        ])
+        if (historyResp?.scans) setScanHistory(historyResp.scans)
+        if (autoStatusResp?.enabled !== undefined) setAutoScanEnabled(autoStatusResp.enabled)
+      } catch { /* ignore */ }
+    })()
   }, [])
 
-  const startPolling = useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
+  // Cleanup EventSource on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
+    }
+  }, [])
+
+  const openEventSource = useCallback(() => {
+    // Close any existing connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+
+    // Use full backend URL for EventSource (same origin as api() calls)
+    // In remote mode, this gets resolved asynchronously before the scan starts
+    const es = new EventSource(`${getSyncHttpUrl()}/jobs/scan/stream`)
+    eventSourceRef.current = es
+
+    es.onmessage = (event) => {
       try {
-        const resp = await api('/jobs/scan/progress')
-        if (resp && typeof resp === 'object') {
-          const p = resp as Record<string, unknown>
-          setProgress({
-            status: String(p.status || ''),
-            phase: String(p.phase || ''),
-            phase_index: Number(p.phase_index || 0),
-            total_phases: Number(p.total_phases || 4),
-            progress_pct: Number(p.progress_pct || 0),
-            boards_total: Number(p.boards_total || 0),
-            boards_scanned: Number(p.boards_scanned || 0),
-            boards_errors: Number(p.boards_errors || 0),
-            jobs_found: Number(p.jobs_found || 0),
-            jobs_evaluated: Number(p.jobs_evaluated || 0),
-            message: String(p.message || ''),
-            started_at: p.started_at as number | null,
-            elapsed_seconds: Number(p.elapsed_seconds || 0),
-          })
-          if (p.status === 'complete' || p.status === 'error') {
-            if (pollRef.current) clearInterval(pollRef.current)
-            pollRef.current = null
-            setScanning(false)
-            await fetchJobs()
-          }
+        const data = JSON.parse(event.data) as Record<string, unknown>
+
+        if (data.final) {
+          // Stream ended
+          es.close()
+          eventSourceRef.current = null
+          setScanning(false)
+          fetchJobs()
+          return
         }
-      } catch { /* ignore */ }
-    }, 800)
+
+        setProgress({
+          status: String(data.status || ''),
+          phase: String(data.phase || ''),
+          phase_index: Number(data.phase_index || 0),
+          total_phases: Number(data.total_phases || 4),
+          progress_pct: Number(data.progress_pct || 0),
+          boards_total: Number(data.boards_total || 0),
+          boards_scanned: Number(data.boards_scanned || 0),
+          boards_errors: Number(data.boards_errors || 0),
+          jobs_found: Number(data.jobs_found || 0),
+          jobs_evaluated: Number(data.jobs_evaluated || 0),
+          message: String(data.message || ''),
+          started_at: data.started_at as number | null,
+          elapsed_seconds: Number(data.elapsed_seconds || 0),
+        })
+
+        if (data.status === 'complete' || data.status === 'error') {
+          es.close()
+          eventSourceRef.current = null
+          setScanning(false)
+          fetchJobs()
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    es.onerror = () => {
+      // EventSource auto-reconnects on error
+      // Only close if the scan is likely done
+      es.close()
+      eventSourceRef.current = null
+      setScanning(false)
+    }
   }, [fetchJobs])
+
+  const handleAutoScanToggle = async (): Promise<void> => {
+    const newState = !autoScanEnabled
+    try {
+      const resp = await api<{ status?: string }>('/jobs/scan/auto-toggle', { enabled: newState })
+      if (resp?.status) {
+        setAutoScanEnabled(newState)
+        showToast(newState ? 'Auto-scan enabled (every hour)' : 'Auto-scan disabled', 'success')
+      }
+    } catch {
+      showToast('Failed to toggle auto-scan', 'error')
+    }
+  }
+
+  const refreshScanHistory = useCallback(async () => {
+    try {
+      const resp = await api<{ scans?: Array<{ id: number; action: string; description: string; severity: string; created_at: string }> }>('/jobs/scan/history?hours=24')
+      if (resp?.scans) setScanHistory(resp.scans)
+    } catch { /* ignore */ }
+  }, [])
 
   const handleScan = async (): Promise<void> => {
     setScanning(true)
+    // Use dynamic board count from backend (defaults to 28)
+    const TOTAL_BOARDS = progress?.boards_total || 28
     setProgress({
       status: 'starting', phase: 'Initializing scan...', phase_index: 0,
-      total_phases: 4, progress_pct: 0, boards_total: 13, boards_scanned: 0,
+      total_phases: 4, progress_pct: 0, boards_total: TOTAL_BOARDS, boards_scanned: 0,
       boards_errors: 0, jobs_found: 0, jobs_evaluated: 0,
-      message: 'Starting scan (13 boards)...', started_at: Date.now() / 1000, elapsed_seconds: 0,
+      message: `Starting scan (${TOTAL_BOARDS} boards)...`, started_at: Date.now() / 1000, elapsed_seconds: 0,
     })
     try {
       await api('/jobs/scan', {})
-      startPolling()
+      openEventSource()
+      // Safety timeout: close EventSource after 5 minutes
       setTimeout(() => {
-        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; setScanning(false); fetchJobs() }
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close()
+          eventSourceRef.current = null
+          setScanning(false)
+          fetchJobs()
+        }
       }, 300_000)
-    } catch { setScanning(false); setProgress(null); await fetchJobs() }
+    } catch {
+      setScanning(false)
+      setProgress(null)
+      showToast('Failed to start scan', 'error')
+      await fetchJobs()
+    }
   }
 
   const handleApprove = async (jobId: string): Promise<void> => {
-    await window.barq?.jobs.approve(jobId)
-    setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, status: 'approved' as Job['status'] } : j))
+    // Optimistic update: show loading state
+    setApplyingJobs((prev) => ({ ...prev, [jobId]: 'loading' }))
+
+    try {
+      const resp = await api<{ status?: string; application_id?: number }>(`/jobs/${jobId}/apply`, {})
+      if (resp?.status === 'accepted') {
+        setApplyingJobs((prev) => ({ ...prev, [jobId]: 'success' }))
+        setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, status: 'approved' as Job['status'] } : j))
+        showToast('Application queued for processing!', 'success')
+        // Reset button after 3 seconds
+        setTimeout(() => {
+          setApplyingJobs((prev) => ({ ...prev, [jobId]: 'idle' }))
+        }, 3000)
+      } else {
+        throw new Error('Unexpected response')
+      }
+    } catch {
+      showToast('Failed to queue application. Please try again.', 'error')
+      setApplyingJobs((prev) => ({ ...prev, [jobId]: 'idle' }))
+    }
   }
 
   const filteredJobs = jobs
     .filter((job) => filter === 'all' || job.status === filter)
+    .filter((job) => minScoreFilter == null || job.match_percentage >= minScoreFilter)
+    .filter((job) => sourceBoardFilter == null || job.source === sourceBoardFilter)
     .sort((a, b) => sortBy === 'match' ? b.match_percentage - a.match_percentage : a.posted_date.localeCompare(b.posted_date))
 
-  // On mount: resume polling if a scan was in progress (page was navigated away and back)
+  // On mount: resume EventSource if a scan was in progress
   useEffect(() => {
-    if (scanning && !pollRef.current && (progress?.status === 'scanning' || progress?.status === 'evaluating')) {
-      startPolling()
+    if (scanning && !eventSourceRef.current && progress) {
+      if (progress.status === 'scanning' || progress.status === 'evaluating' || progress.status === 'starting') {
+        openEventSource()
+      } else if (['complete', 'idle', 'error'].includes(progress.status) || !progress) {
+        setScanning(false)
+        setProgress(null)
+        fetchJobs()
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -286,19 +477,110 @@ function JobListings(): JSX.Element {
   const isActiveScan = scanning && progress && ['scanning', 'evaluating', 'starting'].includes(progress.status)
 
   return (
-    <div className="space-y-6">
-      {/* Header + Scan Button */}
+    <div className="space-y-6 relative">
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: -20, x: '-50%' }}
+            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+            className={`fixed top-4 left-1/2 z-50 px-4 py-2.5 rounded-lg shadow-lg text-xs font-rajdhani font-semibold flex items-center gap-2
+              ${toast.type === 'success' ? 'bg-green-500/15 text-green-400 border border-green-400/20' : 'bg-red-500/15 text-red-400 border border-red-400/20'}`}
+          >
+            {toast.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Header + Scan Button + Auto-Scan Toggle */}
       <div className="flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-3">
           <p className="text-sm font-rajdhani text-dim-400">
-            {jobs.length} jobs loaded — scanning 13 boards
+            {jobs.length} jobs loaded
           </p>
+          {/* Auto-Scan Toggle */}
+          <button
+            onClick={handleAutoScanToggle}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-rajdhani font-semibold transition-all
+              ${autoScanEnabled
+                ? 'bg-green-500/10 text-green-400 border border-green-400/20'
+                : 'bg-void-800/50 text-dim-400 border border-void-600/30 hover:text-ghost'
+              }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${autoScanEnabled ? 'bg-green-400 animate-pulse shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-dim-600'}`} />
+            {autoScanEnabled ? 'Auto-Scan ON' : 'Auto-Scan OFF'}
+          </button>
         </div>
-        <button onClick={handleScan} disabled={scanning} className="btn-cyan flex items-center gap-2">
-          {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-          {scanning ? 'Scanning...' : 'Scan Now'}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Scan History Toggle */}
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="btn-ghost-cyan text-[11px] flex items-center gap-1.5"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            History
+            {scanHistory.length > 0 && (
+              <span className="text-dim-500 font-share-tech">({scanHistory.length})</span>
+            )}
+          </button>
+          <button onClick={handleScan} disabled={scanning} className="btn-cyan flex items-center gap-2">
+            {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {scanning ? 'Scanning...' : 'Scan Now'}
+          </button>
+        </div>
       </div>
+
+      {/* Scan History Panel */}
+      <AnimatePresence>
+        {showHistory && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="glass-card overflow-hidden"
+          >
+            <div className="p-3 space-y-2">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-rajdhani font-semibold text-ghost flex items-center gap-1.5">
+                  <Activity className="w-3 h-3 text-cyan-400" />
+                  Recent Scans (24h)
+                </h4>
+                <button onClick={refreshScanHistory} className="text-dim-400 hover:text-ghost transition-colors">
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+              </div>
+              {scanHistory.length === 0 ? (
+                <p className="text-xs font-exo text-dim-500 text-center py-3">No scan history in the last 24 hours</p>
+              ) : (
+                <div className="space-y-1 max-h-48 overflow-y-auto scroll-cyan">
+                  {scanHistory.map((entry) => (
+                    <div key={entry.id} className="flex items-start gap-2 bg-void-800/30 rounded px-2.5 py-1.5">
+                      <div className="flex-shrink-0 mt-0.5">
+                        {entry.action === 'scan_error' ? (
+                          <XCircle className="w-3 h-3 text-red-400" />
+                        ) : (
+                          <CheckCircle className="w-3 h-3 text-neural" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] font-exo text-dim-400 line-clamp-2">
+                          {entry.description}
+                        </p>
+                        <p className="text-[10px] font-share-tech text-dim-600 mt-0.5">
+                          {new Date(entry.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Scan Progress */}
       {isActiveScan && progress && (
@@ -363,7 +645,7 @@ function JobListings(): JSX.Element {
       ) : filteredJobs.length === 0 ? (
         <div className="text-center py-20">
           <p className="text-sm font-rajdhani text-dim-400">
-            {jobs.length === 0 ? 'No jobs found. Click "Scan Now" to search 13 boards.' : 'No jobs match the current filter.'}
+            {jobs.length === 0 ? `No jobs found. Click "Scan Now" to search ${progress?.boards_total || 28} boards.` : 'No jobs match the current filter.'}
           </p>
         </div>
       ) : (
@@ -399,12 +681,39 @@ function JobListings(): JSX.Element {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-cyan-500/8">
-                  {job.status === 'new' && (
-                    <button onClick={() => handleApprove(job.id)} className="btn-cyan text-xs flex items-center gap-1.5">
-                      <CheckCircle className="w-3.5 h-3.5" /> Approve & Apply
-                    </button>
-                  )}
-                  <button className="btn-ghost-cyan text-xs flex items-center gap-1.5">
+                  {job.status === 'new' && (() => {
+                    const btnState = applyingJobs[job.id] || 'idle'
+                    const isBtnDisabled = btnState === 'loading' || btnState === 'success'
+                    let btnContent
+                    let btnClass = 'btn-cyan text-xs flex items-center gap-1.5'
+
+                    if (btnState === 'loading') {
+                      btnClass = 'btn-cyan text-xs flex items-center gap-1.5 opacity-70'
+                      btnContent = <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Launching Agent...</>
+                    } else if (btnState === 'success') {
+                      btnClass = 'bg-green-500/10 text-green-400 border border-green-400/20 text-xs flex items-center gap-1.5'
+                      btnContent = <><CheckCircle className="w-3.5 h-3.5" /> Queued ✓</>
+                    } else if (btnState === 'error') {
+                      btnClass = 'bg-red-500/10 text-red-400 border border-red-400/20 text-xs flex items-center gap-1.5'
+                      btnContent = <><XCircle className="w-3.5 h-3.5" /> Retry</>
+                    } else {
+                      btnContent = <><CheckCircle className="w-3.5 h-3.5" /> Approve & Apply</>
+                    }
+
+                    return (
+                      <button
+                        onClick={() => handleApprove(job.id)}
+                        disabled={isBtnDisabled}
+                        className={btnClass}
+                      >
+                        {btnContent}
+                      </button>
+                    )
+                  })()}
+                  <button
+                    onClick={() => setSelectedJob(job)}
+                    className="btn-ghost-cyan text-xs flex items-center gap-1.5"
+                  >
                     <ExternalLink className="w-3.5 h-3.5" /> View
                   </button>
                 </div>
@@ -413,141 +722,788 @@ function JobListings(): JSX.Element {
           })}
         </div>
       )}
+      {/* Job Detail Modal */}
+      <AnimatePresence>
+        {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      </AnimatePresence>
     </div>
   )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 1b. Job Detail Modal
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }): JSX.Element {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.92, y: 30 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.92, y: 30 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+        className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-xl border border-cyan-500/15 bg-void-900/95 shadow-2xl shadow-cyan-500/5 scroll-cyan"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-void-800/80 text-dim-400 hover:text-ghost hover:bg-void-700/90 transition-all" aria-label="Close modal"><X className="w-4 h-4" /></button>
+        <div className="p-5 pb-4 border-b border-cyan-500/10">
+          <div className="flex items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-orbitron font-bold text-ghost leading-tight tracking-tight">{job.title}</h2>
+              <p className="text-sm font-rajdhani font-semibold text-cyan-300 mt-0.5">{job.company}</p>
+            </div>
+            <div className="flex flex-col items-center flex-shrink-0">
+              <div className={"w-14 h-14 rounded-full border-2 flex items-center justify-center text-base font-orbitron font-bold " + (job.match_percentage >= 80 ? 'text-neural border-neural' : job.match_percentage >= 60 ? 'text-plasma border-plasma' : 'text-dim-400 border-dim')}>{job.match_percentage}%</div>
+              <span className="text-[10px] font-share-tech text-dim-400 mt-0.5">MATCH</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            {job.location && <span className="text-xs font-exo text-dim-300 flex items-center gap-1 bg-void-800/50 px-2 py-0.5 rounded"><MapPin className="w-3 h-3 text-dim-400" /> {job.location}</span>}
+            <span className="text-xs font-exo text-dim-300 bg-void-800/50 px-2 py-0.5 rounded">{job.salary}</span>
+            <span className="badge-dim text-hud text-[10px]">{job.source}</span>
+            <span className={"text-[10px] font-share-tech font-semibold px-1.5 py-0.5 rounded " + (statusColors[job.status] || 'badge-dim')}>{job.status.charAt(0).toUpperCase() + job.status.slice(1)}</span>
+            {job.posted_date && <span className="text-[10px] font-share-tech text-dim-500 bg-void-800/50 px-2 py-0.5 rounded">{new Date(job.posted_date).toLocaleDateString()}</span>}
+          </div>
+        </div>
+        <div className="p-5 space-y-5">
+          {job.description && (
+            <div>
+              <h4 className="text-xs font-orbitron font-bold text-dim-400 tracking-wider mb-2 flex items-center gap-1.5"><FileText className="w-3.5 h-3.5 text-cyan-400" /> DESCRIPTION</h4>
+              <div className="text-sm font-exo text-dim-200 leading-relaxed whitespace-pre-wrap bg-void-800/30 rounded-lg p-3 border border-void-600/20 max-h-60 overflow-y-auto scroll-cyan">{job.description}</div>
+            </div>
+          )}
+          {job.reasoning && (
+            <div>
+              <h4 className="text-xs font-orbitron font-bold text-dim-400 tracking-wider mb-2 flex items-center gap-1.5"><Brain className="w-3.5 h-3.5 text-plasma" /> MATCH REASONING</h4>
+              <p className="text-sm font-exo text-dim-200 leading-relaxed bg-void-800/30 rounded-lg p-3 border border-void-600/20">{job.reasoning}</p>
+            </div>
+          )}
+          {(job.pros.length > 0 || job.cons.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {job.pros.length > 0 && (
+                <div className="bg-green-500/5 border border-green-500/10 rounded-lg p-3">
+                  <h4 className="text-xs font-orbitron font-bold text-neural tracking-wider mb-2 flex items-center gap-1.5"><CheckCircle className="w-3 h-3" /> PROS</h4>
+                  <ul className="space-y-1">{job.pros.map((p, i) => <li key={i} className="text-xs font-exo text-dim-300 flex items-start gap-1.5"><span className="text-neural mt-0.5 flex-shrink-0 font-bold">+</span><span>{p}</span></li>)}</ul>
+                </div>
+              )}
+              {job.cons.length > 0 && (
+                <div className="bg-red-500/5 border border-red-500/10 rounded-lg p-3">
+                  <h4 className="text-xs font-orbitron font-bold text-red-400 tracking-wider mb-2 flex items-center gap-1.5"><XCircle className="w-3 h-3" /> CONS</h4>
+                  <ul className="space-y-1">{job.cons.map((c, i) => <li key={i} className="text-xs font-exo text-dim-300 flex items-start gap-1.5"><span className="text-red-400 mt-0.5 flex-shrink-0 font-bold">−</span><span>{c}</span></li>)}</ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3.5 border-t border-cyan-500/10 flex items-center justify-between bg-void-800/30 rounded-b-xl">
+          <button onClick={onClose} className="text-xs font-rajdhani font-semibold text-dim-400 hover:text-ghost px-3 py-1.5 rounded-lg hover:bg-void-700/50 transition-all">Close</button>
+          <div className="flex items-center gap-2">
+            {/* Search Online fallback — works even without a URL */}
+            <button
+              onClick={() => {
+                const query = encodeURIComponent(`${job.title} ${job.company}`)
+                const searchUrl = `https://www.google.com/search?q=${query}`
+                window.barq.openExternal(searchUrl).catch((err) =>
+                  console.error('[JobsPage] Failed to open search:', err)
+                )
+              }}
+              className="btn-ghost-cyan text-xs flex items-center gap-1.5"
+              title="Search for this job on Google"
+            >
+              <Search className="w-3.5 h-3.5" /> Search Online
+            </button>
+            {/* Open Job Posting — disabled when no valid URL */}
+            {(() => {
+              const hasValidUrl = typeof job.source_url === 'string' && (job.source_url.startsWith('http://') || job.source_url.startsWith('https://'))
+              return (
+                <div className="relative group">
+                  <button
+                    onClick={() => {
+                      console.log('DEBUG URL:', job.source_url)
+                      if (hasValidUrl && job.source_url.length > 10) {
+                        window.barq.openExternal(job.source_url).catch((err) =>
+                          console.error('[JobsPage] Failed to open URL:', err)
+                        )
+                      } else {
+                        console.warn('[JobsPage] Invalid URL:', job.source_url)
+                      }
+                    }}
+                    disabled={!hasValidUrl}
+                    className={"btn-cyan text-xs flex items-center gap-1.5 " + (!hasValidUrl ? 'opacity-50 cursor-not-allowed' : '')}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open Job Posting
+                  </button>
+                  {/* Tooltip explaining why button is disabled */}
+                  {!hasValidUrl && (
+                    <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-void-700 text-dim-300 text-[10px] font-rajdhani rounded shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                      No job URL found — use Search Online instead
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-void-700" />
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+// ═══════════════════════════════════════════════════════════════════════════════
 // 2. Response Rate Analytics
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function ResponseAnalytics(): JSX.Element {
-  const [analytics, setAnalytics] = useState<ResponseAnalytics | null>(null)
+function ResponseAnalytics({ onNavigateToFilter }: { onNavigateToFilter?: (target: DrillTarget) => void }): JSX.Element {
+  const [matchData, setMatchData] = useState<MatchAnalytics | null>(null)
+  const [responseData, setResponseData] = useState<ResponseAnalytics | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     (async () => {
       try {
-        const resp = await window.barq?.jobs.responseAnalytics()
-        if (resp?.success && resp.data) setAnalytics(resp.data as ResponseAnalytics)
+        const [match, resp] = await Promise.all([
+          api<MatchAnalytics>('/jobs/analytics/matches'),
+          api<ResponseAnalytics>('/jobs/analytics/responses'),
+        ])
+        if (match) setMatchData(match)
+        if (resp) setResponseData(resp)
       } catch { /* ignore */ }
       startTransition(() => setLoading(false))
     })()
   }, [])
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-dim-400" /></div>
-  if (!analytics) return <div className="text-center py-20"><p className="text-sm font-rajdhani text-dim-400">No analytics data yet. Start applying to jobs!</p></div>
+  if (!matchData) return <div className="text-center py-20"><p className="text-sm font-rajdhani text-dim-400">No analytics data yet. Start applying to jobs!</p></div>
 
-  const { overall, by_source, funnel, recent_responses } = analytics
+  const hasResponseData = responseData && responseData.overall.total_applications > 0 && responseData.overall.submitted > 0
+
+  // ── Helpers ────────────────────────────────────────────────────────────
+
+  const totalJobs = matchData.total_jobs
+  const evaluated = matchData.total_evaluated
+  const tiers = matchData.score_tiers
+  const topSources = matchData.top_sources
+  const recentScans = matchData.recent_scans
+  const appStatuses = matchData.application_statuses
+
+  // Calculate a simple average match % across all tiers
+  const avgMatchPct = tiers.length > 0
+    ? Math.round(tiers.reduce((sum, t) => sum + t.avg_percentage * t.count, 0) / Math.max(tiers.reduce((sum, t) => sum + t.count, 0), 1))
+    : 0
+
+  const tierColors: Record<string, string> = {
+    excellent: 'bg-neural/10 text-neural border-neural/30',
+    strong: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20',
+    good: 'bg-plasma/10 text-plasma border-plasma/20',
+    fair: 'bg-dim/10 text-dim-400 border-dim/30',
+  }
+
+  const tierBarColors: Record<string, string> = {
+    excellent: 'bg-neural',
+    strong: 'bg-cyan-400',
+    good: 'bg-plasma',
+    fair: 'bg-dim-500',
+  }
 
   return (
     <div className="space-y-4">
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <KPICard icon={Send} label="Submitted" value={overall.submitted} color="text-cyan-300" />
-        <KPICard icon={Activity} label="Response Rate" value={`${overall.response_rate}%`} color="text-holographic" />
-        <KPICard icon={UserCheck} label="Interviews" value={overall.interviews} color="text-neural" />
-        <KPICard icon={Target} label="Offer Rate" value={`${overall.offer_rate}%`} color="text-plasma" />
-        <KPICard icon={AlertCircle} label="Need Follow-up" value={overall.pending_followup} color="text-amber-400" />
+      {/* ── Match Summary KPI ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <AnalyticCard icon={Search} label="Jobs Scanned" value={totalJobs} color="text-cyan-300" />
+        <AnalyticCard icon={Activity} label="Evaluated" value={evaluated} color="text-holographic" />
+        <AnalyticCard icon={Target} label="Avg Match" value={`${avgMatchPct}%`} color="text-plasma" />
+        <AnalyticCard icon={BarChart3} label="Queued Apps" value={appStatuses.reduce((s, a) => s + a.count, 0)} color="text-neural"
+          onClick={onNavigateToFilter ? () => onNavigateToFilter({ status: 'approved' }) : undefined} />
       </div>
 
-      {/* Funnel Chart */}
+      {/* ── Score Tiers ──────────────────────────────────────────────────── */}
       <div className="glass-card">
         <div className="flex items-center gap-2 mb-4">
           <TrendingUp className="w-4 h-4 text-cyan-300" />
-          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">Application Funnel</h3>
+          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">Match Score Distribution</h3>
         </div>
         <div className="space-y-3">
-          {funnel.map((m) => {
-            const maxVal = Math.max(m.submitted, 1)
-            return (
-              <div key={m.month} className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-exo">
-                  <span className="text-ghost">{m.month}</span>
-                  <span className="text-dim-400">{m.submitted} submitted → {m.offers} offers</span>
+          {tiers.length === 0 ? (
+            <p className="text-xs font-exo text-dim-400 text-center py-4">No evaluations yet. Run a scan first.</p>
+          ) : (
+            tiers.map((t) => {
+              const maxCount = Math.max(...tiers.map(x => x.count), 1)
+              const pct = Math.round((t.count / maxCount) * 100)
+              const minScoreForTier: Record<string, number> = {
+                excellent: 80, strong: 70, good: 60, fair: 0,
+              }
+              const score = minScoreForTier[t.tier] ?? 0
+              return (
+                <div
+                  key={t.tier}
+                  onClick={onNavigateToFilter ? () => onNavigateToFilter({ minScore: score }) : undefined}
+                  className={"space-y-1 transition-all " + (onNavigateToFilter ? 'cursor-pointer hover:scale-[1.01] active:scale-[0.99]' : '')}
+                >
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-rajdhani font-semibold border ${tierColors[t.tier] || tierColors.fair}`}>
+                        {t.tier === 'excellent' ? '80%+' : t.tier === 'strong' ? '70%+' : t.tier === 'good' ? '60%+' : '<60%'}
+                      </span>
+                      <span className="font-rajdhani font-semibold text-ghost">{t.count} jobs</span>
+                    </div>
+                    <span className="font-share-tech text-dim-400">{t.avg_percentage}% avg</span>
+                  </div>
+                  <div className="w-full h-2 bg-void-800/60 rounded-full overflow-hidden">
+                    <motion.div
+                      className={`h-full rounded-full ${tierBarColors[t.tier] || tierBarColors.fair}`}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: 0.5, ease: 'easeOut' }}
+                    />
+                  </div>
                 </div>
-                <div className="flex h-6 gap-0.5 rounded overflow-hidden">
-                  <div className="bg-cyan-500/30 transition-all" style={{ width: `${(m.submitted / maxVal) * 100}%` }} title={`Submitted: ${m.submitted}`} />
-                  <div className="bg-purple-500/30 transition-all" style={{ width: `${(m.responded / maxVal) * 100}%` }} title={`Responded: ${m.responded}`} />
-                  <div className="bg-neural/30 transition-all" style={{ width: `${(m.interviews / maxVal) * 100}%` }} title={`Interviews: ${m.interviews}`} />
-                  <div className="bg-amber-400/30 transition-all" style={{ width: `${(m.offers / maxVal) * 100}%` }} title={`Offers: ${m.offers}`} />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <div className="flex items-center gap-4 mt-3 text-hud text-xs text-dim-400">
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-cyan-500/50" /> Submitted</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-purple-500/50" /> Responded</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-neural/50" /> Interviews</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-amber-400/50" /> Offers</span>
+              )
+            })
+          )}
         </div>
       </div>
 
-      {/* By Source */}
+      {/* ── Top Sources + App Statuses ────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="glass-card">
-          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-3">By Source Board</h3>
-          <div className="space-y-2">
-            {by_source.map((s) => (
-              <div key={s.source} className="flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-2">
-                <div>
-                  <span className="text-sm font-rajdhani font-semibold text-ghost">{s.source}</span>
-                  <span className="text-xs font-exo text-dim-400 ml-2">{s.total} apps</span>
-                </div>
-                <div className="flex items-center gap-3 text-xs font-share-tech">
-                  <span className="text-neural">{s.response_rate}% rate</span>
-                  <span className="text-purple-400">{s.interviews} interviews</span>
-                  <span className="text-dim-400">{s.avg_response_time_days ? `${s.avg_response_time_days}d avg` : '—'}</span>
-                </div>
-              </div>
-            ))}
+          <div className="flex items-center gap-2 mb-3">
+            <BarChart3 className="w-3.5 h-3.5 text-cyan-300" />
+            <h3 className="text-xs font-orbitron font-bold text-ghost tracking-wider">Top Sources</h3>
           </div>
+          {topSources.length === 0 ? (
+            <p className="text-xs font-exo text-dim-400 text-center py-4">No source data yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {topSources.slice(0, 6).map((s) => (
+                <div
+                  key={s.source}
+                  onClick={onNavigateToFilter ? () => onNavigateToFilter({ sourceBoard: s.source }) : undefined}
+                  className={"flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-1.5 transition-all " +
+                    (onNavigateToFilter ? 'cursor-pointer hover:bg-void-600/30 hover:scale-[1.02] active:scale-[0.98]' : '')
+                    }
+                >
+                  <span className="text-xs font-rajdhani font-semibold text-ghost">{s.source}</span>
+                  <div className="flex items-center gap-3 text-[10px] font-share-tech">
+                    <span className="text-dim-400">{s.job_count} jobs</span>
+                    {s.avg_match > 0 && <span className="text-plasma">{s.avg_match}% avg</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="glass-card">
-          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-3">Recent Responses</h3>
-          <div className="space-y-2 max-h-64 overflow-y-auto scroll-cyan">
-            {recent_responses.map((r) => (
-              <div key={r.id} className="flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-rajdhani font-semibold text-ghost truncate">{r.title}</p>
-                  <p className="text-hud text-dim-400 truncate">{r.company} · {r.source}</p>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className={`px-1.5 py-0.5 rounded font-share-tech ${
-                    r.type === 'interview' ? 'bg-neural/10 text-neural' :
-                    r.type === 'offer' ? 'bg-amber-400/10 text-amber-400' :
-                    'bg-red-400/10 text-red-400'
-                  }`}>{r.type}</span>
-                  <span className="text-dim-500">{r.date?.slice(0, 10)}</span>
-                </div>
+          <div className="flex items-center gap-2 mb-3">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+            <h3 className="text-xs font-orbitron font-bold text-ghost tracking-wider">Application Status</h3>
+          </div>
+          {appStatuses.length === 0 ? (
+            <p className="text-xs font-exo text-dim-400 text-center py-4">No applications yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {appStatuses.map((a) => {
+                const targetStatus = _mapJobStatus(a.status)
+                return (
+                  <div
+                    key={a.status}
+                    onClick={onNavigateToFilter ? () => onNavigateToFilter({ status: targetStatus }) : undefined}
+                    className={"flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-1.5 transition-all cursor-pointer " +
+                      (onNavigateToFilter ? 'hover:bg-void-600/30 hover:scale-[1.02] active:scale-[0.98]' : '')
+                    }
+                  >
+                    <span className="text-xs font-rajdhani font-semibold text-ghost capitalize">{a.status.replace(/_/g, ' ')}</span>
+                    <span className="text-xs font-orbitron font-bold text-cyan-300">{a.count}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Recent Scans ─────────────────────────────────────────────────── */}
+      {recentScans.length > 0 && (
+        <div className="glass-card">
+          <div className="flex items-center gap-2 mb-3">
+            <RefreshCw className="w-3.5 h-3.5 text-dim-400" />
+            <h3 className="text-xs font-orbitron font-bold text-ghost tracking-wider">Recent Activity</h3>
+          </div>
+          <div className="space-y-1.5 max-h-32 overflow-y-auto scroll-cyan">
+            {recentScans.map((s, i) => (
+              <div key={i} className="text-xs font-exo text-dim-400 flex items-start gap-2">
+                <span className="text-dim-600 mt-0.5">•</span>
+                <span>{s.summary}</span>
               </div>
             ))}
           </div>
         </div>
-      </div>
+      )}
+
+      {/* ── Response Analytics ───────────────────────────────────────────── */}
+      {hasResponseData && (
+        <>
+          <div className="border-t border-cyan-500/10 pt-4">
+            <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-3 flex items-center gap-2">
+              <Send className="w-4 h-4 text-cyan-300" />
+              Response Analytics
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+              <AnalyticCard icon={Send} label="Submitted" value={responseData.overall.submitted} color="text-cyan-300" />
+              <AnalyticCard icon={Activity} label="Response Rate" value={`${responseData.overall.response_rate}%`} color="text-holographic" />
+              <AnalyticCard icon={UserCheck} label="Interviews" value={responseData.overall.interviews} color="text-neural" />
+              <AnalyticCard icon={Target} label="Offer Rate" value={`${responseData.overall.offer_rate}%`} color="text-plasma" />
+              <AnalyticCard icon={AlertCircle} label="Need Follow-up" value={responseData.overall.pending_followup} color="text-amber-400" />
+            </div>
+
+            {/* Funnel */}
+            {responseData.funnel.length > 0 && (
+              <div className="glass-card mb-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <TrendingUp className="w-4 h-4 text-cyan-300" />
+                  <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">Application Funnel</h3>
+                </div>
+                <div className="space-y-3">
+                  {responseData.funnel.map((m) => {
+                    const maxVal = Math.max(m.submitted, 1)
+                    return (
+                      <div key={m.month} className="space-y-1">
+                        <div className="flex items-center justify-between text-xs font-exo">
+                          <span className="text-ghost">{m.month}</span>
+                          <span className="text-dim-400">{m.submitted} submitted → {m.offers} offers</span>
+                        </div>
+                        <div className="flex h-6 gap-0.5 rounded overflow-hidden">
+                          <div className="bg-cyan-500/30 transition-all" style={{ width: `${(m.submitted / maxVal) * 100}%` }} />
+                          <div className="bg-purple-500/30 transition-all" style={{ width: `${(m.responded / maxVal) * 100}%` }} />
+                          <div className="bg-neural/30 transition-all" style={{ width: `${(m.interviews / maxVal) * 100}%` }} />
+                          <div className="bg-amber-400/30 transition-all" style={{ width: `${(m.offers / maxVal) * 100}%` }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-4 mt-3 text-hud text-xs text-dim-400">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-cyan-500/50" /> Submitted</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-purple-500/50" /> Responded</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-neural/50" /> Interviews</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-amber-400/50" /> Offers</span>
+                </div>
+              </div>
+            )}
+
+            {/* By Source Board */}
+            {responseData.by_source.length > 0 && (
+              <div className="glass-card">
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-3">By Source Board</h3>
+                <div className="space-y-2">
+                  {responseData.by_source.map((s) => (
+                    <div key={s.source} className="flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-2">
+                      <div>
+                        <span className="text-sm font-rajdhani font-semibold text-ghost">{s.source}</span>
+                        <span className="text-xs font-exo text-dim-400 ml-2">{s.total} apps</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs font-share-tech">
+                        <span className="text-neural">{s.response_rate}% rate</span>
+                        <span className="text-purple-400">{s.interviews} interviews</span>
+                        <span className="text-dim-400">{s.avg_response_time_days ? `${s.avg_response_time_days}d avg` : '—'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recent Responses */}
+            {responseData.recent_responses.length > 0 && (
+              <div className="glass-card">
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-3">Recent Responses</h3>
+                <div className="space-y-2 max-h-64 overflow-y-auto scroll-cyan">
+                  {responseData.recent_responses.map((r) => (
+                    <div key={r.id} className="flex items-center justify-between bg-void-700/20 rounded-lg px-3 py-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-rajdhani font-semibold text-ghost truncate">{r.title}</p>
+                        <p className="text-hud text-dim-400 truncate">{r.company} · {r.source}</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`px-1.5 py-0.5 rounded font-share-tech ${
+                          r.type === 'interview' ? 'bg-neural/10 text-neural' :
+                          r.type === 'offer' ? 'bg-amber-400/10 text-amber-400' :
+                          'bg-red-400/10 text-red-400'
+                        }`}>{r.type}</span>
+                        <span className="text-dim-500">{r.date?.slice(0, 10)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-function KPICard({ icon: Icon, label, value, color }: { icon: typeof Send; label: string; value: number | string; color: string }): JSX.Element {
+function AnalyticCard({ icon: Icon, label, value, color, onClick }: { icon: typeof Search; label: string; value: number | string; color: string; onClick?: () => void }): JSX.Element {
   return (
-    <div className="glass-card !p-3">
+    <motion.div
+      className={"glass-card !p-3 " + (onClick ? 'cursor-pointer hover:scale-[1.03] hover:border-cyan-500/30 hover:shadow-lg hover:shadow-cyan-500/5 active:scale-[0.97] transition-all duration-200' : '')}
+      onClick={onClick}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
       <div className="flex items-center gap-2 mb-1">
         <Icon className={`w-3.5 h-3.5 ${color}`} />
         <span className="text-hud text-dim-400 text-xs uppercase tracking-wider">{label}</span>
       </div>
       <p className={`text-lg font-orbitron font-bold ${color}`}>{value}</p>
+    </motion.div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. Resume-Based Role Suggestions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface RoleSuggestion {
+  title: string
+  match_score: number
+  reasoning: string
+  matched_skills: string[]
+}
+
+function RoleSuggestions({ onSearchRole }: { onSearchRole?: (role: string) => void }): JSX.Element {
+  const [suggestions, setSuggestions] = useState<RoleSuggestion[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      try {
+        const resp = await api<{ suggestions?: RoleSuggestion[]; resume_info?: { name: string; skills_count: number; experience_count: number } }>('/jobs/suggestions')
+        if (resp?.suggestions) {
+          setSuggestions(resp.suggestions)
+        } else {
+          setError('No suggestions available')
+        }
+      } catch {
+        setError('Failed to load suggestions')
+      }
+      setLoading(false)
+    })()
+  }, [])
+
+  const handleSearchRole = useCallback((role: string) => {
+    if (onSearchRole) {
+      onSearchRole(role)
+    } else {
+      // Fallback: copy to clipboard
+      navigator.clipboard.writeText(role)
+    }
+  }, [onSearchRole])
+
+  if (loading) {
+    return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 text-cyan-300 animate-spin" /><span className="ml-3 text-sm font-rajdhani text-dim-400">Analyzing your resume...</span></div>
+  }
+
+  if (error) {
+    return (
+      <div className="glass-card p-6 text-center">
+        <Lightbulb className="w-8 h-8 text-dim-600 mx-auto mb-2" />
+        <p className="text-sm font-rajdhani text-dim-400">{error}</p>
+        <p className="text-xs font-exo text-dim-500 mt-1">Make sure your resume is saved and try again.</p>
+      </div>
+    )
+  }
+
+  if (suggestions.length === 0) {
+    return (
+      <div className="glass-card p-6 text-center">
+        <Lightbulb className="w-8 h-8 text-dim-600 mx-auto mb-2" />
+        <p className="text-sm font-rajdhani text-dim-400">No role suggestions yet. Update your resume and refresh.</p>
+      </div>
+    )
+  }
+
+  const maxScore = Math.max(...suggestions.map(s => s.match_score), 1)
+
+  return (
+    <div className="space-y-4">
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+        <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider flex items-center gap-2">
+          <Lightbulb className="w-4 h-4 text-amber-400" />
+          RECOMMENDED ROLES
+        </h3>
+        <p className="text-xs font-exo text-dim-400 mt-1">
+          Job titles you should target based on your resume. Higher match = better fit.
+        </p>
+      </motion.div>
+
+      <div className="grid gap-3">
+        {suggestions.map((s, i) => {
+          const pct = Math.round((s.match_score / maxScore) * 100)
+          return (
+            <motion.div
+              key={s.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05 }}
+              className="glass-card-hover"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-base font-rajdhani font-semibold text-ghost">{s.title}</h4>
+                    <span className={"text-[10px] font-share-tech font-semibold px-1.5 py-0.5 rounded " +
+                      (s.match_score >= 80 ? 'bg-neural/10 text-neural' :
+                       s.match_score >= 60 ? 'bg-cyan-500/10 text-cyan-300' :
+                       'bg-plasma/10 text-plasma')
+                    }>{s.match_score}% match</span>
+                  </div>
+                  <p className="text-xs font-exo text-dim-400 leading-relaxed">{s.reasoning}</p>
+                  {s.matched_skills.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {s.matched_skills.map((skill) => (
+                        <span key={skill} className="text-[10px] font-share-tech text-cyan-300 bg-cyan-500/8 px-1.5 py-0.5 rounded border border-cyan-500/10">
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-shrink-0 flex flex-col items-center">
+                  <div className={"w-14 h-14 rounded-full border-2 flex items-center justify-center text-base font-orbitron font-bold " +
+                    (s.match_score >= 80 ? 'text-neural border-neural' :
+                     s.match_score >= 60 ? 'text-cyan-300 border-cyan-400' :
+                     'text-plasma border-plasma')
+                  }>
+                    {s.match_score}%
+                  </div>
+                  <span className="text-hud font-share-tech text-dim-500 mt-0.5">MATCH</span>
+                </div>
+              </div>
+              <div className="mt-3 pt-3 border-t border-cyan-500/8 flex items-center gap-2">
+                <button
+                  onClick={() => handleSearchRole(s.title)}
+                  className="btn-ghost-cyan text-xs flex items-center gap-1.5"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  Search Jobs
+                </button>
+              </div>
+              {/* Score bar */}
+              <div className="mt-2 w-full h-1.5 bg-void-800/60 rounded-full overflow-hidden">
+                <motion.div
+                  className={"h-full rounded-full " +
+                    (s.match_score >= 80 ? 'bg-gradient-to-r from-neural to-cyan-400' :
+                     s.match_score >= 60 ? 'bg-gradient-to-r from-cyan-500 to-blue-500' :
+                     'bg-gradient-to-r from-plasma to-amber-400')
+                  }
+                  initial={{ width: 0 }}
+                  animate={{ width: `${pct}%` }}
+                  transition={{ duration: 0.6, delay: i * 0.08, ease: 'easeOut' }}
+                />
+              </div>
+            </motion.div>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 3. Follow-Up Automation
-// ═══════════════════════════════════════════════════════════════════════════════
+// 4. Follow-Up Automation
+// ═══════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════════════════════════════════
+function FollowUpPanel(): JSX.Element {
+  const [candidates, setCandidates] = useState<FollowupCandidate[]>([])
+  const [history, setHistory] = useState<Array<{id:number;application_id:number;company:string;title:string;followup_number:number;sent_at:string}>>([])
+  const [loading, setLoading] = useState(true)
+  const [sending, setSending] = useState<Record<number, boolean>>({})
+  const [msg, setMsg] = useState<{text:string;type:'success'|'error'}|null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [candResp, histResp] = await Promise.all([
+        api<{candidates:FollowupCandidate[];count:number}>('/jobs/followups/candidates'),
+        api<{history:Array<{id:number;application_id:number;company:string;title:string;followup_number:number;sent_at:string}>;count:number}>('/jobs/followups/history'),
+      ])
+      if (candResp?.candidates) setCandidates(candResp.candidates)
+      if (histResp?.history) setHistory(histResp.history)
+    } catch { /* ignore */ }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const handleSendFollowup = useCallback(async (candidate: FollowupCandidate) => {
+    setSending(prev => ({ ...prev, [candidate.id]: true }))
+    setMsg(null)
+    try {
+      const resp = await api('/jobs/followups/send', {
+        application_id: candidate.id,
+        followup_number: 1,
+      })
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        if (data.status === 'sent') {
+          setMsg({ text: 'Sent!', type: 'success' })
+          setCandidates(prev => prev.filter(c => c.id !== candidate.id))
+          setTimeout(() => setMsg(null), 3000)
+        } else {
+          setMsg({ text: 'Failed to send', type: 'error' })
+          setTimeout(() => setMsg(null), 3000)
+        }
+      }
+    } catch {
+      setMsg({ text: 'Request failed', type: 'error' })
+      setTimeout(() => setMsg(null), 3000)
+    }
+    setSending(prev => ({ ...prev, [candidate.id]: false }))
+  }, [])
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider flex items-center gap-2">
+            <Mail className="w-4 h-4 text-cyan-400" />
+            FOLLOW-UP AUTOMATION
+          </h3>
+          <p className="text-xs font-exo text-dim-400 mt-1">Applications needing a gentle nudge ({candidates.length} pending)</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowHistory(!showHistory)} className="btn-ghost-cyan text-xs flex items-center gap-1.5">
+            <RefreshCw className="w-3 h-3" />
+            {showHistory ? 'Hide History' : 'History'} ({history.length})
+          </button>
+          <button onClick={fetchData} className="btn-ghost-cyan text-xs">
+            <RefreshCw className="w-3 h-3" />
+          </button>
+        </div>
+      </motion.div>
+
+      {/* Toast message */}
+      <AnimatePresence>
+        {msg && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className={'text-xs font-rajdhani font-semibold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 ' + (msg.type === 'success' ? 'bg-green-500/10 text-green-400 border-green-400/20' : 'bg-red-500/10 text-red-400 border-red-400/20')}
+          >
+            {msg.type === 'success' ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+            {msg.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* History panel */}
+      <AnimatePresence>
+        {showHistory && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="glass-card overflow-hidden"
+          >
+            <div className="p-3">
+              <h4 className="text-xs font-rajdhani font-semibold text-ghost mb-2 flex items-center gap-1.5">
+                <Send className="w-3 h-3 text-cyan-400" />
+                Sent Follow-Ups
+              </h4>
+              {history.length === 0 ? (
+                <p className="text-xs font-exo text-dim-500 text-center py-2">No follow-ups sent yet</p>
+              ) : (
+                <div className="space-y-1 max-h-40 overflow-y-auto scroll-cyan">
+                  {history.map((h) => (
+                    <div key={h.id} className="flex items-center justify-between bg-void-800/30 rounded px-2.5 py-1.5">
+                      <div>
+                        <p className="text-[11px] font-exo text-dim-400">{h.title} @ {h.company}</p>
+                        <p className="text-[10px] font-share-tech text-dim-600">Follow-up #{h.followup_number}</p>
+                      </div>
+                      <span className="text-[10px] font-share-tech text-dim-500">{new Date(h.sent_at).toLocaleDateString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Candidates list */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-5 h-5 animate-spin text-cyan-300" />
+          <span className="ml-2 text-xs font-rajdhani text-dim-400">Loading candidates...</span>
+        </div>
+      ) : candidates.length === 0 ? (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-16">
+          <div className="w-16 h-16 rounded-full bg-cyan-500/5 border border-cyan-500/10 flex items-center justify-center mx-auto mb-3">
+            <Mail className="w-7 h-7 text-dim-400" />
+          </div>
+          <p className="text-sm font-rajdhani text-dim-400">No applications need follow-up right now</p>
+          <p className="text-xs font-exo text-dim-500 mt-1">Candidates appear here 14+ days after submission</p>
+        </motion.div>
+      ) : (
+        <div className="space-y-2">
+          {candidates.map((c, i) => (
+            <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }} className="glass-card-hover">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-rajdhani font-semibold text-ghost">{c.title}</h4>
+                    <span className="badge-cyan text-[10px]">{c.source_board}</span>
+                  </div>
+                  <p className="text-xs font-exo text-dim-400">{c.company}</p>
+                  <div className="flex items-center gap-3 text-[10px] font-share-tech">
+                    <span>Submitted: {new Date(c.submitted_at).toLocaleDateString()}</span>
+                    <span className={c.days_since_submission >= 21 ? 'text-amber-400' : 'text-dim-500'}>
+                      {c.days_since_submission} days ago
+                      {c.days_since_submission >= 21 && ' ⚠️ overdue'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleSendFollowup(c)}
+                  disabled={sending[c.id]}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-40 min-w-[120px] justify-center"
+                >
+                  {sending[c.id] ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" /> Sending...</>
+                  ) : (
+                    <><Send className="w-3 h-3" /> Send Follow-Up</>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 4. Application Pipeline — Enhanced Real-Time UI
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -691,6 +1647,11 @@ function PipelinePanel(): JSX.Element {
   const [resumeInfo, setResumeInfo] = useState<{ exists: boolean; full_name: string; skills_count: number; char_count: number } | null>(null)
   const [resumeUploading, setResumeUploading] = useState(false)
   const [resumeSavedMsg, setResumeSavedMsg] = useState('')
+  const [resumeUploadMode, setResumeUploadMode] = useState<'markdown' | 'pdf'>('markdown')
+  const [pdfUploading, setPdfUploading] = useState(false)
+  const [pdfUploadResult, setPdfUploadResult] = useState<{ message: string; parsed?: { full_name?: string; skills_count?: number; page_count?: number } } | null>(null)
+  const [pdfUploadError, setPdfUploadError] = useState<string | null>(null)
+  const pdfInputRef = useRef<HTMLInputElement | null>(null)
 
   // Auto-scroll log
   useEffect(() => {
@@ -735,6 +1696,63 @@ function PipelinePanel(): JSX.Element {
     }
     setResumeUploading(false)
   }, [resumeContent])
+
+  const uploadPdfResume = useCallback(async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setPdfUploadError('Only PDF files are accepted')
+      setTimeout(() => setPdfUploadError(null), 5000)
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setPdfUploadError('PDF file exceeds 10MB limit')
+      setTimeout(() => setPdfUploadError(null), 5000)
+      return
+    }
+    setPdfUploading(true)
+    setPdfUploadResult(null)
+    setPdfUploadError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      // Use full backend URL for file upload — FormData can't go through api()
+      const BACKEND_URL = getSyncHttpUrl()
+      const resp = await fetch(`${BACKEND_URL}/jobs/resume/upload-pdf`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: 'Upload failed' }))
+        throw new Error(err.detail || `HTTP ${resp.status}`)
+      }
+      const data = await resp.json()
+      if (data.status === 'saved') {
+        setPdfUploadResult({
+          message: data.message || 'Resume extracted from PDF',
+          parsed: {
+            full_name: data?.parsed?.full_name || '',
+            skills_count: Number(data?.parsed?.skills_count || 0),
+            page_count: Number(data?.page_count || 0),
+          },
+        })
+        // Refresh resume info
+        const resumeData = await api<{ exists?: boolean; parsed?: { full_name?: string; skills_count?: number }; char_count?: number }>('/jobs/resume')
+        if (resumeData) {
+          setResumeInfo({
+            exists: Boolean(resumeData.exists),
+            full_name: resumeData?.parsed?.full_name || '',
+            skills_count: Number(resumeData?.parsed?.skills_count || 0),
+            char_count: Number(resumeData?.char_count || 0),
+          })
+        }
+      }
+    } catch (err) {
+      setPdfUploadError(err instanceof Error ? err.message : 'Failed to upload PDF')
+      setTimeout(() => setPdfUploadError(null), 5000)
+    }
+    setPdfUploading(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Fetch settings on mount
   useEffect(() => {
@@ -1141,40 +2159,163 @@ function PipelinePanel(): JSX.Element {
             </span>
           )}
         </div>
-        <p className="text-xs font-exo text-dim-400 mb-3">
-          Paste your resume markdown below. The pipeline reads from <code className="bg-void-800/40 px-1.5 py-0.5 rounded text-cyan-300 text-[10px]">~/career-ops/cv.md</code>.
-        </p>
-        <textarea
-          value={resumeContent}
-          onChange={(e) => setResumeContent(e.target.value)}
-          placeholder="Paste your resume here (markdown format, at least 50 chars)..."
-          rows={5}
-          className="w-full bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 focus:shadow-glow-cyan-sm placeholder:text-dim-500 resize-none transition-all duration-200"
-        />
-        <div className="flex items-center justify-between mt-2">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleResumeUpload}
-              disabled={resumeUploading || resumeContent.trim().length < 50}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 hover:shadow-glow-cyan-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {resumeUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
-              {resumeUploading ? 'Saving...' : 'Upload Resume'}
-            </button>
-            {resumeSavedMsg && (
-              <motion.span
-                initial={{ opacity: 0, x: -5 }}
-                animate={{ opacity: 1, x: 0 }}
-                className="text-[10px] font-exo text-green-400"
-              >
-                {resumeSavedMsg}
-              </motion.span>
-            )}
-          </div>
-          <span className="text-[10px] font-exo text-dim-500">
-            {resumeContent.length > 0 ? `${resumeContent.length} chars` : ''}
-          </span>
+
+        {/* ── Upload type tabs ──────────────────────────────────────────── */}
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => setResumeUploadMode('markdown')}
+            className={`px-3 py-1.5 text-[10px] font-rajdhani font-semibold rounded-lg transition-all ${
+              resumeUploadMode === 'markdown'
+                ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20'
+                : 'bg-void-800/40 text-dim-400 border border-transparent hover:border-cyan-500/10'
+            }`}
+          >
+            ✏️ Paste Markdown
+          </button>
+          <button
+            onClick={() => setResumeUploadMode('pdf')}
+            className={`px-3 py-1.5 text-[10px] font-rajdhani font-semibold rounded-lg transition-all ${
+              resumeUploadMode === 'pdf'
+                ? 'bg-plasma/10 text-plasma border border-plasma/20'
+                : 'bg-void-800/40 text-dim-400 border border-transparent hover:border-plasma/10'
+            }`}
+          >
+            📎 Upload PDF
+          </button>
         </div>
+
+        {/* ── Markdown paste mode ──────────────────────────────────────── */}
+        {resumeUploadMode === 'markdown' && (
+          <>
+            <p className="text-xs font-exo text-dim-400 mb-3">
+              Paste your resume markdown below. The pipeline reads from <code className="bg-void-800/40 px-1.5 py-0.5 rounded text-cyan-300 text-[10px]">~/career-ops/cv.md</code>.
+            </p>
+            <textarea
+              value={resumeContent}
+              onChange={(e) => setResumeContent(e.target.value)}
+              placeholder="Paste your resume here (markdown format, at least 50 chars)..."
+              rows={5}
+              className="w-full bg-void-800/60 text-ghost text-xs font-mono px-3 py-2 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 focus:shadow-glow-cyan-sm placeholder:text-dim-500 resize-none transition-all duration-200"
+            />
+            <div className="flex items-center justify-between mt-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleResumeUpload}
+                  disabled={resumeUploading || resumeContent.trim().length < 50}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-rajdhani font-semibold rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20 hover:shadow-glow-cyan-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {resumeUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                  {resumeUploading ? 'Saving...' : 'Upload Resume'}
+                </button>
+                {resumeSavedMsg && (
+                  <motion.span
+                    initial={{ opacity: 0, x: -5 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="text-[10px] font-exo text-green-400"
+                  >
+                    {resumeSavedMsg}
+                  </motion.span>
+                )}
+              </div>
+              <span className="text-[10px] font-exo text-dim-500">
+                {resumeContent.length > 0 ? `${resumeContent.length} chars` : ''}
+              </span>
+            </div>
+          </>
+        )}
+
+        {/* ── PDF upload mode ──────────────────────────────────────────── */}
+        {resumeUploadMode === 'pdf' && (
+          <>
+            <p className="text-xs font-exo text-dim-400 mb-3">
+              Upload a PDF resume. Text will be extracted and saved to <code className="bg-void-800/40 px-1.5 py-0.5 rounded text-cyan-300 text-[10px]">~/career-ops/cv.md</code>.
+            </p>
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-cyan-400') }}
+              onDragLeave={(e) => e.currentTarget.classList.remove('border-cyan-400')}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-cyan-400');
+                const file = e.dataTransfer.files[0];
+                if (file) await uploadPdfResume(file);
+              }}
+              className="border-2 border-dashed border-void-600/40 rounded-xl p-8 text-center
+                         hover:border-cyan-500/30 transition-all cursor-pointer
+                         bg-void-900/30 hover:bg-void-800/40 group"
+            >
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept=".pdf"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) await uploadPdfResume(file);
+                }}
+              />
+              <motion.div
+                className="flex flex-col items-center gap-2"
+                whileHover={{ scale: 1.02 }}
+              >
+                <Upload className="w-8 h-8 text-dim-400 group-hover:text-cyan-300 transition-colors" />
+                <p className="text-xs font-rajdhani font-semibold text-dim-400 group-hover:text-ghost transition-colors">
+                  Drop your PDF here or click to browse
+                </p>
+                <p className="text-[10px] font-exo text-dim-500">
+                  Max 10MB · Text-based PDFs only
+                </p>
+              </motion.div>
+              <button
+                onClick={() => pdfInputRef.current?.click()}
+                className="mt-3 px-4 py-2 text-xs font-rajdhani font-semibold rounded-lg
+                           bg-plasma/10 text-plasma border border-plasma/20
+                           hover:bg-plasma/20 hover:shadow-glow-plasma-sm transition-all"
+              >
+                <Upload className="w-3.5 h-3.5 inline mr-1.5" />
+                Select PDF File
+              </button>
+            </div>
+            {pdfUploading && (
+              <div className="flex items-center gap-2 mt-3 text-xs font-rajdhani text-cyan-300">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Extracting text from PDF...
+              </div>
+            )}
+            {pdfUploadResult && (
+              <motion.div
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20"
+              >
+                <div className="flex items-start gap-2">
+                  <CheckCircle className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-xs font-rajdhani font-semibold text-green-400">
+                      {pdfUploadResult.message}
+                    </p>
+                    {pdfUploadResult.parsed && (
+                      <p className="text-[10px] font-exo text-dim-400 mt-1">
+                        Found: {pdfUploadResult.parsed.full_name || 'Unknown'} · {pdfUploadResult.parsed.skills_count} skills · {pdfUploadResult.page_count} pages
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+            {pdfUploadError && (
+              <motion.div
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-3 p-3 rounded-lg bg-red-500/5 border border-red-500/20"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs font-rajdhani text-red-400">{pdfUploadError}</p>
+                </div>
+              </motion.div>
+            )}
+          </>
+        )}
       </motion.div>
 
       {/* ── Live Job Processing Feed ─────────────────────────────────────── */}
@@ -1396,123 +2537,6 @@ function PipelinePanel(): JSX.Element {
           <p className="text-xs font-rajdhani text-dim-400">
             Run the pipeline again to process new applications.
           </p>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function FollowUpPanel(): JSX.Element {
-  const [candidates, setCandidates] = useState<FollowupCandidate[]>([])
-  const [scheduled, setScheduled] = useState<Array<{ application_id: number; company: string; title: string; followup_number: number; followup_text: string }>>([])
-  const [loading, setLoading] = useState(true)
-  const [scheduling, setScheduling] = useState(false)
-  const [sending, setSending] = useState<number | null>(null)
-
-  const fetchCandidates = useCallback(async () => {
-    setLoading(true)
-    try {
-      const resp = await window.barq?.jobs.followupCandidates()
-      if (resp?.success && resp.data) {
-        const d = resp.data as { candidates: FollowupCandidate[] }
-        setCandidates(d.candidates || [])
-      }
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [])
-
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { fetchCandidates() }, [fetchCandidates])
-
-  const handleSchedule = useCallback(async () => {
-    setScheduling(true)
-    try {
-      const resp = await window.barq?.jobs.scheduleFollowups()
-      if (resp?.success && resp.data) {
-        const d = resp.data as { scheduled: typeof scheduled }
-        setScheduled(d.scheduled || [])
-        await fetchCandidates()
-      }
-    } catch { /* ignore */ }
-    setScheduling(false)
-  }, [fetchCandidates])
-
-  const handleSend = useCallback(async (appId: number, followupNum: number) => {
-    setSending(appId)
-    try {
-      await window.barq?.jobs.sendFollowup({ application_id: appId, followup_number: followupNum })
-      setScheduled((prev) => prev.filter((s) => s.application_id !== appId))
-      setCandidates((prev) => prev.filter((c) => c.id !== appId))
-    } catch { /* ignore */ }
-    setSending(null)
-  }, [])
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">Follow-Up Automation</h3>
-          <p className="text-xs font-exo text-dim-400 mt-1">
-            {candidates.length} applications need follow-up (submitted &gt; 14 days, no response)
-          </p>
-        </div>
-        <button onClick={handleSchedule} disabled={scheduling} className="btn-cyan text-xs flex items-center gap-1.5">
-          {scheduling ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-          Check & Schedule
-        </button>
-      </div>
-
-      {/* Scheduled follow-ups */}
-      {scheduled.length > 0 && (
-        <div className="space-y-3">
-          <h4 className="text-xs font-orbitron font-semibold text-holographic tracking-wider">Draft Follow-ups ({scheduled.length})</h4>
-          {scheduled.map((s, i) => (
-            <motion.div key={s.application_id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }} className="glass-card">
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <p className="text-sm font-rajdhani font-semibold text-ghost">{s.company} — {s.title}</p>
-                  <p className="text-hud text-cyan-300 text-xs">Follow-up #{s.followup_number}</p>
-                </div>
-                <button
-                  onClick={() => handleSend(s.application_id, s.followup_number)}
-                  disabled={sending === s.application_id}
-                  className="btn-cyan text-xs flex items-center gap-1.5"
-                >
-                  {sending === s.application_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                  Mark Sent
-                </button>
-              </div>
-              <pre className="bg-void-900/60 rounded-lg p-3 text-hud text-dim-300 text-xs max-h-32 overflow-y-auto font-mono whitespace-pre-wrap">
-                {s.followup_text}
-              </pre>
-            </motion.div>
-          ))}
-        </div>
-      )}
-
-      {/* Candidates needing follow-up */}
-      {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-dim-400" /></div>
-      ) : candidates.length === 0 ? (
-        <div className="text-center py-12">
-          <CheckCircle className="w-8 h-8 text-neural mx-auto mb-2" />
-          <p className="text-sm font-rajdhani text-dim-400">No follow-ups needed right now!</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {candidates.map((c) => (
-            <div key={c.id} className="flex items-center justify-between bg-void-700/20 rounded-lg px-4 py-3 border border-cyan-500/5">
-              <div className="flex-1">
-                <p className="text-sm font-rajdhani font-semibold text-ghost">{c.company} — {c.title}</p>
-                <p className="text-hud text-dim-400 text-xs">
-                  {c.source_board} · {Math.round(c.days_since_submission)} days since submission
-                </p>
-              </div>
-              <span className="text-xs font-share-tech text-amber-400 bg-amber-400/10 px-2 py-1 rounded">
-                {Math.round(c.days_since_submission)}d
-              </span>
-            </div>
-          ))}
         </div>
       )}
     </div>

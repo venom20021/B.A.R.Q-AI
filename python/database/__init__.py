@@ -34,7 +34,9 @@ async def init_db():
     await initialize_schema(db)
 
     # Seed defaults (settings, empty profile)
-    await seed_defaults(db)
+    # Pass the DatabaseConnection wrapper so methods like fetch_one() are available
+    # on both local (aiosqlite) and cloud (Turso) backends
+    await seed_defaults(db_connection)
 
     print(f"[Database] Initialized at: {db_connection.db_path}")
     return db_connection

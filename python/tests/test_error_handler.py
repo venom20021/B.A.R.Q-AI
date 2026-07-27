@@ -5,13 +5,27 @@ Tests the pure functions in agent/error_handler.py:
     - ErrorDecision enum values
     - _generate_fix_suggestion() tool-specific suggestions
     - Max attempts threshold behavior
+
+Note: These are pure function tests — no database needed. The autouse
+DB fixture from conftest.py is overridden below to avoid unnecessary
+overhead and prevent fixture-related hangs.
 """
+
+import pytest
 
 from agent.error_handler import (
     ErrorDecision,
     _generate_fix_suggestion,
     analyze_error,
 )
+
+
+# Override the conftest.py autouse DB fixture — these tests are pure
+# function tests and do not need a database connection.
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Override conftest's autouse DB fixture — no DB needed for error handler tests."""
+    return
 
 # ─── ErrorDecision enum ───────────────────────────────────────────────────
 

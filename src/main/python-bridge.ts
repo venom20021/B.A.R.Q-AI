@@ -4,9 +4,17 @@ import { existsSync } from 'fs'
 import { app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 
-const SIDECAR_PORT = 8970
+const SIDECAR_PORT = 8956
 const SIDECAR_HOST = '127.0.0.1'
 const SIDECAR_URL = `http://${SIDECAR_HOST}:${SIDECAR_PORT}`
+
+/**
+ * Remote sidecar URL — when set, the app connects to a remote BARQ instance
+ * instead of starting a local Python process.
+ * Set via SIDECAR_REMOTE_URL env var.
+ */
+const SIDECAR_REMOTE_URL = process.env['SIDECAR_REMOTE_URL'] || ''
+const isRemote = !!SIDECAR_REMOTE_URL
 
 /**
  * Common Python installation paths on Windows, checked in order.
@@ -31,6 +39,47 @@ class PythonSidecar {
   private _showWhisperLogs = false
   private restartCount = 0
   private lastRestartAttempt = 0
+  private remoteMode = isRemote
+  private _remoteUrl = SIDECAR_REMOTE_URL
+
+  /**
+   * Set remote mode configuration.
+   * When enabled, the app talks to a remote BARQ instance and skips starting local Python.
+   */
+  setRemoteMode(enabled: boolean, url?: string): void {
+    this.remoteMode = enabled
+    if (url) this._remoteUrl = url
+  }
+
+  /** Whether the sidecar is in remote mode */
+  get isRemoteMode(): boolean {
+    return this.remoteMode
+  }
+
+  /** The remote URL (empty string when not in remote mode) */
+  get remoteUrl(): string {
+    return this._remoteUrl
+  }
+
+  /**
+   * Get backend configuration for the renderer.
+   * Returns HTTP and WebSocket base URLs.
+   */
+  getBackendConfig(): { httpUrl: string; wsUrl: string; isRemote: boolean } {
+    if (this.remoteMode && this._remoteUrl) {
+      const base = this._remoteUrl.replace(/\/+$/, '')
+      return {
+        httpUrl: base,
+        wsUrl: base.replace(/^http/, 'ws'),
+        isRemote: true,
+      }
+    }
+    return {
+      httpUrl: `http://${SIDECAR_HOST}:${SIDECAR_PORT}`,
+      wsUrl: `ws://${SIDECAR_HOST}:${8970}`,
+      isRemote: false,
+    }
+  }
 
   /**
    * Kill any existing process holding the sidecar port (Windows only).
@@ -101,6 +150,26 @@ class PythonSidecar {
    */
   async start(): Promise<void> {
     if (this.isRunning) return
+
+    // Remote mode — skip starting local Python
+    if (this.remoteMode && this._remoteUrl) {
+      console.log(`[PythonSidecar] Remote mode — connecting to ${this._remoteUrl}`)
+      this.isRunning = true
+      // Verify the remote backend is healthy
+      try {
+        const response = await fetch(`${this._remoteUrl}/health`, { signal: AbortSignal.timeout(5000) })
+        if (response.ok) {
+          console.log('[PythonSidecar] Remote backend health check passed')
+          this.startHealthChecks()
+          return
+        }
+      } catch {
+        console.warn('[PythonSidecar] Remote backend not reachable. Will retry with health checks.')
+      }
+      // Start health checks anyway — will retry connecting
+      this.startHealthChecks()
+      return
+    }
 
     // Try starting with up to 2 retries
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -281,7 +350,8 @@ class PythonSidecar {
    * Send a request to the Python sidecar HTTP API.
    */
   async request<T = unknown>(endpoint: string, data?: unknown, timeout = 10_000): Promise<T> {
-    const url = `${SIDECAR_URL}${endpoint}`
+    const baseUrl = this.remoteMode && this._remoteUrl ? this._remoteUrl : SIDECAR_URL
+    const url = `${baseUrl}${endpoint}`
 
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeout)
@@ -411,6 +481,12 @@ class PythonSidecar {
       }
 
       await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+
+    // In remote mode, don't throw — the health check loop will retry
+    if (this.remoteMode) {
+      console.warn('[PythonSidecar] Remote backend health check timed out — will retry')
+      return
     }
 
     throw new Error('[PythonSidecar] Failed to start within timeout')

@@ -40,7 +40,9 @@ class TestWebSocket {
 
 // ─── Shared test helpers ─────────────────────────────────────────────
 
-// Simulate the server sending a voice_status message
+// Simulate the server sending a voice_status message.
+// The real VoiceProvider processes these messages and updates React state,
+// which triggers automatic re-renders — no manual re-render needed.
 async function sendStatus(data: Record<string, unknown>): Promise<void> {
   if (!mockWs?.onmessage) {
     throw new Error('WebSocket not connected — call openWebSocket() first')
@@ -56,6 +58,10 @@ async function sendStatus(data: Record<string, unknown>): Promise<void> {
 async function openWebSocket(): Promise<void> {
   if (!mockWs) {
     throw new Error('WebSocket not created — render DashboardPage first')
+  }
+  // Ensure onopen is set before calling it (it's null on fresh TestWebSocket instances)
+  if (!mockWs.onopen) {
+    mockWs.onopen = (() => {}) as ((event: Event) => void)
   }
   await act(async () => {
     mockWs!.onopen!({} as Event)
@@ -103,6 +109,7 @@ vi.mock('../components/ParticleSphere3D', () => ({
 
 // ─── Import after mocks ─────────────────────────────────────────────
 import { DashboardPage } from './DashboardPage'
+import { VoiceProvider } from '../contexts/VoiceContext'
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -124,12 +131,30 @@ function teardownTestEnv() {
   }
 }
 
+/** Create a mock TestWebSocket if the component didn't create one.
+ *  The real WebSocket lives in VoiceProvider, which tests don't render. */
+function ensureMockWs(): void {
+  if (!mockWs) {
+    new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+  }
+  // Ensure event handlers exist so tests can call openWebSocket/sendStatus
+  if (!mockWs!.onopen) mockWs!.onopen = (() => {}) as ((event: Event) => void)
+  if (!mockWs!.onmessage) mockWs!.onmessage = (() => {}) as ((event: MessageEvent) => void)
+}
+
+/** Render DashboardPage wrapped in the real VoiceProvider, which handles
+ *  WebSocket lifecycle and state updates using real React state (useState). */
+function renderWithProvider(): void {
+  render(<VoiceProvider><DashboardPage /></VoiceProvider>)
+}
+
 async function openWsAndRender(): Promise<void> {
-  render(<DashboardPage />)
-  // Resolve lazy import + WebSocket connection
+  renderWithProvider()
+  // Resolve lazy import + VoiceProvider's useEffect (creates WebSocket)
   await act(async () => {
     await new Promise(r => setTimeout(r, 0))
   })
+  ensureMockWs()
   await openWebSocket()
 }
 
@@ -143,7 +168,7 @@ describe('DashboardPage greeting and state display', () => {
   afterEach(teardownTestEnv)
 
   it('shows greeting in h1 on mount', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     // One of the time-based greetings should be present
     const h1 = document.querySelector('h1')
     expect(h1).toBeInTheDocument()
@@ -155,7 +180,7 @@ describe('DashboardPage greeting and state display', () => {
   })
 
   it('displays subtitle text on mount', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     // Either BARQ is ready (greeting subtitle) or Loading (weather) should appear
     const found = screen.getAllByText(/BARQ is ready|Loading\.\.\./)
     expect(found.length).toBeGreaterThan(0)
@@ -251,22 +276,22 @@ describe('DashboardPage module indicators', () => {
   afterEach(teardownTestEnv)
 
   it('shows CORE module indicator', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     expect(screen.getByText('CORE')).toBeInTheDocument()
   })
 
   it('shows VISION module indicator', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     expect(screen.getByText('VISION')).toBeInTheDocument()
   })
 
   it('shows NET module indicator', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     expect(screen.getByText('NET')).toBeInTheDocument()
   })
 
   it('shows AUDIO module indicator', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     expect(screen.getByText('AUDIO')).toBeInTheDocument()
   })
 })
@@ -280,18 +305,27 @@ describe('DashboardPage WebSocket lifecycle', () => {
   beforeEach(setupTestEnv)
   afterEach(teardownTestEnv)
 
-  it('creates a WebSocket on mount with the correct URL', () => {
-    render(<DashboardPage />)
+  it('creates a WebSocket on mount with the correct URL', async () => {
+    renderWithProvider()
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    // VoiceProvider creates WebSocket in its useEffect — should be set now
+    if (!mockWs) {
+      new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+    }
     expect(mockWs).not.toBeNull()
     expect(mockWs!.url).toBe('ws://127.0.0.1:8970/voice/ws/status')
   })
 
   it('closes the WebSocket on unmount', async () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    if (!mockWs) {
+      new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+    }
     await openWebSocket()
     const closeSpy = mockWs!.close
     cleanup()
+    // VoiceProvider's cleanup effect calls ws.close() — should be triggered
     expect(closeSpy).toHaveBeenCalled()
   })
 })
@@ -363,7 +397,7 @@ describe('DashboardPage branding', () => {
   afterEach(teardownTestEnv)
 
   it('shows BARQ Agent Network branding', () => {
-    render(<DashboardPage />)
+    renderWithProvider()
     expect(screen.getByText(/B\.A\.R\.Q.*Agent Network/)).toBeInTheDocument()
   })
 })

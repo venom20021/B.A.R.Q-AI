@@ -9,6 +9,19 @@ from typing import Any, Optional
 from .connection import db_connection
 
 
+def _sanitize_url(url: str) -> str:
+    """Ensure a URL is a valid HTTP/HTTPS URL, not a filesystem path or garbage.
+
+    Returns the URL as-is if it starts with http:// or https://,
+    otherwise returns an empty string (safe fallback).
+    """
+    url = (url or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    # Reject everything else: Windows paths (B:/), bare domains, etc.
+    return ""
+
+
 class JobsDAO:
     """DAO for job-related database operations."""
 
@@ -37,7 +50,7 @@ class JobsDAO:
             job.get("employment_type", "full_time"),
             job.get("remote_status", "unknown"),
             job.get("source_board", ""),
-            job.get("source_url", "") or job.get("url", ""),
+            _sanitize_url(job.get("source_url", "") or job.get("url", "")),
             job.get("posted_date", datetime.now(timezone.utc).isoformat()),
             job.get("company_rating", 0.0),
             job.get("skills_required", "[]"),
@@ -228,3 +241,106 @@ class JobsDAO:
             "SELECT * FROM application_documents WHERE application_id = ? AND is_active = 1 ORDER BY version DESC",
             (application_id,),
         )
+
+    # ─── Application Status Lookup ──────────────────────────────────────
+
+    async def get_application_statuses_for_jobs(
+        self, job_listing_ids: list[int]
+    ) -> dict[int, str]:
+        """Get the latest application status for multiple job listings at once.
+
+        Returns a dict mapping job_listing_id -> status.
+        Jobs with no application will not appear in the dict.
+        """
+        if not job_listing_ids:
+            return {}
+        placeholders = ",".join("?" for _ in job_listing_ids)
+        rows = await db_connection.fetch_all(
+            f"""SELECT job_listing_id, status FROM applications
+               WHERE job_listing_id IN ({placeholders})
+               AND id IN (
+                   SELECT MAX(id) FROM applications
+                   WHERE job_listing_id IN ({placeholders})
+                   GROUP BY job_listing_id
+               )""",
+            (*job_listing_ids, *job_listing_ids),
+        )
+        return {r["job_listing_id"]: r["status"] for r in rows}
+
+    # ─── Match Analytics ──────────────────────────────────────────────────
+
+    async def get_match_analytics(self) -> dict:
+        """Get job match analytics: score tiers, sources, scan stats."""
+        # Total jobs + evaluations
+        total_jobs = await db_connection.fetch_one(
+            "SELECT COUNT(*) as cnt FROM job_listings WHERE is_active = 1"
+        )
+        total_evaluated = await db_connection.fetch_one(
+            "SELECT COUNT(DISTINCT job_listing_id) as cnt FROM job_evaluations"
+        )
+
+        # Score tiers
+        tiers = await db_connection.fetch_all("""
+            SELECT
+                CASE
+                    WHEN e.match_percentage >= 80 THEN 'excellent'
+                    WHEN e.match_percentage >= 70 THEN 'strong'
+                    WHEN e.match_percentage >= 60 THEN 'good'
+                    ELSE 'fair'
+                END as tier,
+                COUNT(*) as count,
+                ROUND(AVG(e.match_percentage), 1) as avg_pct
+            FROM job_evaluations e
+            JOIN job_listings j ON j.id = e.job_listing_id AND j.is_active = 1
+            GROUP BY tier
+            ORDER BY avg_pct DESC
+        """)
+
+        # Top sources
+        sources = await db_connection.fetch_all("""
+            SELECT
+                j.source_board,
+                COUNT(*) as job_count,
+                ROUND(AVG(e.match_percentage), 1) as avg_match
+            FROM job_listings j
+            JOIN job_evaluations e ON e.job_listing_id = j.id
+            WHERE j.is_active = 1 AND j.source_board != ''
+            GROUP BY j.source_board
+            ORDER BY job_count DESC
+            LIMIT 10
+        """)
+
+        # Recent scan activity
+        scans = await db_connection.fetch_all("""
+            SELECT created_at as date, description as summary
+            FROM activity_log
+            WHERE type = 'job' AND action = 'scan'
+            ORDER BY created_at DESC
+            LIMIT 5
+        """)
+
+        # Application status breakdown
+        app_statuses = await db_connection.fetch_all(
+            "SELECT status, COUNT(*) as count FROM applications GROUP BY status ORDER BY count DESC"
+        )
+
+        return {
+            "total_jobs": total_jobs["cnt"] if total_jobs else 0,
+            "total_evaluated": total_evaluated["cnt"] if total_evaluated else 0,
+            "score_tiers": [
+                {"tier": r["tier"], "count": r["count"], "avg_percentage": r["avg_pct"]}
+                for r in tiers
+            ],
+            "top_sources": [
+                {"source": r["source_board"], "job_count": r["job_count"], "avg_match": r["avg_match"]}
+                for r in sources
+            ],
+            "recent_scans": [
+                {"date": r["date"], "summary": r["summary"]}
+                for r in scans
+            ],
+            "application_statuses": [
+                {"status": r["status"], "count": r["count"]}
+                for r in app_statuses
+            ],
+        }

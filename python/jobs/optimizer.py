@@ -1,7 +1,7 @@
 """
 Resume Optimizer — rewrites a resume to tailor it for a specific job description.
 
-Uses Ollama to:
+Uses OllamaClient (supports Ollama, LM Studio, and cloud fallback) to:
 - Rewrite the summary section
 - Reorder bullet points by relevance
 - Inject missing keywords naturally
@@ -12,6 +12,7 @@ Uses Ollama to:
 from typing import Any
 
 from config import get_settings
+from utils.ollama_client import OllamaClient
 
 
 class ResumeOptimizer:
@@ -19,6 +20,13 @@ class ResumeOptimizer:
 
     def __init__(self):
         self.settings = get_settings()
+        self._client: OllamaClient | None = None
+
+    def _get_client(self) -> OllamaClient:
+        """Get or create the LLM client with low temperature for deterministic output."""
+        if self._client is None:
+            self._client = OllamaClient(temperature=0.4)
+        return self._client
 
     async def optimize(
         self,
@@ -40,30 +48,26 @@ class ResumeOptimizer:
         prompt = self._build_prompt(resume_md, job, match_analysis)
 
         try:
-            import ollama
-            response = ollama.chat(
-                model=self.settings.ollama_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert ATS resume optimizer. Your task is to rewrite "
-                            "a resume to better match a specific job description. "
-                            "CRITICAL RULES:\n"
-                            "1. NEVER add skills or experience the candidate doesn't have\n"
-                            "2. Only rephrase existing experience to highlight relevant aspects\n"
-                            "3. Reorder bullet points so most relevant come first\n"
-                            "4. Inject key terms from the job description naturally into bullet points\n"
-                            "5. Keep all dates, company names, and factual information exactly\n"
-                            "6. Output in clear markdown format"
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                options={"temperature": 0.4},
-            )
-
-            content = response["message"]["content"]
+            client = self._get_client()
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert ATS resume optimizer. Use low temperature (0.3-0.4) "
+                        "for deterministic output. Your task is to rewrite "
+                        "a resume to better match a specific job description. "
+                        "CRITICAL RULES:\n"
+                        "1. NEVER add skills or experience the candidate doesn't have\n"
+                        "2. Only rephrase existing experience to highlight relevant aspects\n"
+                        "3. Reorder bullet points so most relevant come first\n"
+                        "4. Inject key terms from the job description naturally into bullet points\n"
+                        "5. Keep all dates, company names, and factual information exactly\n"
+                        "6. Output in clear markdown format"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            content = await client.chat(messages)
             return self._parse_result(content)
 
         except Exception as e:

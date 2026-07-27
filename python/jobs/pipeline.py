@@ -14,9 +14,11 @@ The pipeline processes approved/queued applications by:
 """
 
 import asyncio
+import html as html_mod
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,7 @@ logger = logging.getLogger("barq.pipeline")
 from database import analytics_dao, db_connection, jobs_dao, settings_dao
 from knowledge.auto_extractor import AutoExtractor
 from notifications.manager import notification_manager
+from utils import safe_filename
 
 from .applier import JobApplier
 from .cover_letter import CoverLetterGenerator
@@ -273,18 +276,20 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 if cfg["generate_pdf"]:
                     # Create a job-specific resume data dict with optimized content
                     pdf_resume_data = {**resume, "raw_md": optimized_md}
-                    job_slug = f"{company}_{job_title}".replace(" ", "_").replace("/", "_")[:50]
+                    job_slug = safe_filename(f"{company}_{job_title}".replace(" ", "_"), max_len=50)
 
-                    # Generate resume PDF
+                    # Generate resume PDF with JD-aware filtering
+                    job_description = job.get("description", "")
                     resume_pdf_result = await pdf_gen.generate(
                         pdf_resume_data,
                         output_dir=str(GENERATED_DIR / f"optimized_{job_slug}"),
                         filename=f"Resume_{job_slug}",
+                        job_description=job_description,
                     )
                     if resume_pdf_result.get("status") == "completed":
                         pdf_paths["resume"] = resume_pdf_result["pdf_path"]
 
-                    # Generate cover letter as a simple text file (PDF via fpdf)
+                    # Save cover letter as text file (PDF template not available for cover letters)
                     if cover_letter:
                         cl_dir = GENERATED_DIR / f"cover_letter_{job_slug}"
                         cl_dir.mkdir(parents=True, exist_ok=True)
@@ -344,8 +349,11 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                         job_url=source_url,
                         match_pct=match_pct,
                         app_id=app["id"],
+                        resume=resume,
+                        evaluation=app.get("evaluation"),
                         resume_snippet=optimized_md[:500] if optimized_md else "",
                         cover_letter_snippet=cover_letter[:300] if cover_letter else "",
+                        pdf_paths=pdf_paths,
                     )
 
                 if cfg["auto_apply"] and source_url:
@@ -454,24 +462,233 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
         return {"status": "error", "message": str(e), "results": results}
 
 
+def _format_resume_html(resume: dict[str, Any]) -> str:
+    """
+    Format resume data as clean Telegram-compatible HTML following the ATS template.
+
+    Template structure:
+    <b>Name</b>
+    Location | Email | LinkedIn | GitHub | Portfolio
+
+    <b>SUMMARY</b>
+    Professional summary paragraph...
+
+    <b>TECHNICAL SKILLS</b>
+    Backend: ...
+    Frontend: ...
+    Cloud & DevOps: ...
+    Databases: ...
+    Core Concepts: ...
+
+    <b>EXPERIENCE</b>
+    <b>Role</b>
+    Company | Dates | Location
+    • achievement
+
+    <b>PROJECTS</b>
+    <b>Name</b>: description
+
+    <b>EDUCATION</b>
+    Degree
+    University | Year
+
+    <b>CERTIFICATIONS</b>
+    Name — Issuer (Date)
+    """
+
+    raw_md = resume.get("raw_md", "")
+    lines: list[str] = []
+
+    # ── Header ──────────────────────────────────────────────────────
+    name = resume.get("full_name", "Sai Prabhat")
+    lines.append(f"<b>{html_mod.escape(name)}</b>")
+
+    # Build contact line: Location | Email | LinkedIn | GitHub | Portfolio
+    location = "Lucknow, India"
+    loc_m = re.search(r"(?im)^\*\*Location:\*\*\s*(.+)", raw_md)
+    if loc_m:
+        location = loc_m.group(1).strip()
+
+    email = resume.get("email", "")
+    linkedin_url = resume.get("linkedin_url", "")
+    github_url = resume.get("github_url", "")
+    portfolio_url = resume.get("portfolio_url", "")
+
+    contact_parts = []
+    contact_parts.append(html_mod.escape(location))
+    if email:
+        contact_parts.append(html_mod.escape(email))
+    if linkedin_url:
+        display = linkedin_url.replace("https://", "").replace("http://", "").rstrip("/")
+        display = display.replace("www.", "")
+        contact_parts.append(f'<a href="{html_mod.escape(linkedin_url)}">{html_mod.escape(display)}</a>')
+    if github_url:
+        display = github_url.replace("https://", "").replace("http://", "").rstrip("/")
+        display = display.replace("www.", "")
+        contact_parts.append(f'<a href="{html_mod.escape(github_url)}">{html_mod.escape(display)}</a>')
+    if portfolio_url:
+        display = portfolio_url.replace("https://", "").replace("http://", "").rstrip("/")
+        display = display.replace("www.", "")
+        contact_parts.append(f'<a href="{html_mod.escape(portfolio_url)}">{html_mod.escape(display)}</a>')
+
+    lines.append(" | ".join(contact_parts))
+    lines.append("")
+
+    # ── Summary ─────────────────────────────────────────────────────
+    lines.append("<b>SUMMARY</b>")
+    summary = resume.get("summary", "") or resume.get("headline", "")
+    if summary:
+        lines.append(html_mod.escape(summary.strip()[:400]))
+    else:
+        lines.append("Full Stack Engineer with 3+ years experience architecting scalable backend systems.")
+    lines.append("")
+
+    # ── Technical Skills ────────────────────────────────────────────
+    lines.append("<b>TECHNICAL SKILLS</b>")
+    skill_groups: dict[str, list[str]] = {
+        "Backend": [], "Frontend": [], "Cloud & DevOps": [],
+        "Databases": [], "Core Concepts": [],
+    }
+    skills_match = re.search(
+        r"(?i)(?:^|\n)##\s*(?:skills|technical skills|technologies)\s*\n(.*?)(?=\n##\s|\Z)",
+        raw_md, re.DOTALL,
+    )
+    if skills_match:
+        for skill_line in skills_match.group(1).split("\n"):
+            cl = skill_line.strip().lstrip("-* ").strip()
+            if ":" in cl and not cl.startswith("http"):
+                gp, ip = cl.split(":", 1)
+                cg = gp.strip().strip("*").strip()
+                if cg in skill_groups:
+                    skill_groups[cg] = [
+                        x.strip().strip("*").strip()
+                        for x in ip.split(",") if x.strip()
+                    ]
+    for gn in ["Backend", "Frontend", "Cloud & DevOps", "Databases", "Core Concepts"]:
+        items = skill_groups.get(gn, [])
+        line = f"<b>{gn}:</b> {html_mod.escape(', '.join(items[:8]))}" if items else ""
+        if line:
+            lines.append(line)
+    lines.append("")
+
+    # ── Experience (up to 3 entries) ─────────────────────────────────
+    exp_list = resume.get("experience", [])
+    if exp_list:
+        lines.append("<b>EXPERIENCE</b>")
+        for exp in exp_list[:3]:
+            role = exp.get("role", "")
+            company_name = exp.get("company", "")
+            raw_date_line = exp.get("date_range", "")
+            bullets = exp.get("bullets", [])
+
+            # Parse date & location from date_range
+            location_str = "Remote"
+            clean_dates = raw_date_line
+            if raw_date_line:
+                pipe_parts = [p.strip() for p in raw_date_line.split("|")]
+                if len(pipe_parts) >= 2:
+                    location_str = pipe_parts[-1].replace("*", "").strip()
+                    for part in pipe_parts:
+                        dm = re.search(
+                            r"(\w+\s+\d{4})\s*[-\u2013\u2014to]+\s*(\w+\s+\d{4}|present|current|now)",
+                            part, re.IGNORECASE,
+                        )
+                        if dm:
+                            clean_dates = dm.group(0)
+                            break
+
+            # Build sub-header: Company | Dates | Location
+            sub_parts = []
+            if company_name:
+                sub_parts.append(html_mod.escape(company_name))
+            if clean_dates:
+                sub_parts.append(html_mod.escape(clean_dates.replace("|", "").strip()))
+            sub_parts.append(location_str)
+
+            lines.append(f"<b>{html_mod.escape(role)}</b>")
+            lines.append(" | ".join(sub_parts))
+            for b in bullets[:3]:
+                if b:
+                    lines.append(f"  • {html_mod.escape(b[:200])}")
+            lines.append("")
+
+    # ── Projects (up to 3 entries) ──────────────────────────────────
+    proj_list = resume.get("projects", [])
+    if proj_list:
+        lines.append("<b>PROJECTS</b>")
+        for proj in proj_list[:3]:
+            name = proj.get("name", "")
+            desc = proj.get("description", "")
+            if name:
+                desc_text = html_mod.escape(desc[:150]) if desc else ""
+                if desc_text:
+                    lines.append(f"  • <b>{html_mod.escape(name)}</b>: {desc_text}")
+                else:
+                    lines.append(f"  • <b>{html_mod.escape(name)}</b>")
+        lines.append("")
+
+    # ── Education ───────────────────────────────────────────────────
+    edu_list = resume.get("education", [])
+    if edu_list:
+        lines.append("<b>EDUCATION</b>")
+        for edu in edu_list[:2]:
+            title = edu.get("title", "")
+            if title:
+                lines.append(f"  • {html_mod.escape(title)}")
+        lines.append("")
+
+    # ── Certifications (from structured parser data) ───────────────
+    cert_list = resume.get("certifications", [])
+    if cert_list:
+        lines.append("<b>CERTIFICATIONS</b>")
+        for cert in cert_list[:3]:
+            name = cert.get("name", "")
+            issuer = cert.get("issuer", "")
+            date = cert.get("date", "")
+            credential = cert.get("credential", "")
+            parts = [html_mod.escape(name)]
+            if issuer:
+                parts.append(html_mod.escape(issuer))
+            if date:
+                parts.append(html_mod.escape(date))
+            cert_line = " — ".join(parts)
+            lines.append(f"  • {cert_line}")
+            if credential:
+                cred_display = html_mod.escape(credential[:80])
+                lines.append(f"    Credential: {cred_display}")
+
+    return "\n".join(lines)
+
+
 async def _send_telegram_notification(
     job_title: str,
     company: str,
     job_url: str,
     match_pct: float,
     app_id: int,
+    resume: dict[str, Any] | None = None,
+    evaluation: dict[str, Any] | None = None,
     resume_snippet: str = "",
     cover_letter_snippet: str = "",
+    pdf_paths: dict[str, str] | None = None,
 ) -> bool:
     """
-    Send a Telegram notification with job details and generated documents.
+    Send a Telegram notification with job details and generated PDF documents.
 
-    Uses the notification_manager's send_job_match_alert for the initial
-    alert, then sends a detailed follow-up with the job link and
-    resume/cover letter snippets.
+    1. Sends the match alert via notification_manager
+    2. Sends the resume PDF and cover letter PDF as Telegram document attachments
+    3. Sends a follow-up message with job link and preview text
     """
     try:
-        # First, send the match alert (this is handled by notification_manager)
+        from notifications.base import Category, NotificationEvent, Priority
+        from notifications.telegram import TelegramChannel
+
+        telegram = TelegramChannel()
+        if not await telegram.is_enabled():
+            print("[Pipeline] Telegram not configured; skipping detailed notification")
+            return False
+
+        # 1. Send the match alert
         await notification_manager.send_job_match_alert(
             job_title=job_title,
             company=company,
@@ -479,55 +696,185 @@ async def _send_telegram_notification(
             job_id=app_id,
         )
 
-        # Then send a detailed message with job link and docs
-        priority_map = {
-            "high": "high",
-            "normal": "normal",
-        }
         priority = "high" if match_pct >= 80 else "normal"
-
-        # Build a richer message — use HTML tags since TelegramChannel uses parse_mode="HTML"
-        import html as html_mod
         safe_title = html_mod.escape(job_title)
         safe_company = html_mod.escape(company)
-        safe_resume = html_mod.escape(resume_snippet[:600])
-        safe_cover = html_mod.escape(cover_letter_snippet[:400])
 
-        detailed_body = f"🎯 <b>{safe_title}</b> at <b>{safe_company}</b>\n"
-        detailed_body += f"📊 Match: {match_pct:.0f}%\n"
-        if job_url:
-            detailed_body += f'🔗 <a href="{html_mod.escape(job_url)}">Apply Here</a>\n'
-        detailed_body += f"\n📄 <b>Optimized Resume (Preview):</b>\n"
-        detailed_body += f"<pre>{safe_resume}...\n</pre>\n"
-        if safe_cover:
-            detailed_body += f"\n✉️ <b>Cover Letter (Preview):</b>\n"
-            detailed_body += f"<pre>{safe_cover}...\n</pre>\n"
-        detailed_body += f"\n✅ Application #{app_id} — ready for review"
+        # 2. Send actual PDF documents as Telegram file attachments
+        pdfs_sent = 0
 
-        from notifications.telegram import TelegramChannel
-        from notifications.base import NotificationEvent, Priority, Category, Channel
+        # Send resume PDF
+        resume_pdf = (pdf_paths or {}).get("resume", "")
+        if resume_pdf and os.path.isfile(resume_pdf):
+            resume_caption = (
+                f"📄 <b>Optimized Resume</b>: {safe_title} @ {safe_company} "
+                f"(Match: {match_pct:.0f}%)"
+            )
+            doc_result = await telegram.send_document(
+                document_path=resume_pdf,
+                caption=resume_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
+                print(f"[Pipeline] Resume PDF sent for {job_title}")
 
-        telegram = TelegramChannel()
-        if not await telegram.is_enabled():
-            print("[Pipeline] Telegram not configured; skipping detailed notification")
-            return False
+        # Send cover letter PDF
+        cl_pdf = (pdf_paths or {}).get("cover_letter", "")
+        if cl_pdf and os.path.isfile(cl_pdf) and cl_pdf.endswith(".pdf"):
+            cl_caption = (
+                f"✉️ <b>Cover Letter</b>: {safe_title} @ {safe_company}"
+            )
+            doc_result = await telegram.send_document(
+                document_path=cl_pdf,
+                caption=cl_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
+                print(f"[Pipeline] Cover letter PDF sent for {job_title}")
 
-        event = NotificationEvent(
-            title=f"📄 Job Application Generated: {job_title}",
-            body=detailed_body,
-            priority=Priority(priority),
-            category=Category.JOB_MATCH,
-            metadata={
-                "application_id": app_id,
-                "company": company,
-                "title": job_title,
-                "match_score": f"{match_pct:.0f}%",
-                "job_url": job_url,
-                "pipeline_processed": "true",
-            },
+        # 3. Build the full notification body
+        detailed_body = (
+            f"🎯 <b>{safe_title}</b> at <b>{safe_company}</b>\n"
+            f"📊 <b>Match Score:</b> {match_pct:.0f}%"
         )
-        result = await telegram.send(event)
-        return result.success
+
+        # ── Prominent Job Link ────────────────────────────────────────
+        if job_url:
+            detailed_body += (
+                f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\">"
+                f"<b>⬅️ OPEN APPLICATION LINK ➡️</b></a>"
+            )
+
+        # ── Match Reasoning (Pros/Cons) ──────────────────────────────
+        if evaluation:
+            try:
+                pros_raw = evaluation.get("pros", "[]")
+                cons_raw = evaluation.get("cons", "[]")
+                pros = json.loads(pros_raw) if isinstance(pros_raw, str) else (pros_raw or [])
+                cons = json.loads(cons_raw) if isinstance(cons_raw, str) else (cons_raw or [])
+                reasoning = evaluation.get("reasoning", "")
+            except (json.JSONDecodeError, TypeError):
+                pros, cons, reasoning = [], [], ""
+
+            if reasoning:
+                detailed_body += f"\n\n💡 <b>Why this match?</b>\n{html_mod.escape(reasoning[:200])}"
+            if pros:
+                detailed_body += "\n\n✅ <b>Strengths:</b>"
+                for p in pros[:3]:
+                    detailed_body += f"\n• {html_mod.escape(str(p)[:100])}"
+            if cons:
+                detailed_body += "\n\n⚠️ <b>Considerations:</b>"
+                for c in cons[:3]:
+                    detailed_body += f"\n• {html_mod.escape(str(c)[:100])}"
+
+        # ── Formatted Resume ─────────────────────────────────────────
+        if resume:
+            formatted_resume = _format_resume_html(resume)
+            detailed_body += f"\n\n━━━ 📄 RESUME ━━━\n\n{formatted_resume}"
+
+        # ── Cover Letter Snippet ──────────────────────────────────────
+        if cover_letter_snippet:
+            brief_cl = html_mod.escape(cover_letter_snippet[:200].strip())
+            detailed_body += f"\n━━━ ✉️ COVER LETTER ━━━\n\n<pre>{brief_cl}</pre>\n"
+
+        detailed_body += f"\n✅ Application #{app_id} — PDFs delivered above"
+
+        # ── Telegram has 4096 char limit; split into multiple messages if needed ──
+        messages_to_send: list[str] = []
+
+        # Message 1: Header + link + match reasoning (always fits)
+        msg1 = f"🎯 <b>{safe_title}</b> at <b>{safe_company}</b>\n📊 <b>Match Score:</b> {match_pct:.0f}%"
+        if job_url:
+            msg1 += f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\"><b>⬅️ OPEN APPLICATION LINK ➡️</b></a>"
+        if evaluation:
+            try:
+                pros_raw = evaluation.get("pros", "[]")
+                cons_raw = evaluation.get("cons", "[]")
+                eval_pros = json.loads(pros_raw) if isinstance(pros_raw, str) else (pros_raw or [])
+                eval_cons = json.loads(cons_raw) if isinstance(cons_raw, str) else (cons_raw or [])
+                eval_reasoning = evaluation.get("reasoning", "")
+            except (json.JSONDecodeError, TypeError):
+                eval_pros, eval_cons, eval_reasoning = [], [], ""
+            if eval_reasoning:
+                msg1 += f"\n\n💡 <b>Why this match?</b>\n{html_mod.escape(eval_reasoning[:200])}"
+            if eval_pros:
+                msg1 += "\n\n✅ <b>Strengths:</b>"
+                for p in eval_pros[:3]:
+                    msg1 += f"\n• {html_mod.escape(str(p)[:100])}"
+            if eval_cons:
+                msg1 += "\n\n⚠️ <b>Considerations:</b>"
+                for c in eval_cons[:3]:
+                    msg1 += f"\n• {html_mod.escape(str(c)[:100])}"
+        messages_to_send.append(msg1)
+
+        # Message 2: Formatted resume
+        if resume:
+            msg2 = f"━━━ 📄 RESUME ━━━\n\n{_format_resume_html(resume)}"
+            messages_to_send.append(msg2)
+
+        # Message 3: Cover letter snippet (optional)
+        if cover_letter_snippet:
+            brief_cl = html_mod.escape(cover_letter_snippet[:200].strip())
+            msg3 = f"━━━ ✉️ COVER LETTER ━━━\n\n<pre>{brief_cl}</pre>"
+            messages_to_send.append(msg3)
+
+        # Add footer to the last message
+        messages_to_send[-1] += f"\n\n✅ Application #{app_id}"
+
+        # Send each message — use send_html_message() for the resume (msg1)
+        # to bypass _format_message() double-escaping, and standard send()
+        # for plain-text messages (msg2, msg3).
+        all_sent = True
+        for idx, msg in enumerate(messages_to_send):
+            if len(msg) > 4096:
+                if idx == 1 and resume:
+                    # Build compressed resume (header + summary + skills only)
+                    compressed = (
+                        f"<b>{html_mod.escape(resume.get('full_name','Sai Prabhat'))}</b>\n"
+                        f"{html_mod.escape(resume.get('email',''))} | "
+                        f"{html_mod.escape(resume.get('linkedin_url',''))}"
+                    )
+                    summary = (resume.get("summary", "") or "").strip()[:200]
+                    if summary:
+                        compressed += f"\n\n{html_mod.escape(summary)}"
+                    compressed += "\n\n<i>Full resume attached as PDF. See document above.</i>"
+                    msg = f"━━━ 📄 RESUME (condensed) ━━━\n\n{compressed}"
+                    if len(msg) > 4096:
+                        msg = msg[:4090] + "..."
+
+            # Use send_html_message() for resume which already has HTML tags,
+            # use standard send() for plain-text messages (match alert, cover letter)
+            if idx == 1:
+                # Resume message — already HTML formatted, bypass double-escaping
+                result = await telegram.send_html_message(
+                    text=msg,
+                    title=f"📄 Resume: {job_title}",
+                    disable_notification=(priority != "high"),
+                )
+            else:
+                # Match alert or cover letter — plain text, use standard send()
+                event = NotificationEvent(
+                    title=f"🎯 Job Match: {job_title}" if idx == 0 else f"✉️ Cover Letter: {job_title}",
+                    body=msg,
+                    priority=Priority(priority),
+                    category=Category.JOB_MATCH,
+                    metadata={
+                        "application_id": app_id,
+                        "company": company,
+                        "title": job_title,
+                        "match_score": f"{match_pct:.0f}%",
+                        "job_url": job_url,
+                        "pdfs_sent": pdfs_sent,
+                        "part": f"{idx + 1}/{len(messages_to_send)}",
+                    },
+                )
+                result = await telegram.send(event)
+
+            if not result.success:
+                all_sent = False
+                print(f"[Pipeline] Failed to send message part {idx + 1}: {result.error}")
+
+        return all_sent or pdfs_sent > 0
 
     except Exception as e:
         print(f"[Pipeline] Telegram notification error: {e}")

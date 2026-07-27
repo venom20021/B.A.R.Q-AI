@@ -9,6 +9,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+# Override the conftest.py autouse DB fixture — these tests are pure
+# function tests and do not need a database connection.
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Override conftest's autouse DB fixture — no DB needed for these tests."""
+    return
+
+
 from agent.agent_executor import AgentExecutor
 
 # ─── Fixtures ──────────────────────────────────────────────────────────────
@@ -210,21 +218,33 @@ class TestSummarize:
     def executor(self):
         return AgentExecutor()
 
-    @patch("utils.ollama_client.OllamaClient")
-    async def test_summarize_calls_llm(self, mock_ollama, executor):
-        """_summarize should call the LLM with step descriptions."""
-        instance = mock_ollama.return_value
-        instance.chat = AsyncMock(return_value="Great summary.")
+    async def test_summarize_calls_llm(self, executor):
+        """_summarize should call the kernel with step descriptions."""
+        from agent.agent_kernel import AgentKernel
+        from unittest.mock import MagicMock
 
-        result = await executor._summarize("Test goal", [{"description": "Step 1", "step": 1, "tool": "test"}])
+        kernel = MagicMock(spec=AgentKernel)
+        kernel.chat = AsyncMock(return_value="Great summary.")
+
+        with patch("agent.agent_executor.get_agent_kernel", return_value=kernel):
+            result = await executor._summarize(
+                "Test goal",
+                [{"description": "Step 1", "step": 1, "tool": "test"}],
+            )
         assert result == "Great summary."
 
-    @patch("utils.ollama_client.OllamaClient")
-    async def test_summarize_fallback_on_error(self, mock_ollama, executor):
-        """When the LLM fails, _summarize should return a fallback string."""
-        instance = mock_ollama.return_value
-        instance.chat = AsyncMock(side_effect=RuntimeError("LLM down"))
+    async def test_summarize_fallback_on_error(self, executor):
+        """When the kernel fails, _summarize should return a fallback string."""
+        from agent.agent_kernel import AgentKernel
+        from unittest.mock import MagicMock
 
-        result = await executor._summarize("Test goal", [{"description": "Step 1", "step": 1, "tool": "test"}])
+        kernel = MagicMock(spec=AgentKernel)
+        kernel.chat = AsyncMock(side_effect=RuntimeError("LLM down"))
+
+        with patch("agent.agent_executor.get_agent_kernel", return_value=kernel):
+            result = await executor._summarize(
+                "Test goal",
+                [{"description": "Step 1", "step": 1, "tool": "test"}],
+            )
         assert "Test goal" in result
         assert "1" in result or "steps" in result

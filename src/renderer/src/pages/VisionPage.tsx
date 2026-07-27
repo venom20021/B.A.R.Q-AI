@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../utils/api'
+import { getBackendConfig, getSyncWsUrl } from '../utils/backendConfig'
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -72,8 +73,16 @@ interface WsErrorMsg {
 type WsMessage = WsStatusMsg | WsTokenMsg | WsDoneMsg | WsAudioMsg | WsErrorMsg
 
 // ─── WebSocket URL ────────────────────────────────────────────────────
-// Matches the backend config (default: 127.0.0.1:8956)
-const WS_BASE = `ws://${location.hostname || '127.0.0.1'}:8956`
+// Matches the backend config. Resolved asynchronously from main process;
+// falls back to localhost default on error.
+async function getVisionWsUrl(): Promise<string> {
+  try {
+    const config = await getBackendConfig()
+    return config.wsUrl
+  } catch {
+    return getSyncWsUrl()
+  }
+}
 
 // ─── Capability definitions ───────────────────────────────────────────
 
@@ -127,11 +136,12 @@ export function VisionPage(): JSX.Element {
   // Store self-reference for setTimeout callbacks
   const connectWsRef = useRef<() => void>(() => { /* noop */ })
 
-  const connectWs = useCallback(() => {
+  const connectWs = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     try {
-      const ws = new WebSocket(`${WS_BASE}/vision/ws/vision`)
+      const url = await getVisionWsUrl()
+      const ws = new WebSocket(`${url}/vision/ws/vision`)
       wsRef.current = ws
 
       ws.onopen = () => {

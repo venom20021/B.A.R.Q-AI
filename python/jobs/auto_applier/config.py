@@ -90,9 +90,17 @@ class CandidateProfile:
         "System Design", "OOP", "Agile/Scrum",
     ])
 
-    seeking: str = "Full-Stack Developer / Software Engineer roles. Remote-friendly or relocation."
+    seeking: str = (
+        "Full-Stack Developer / Software Engineer roles. "
+        "Priority locations: Italy, Luxembourg, Middle East (UAE, Saudi Arabia, Qatar), "
+        "UK, US, Canada, then India. Open to remote, hybrid, or relocation."
+    )
     not_suitable: str = "Pure frontend roles, non-technical management, junior/intern roles."
-    relocation_note: str = "Experienced working remotely across US and UK time zones; open to relocation."
+    relocation_note: str = (
+        "Open to global opportunities. Priority: Italy, Luxembourg, Middle East, "
+        "UK, US, Canada, then India. Experienced working remotely across time zones; "
+        "willing to relocate for the right opportunity."
+    )
 
 
 # ─── Applier Settings ─────────────────────────────────────────────────────
@@ -125,7 +133,7 @@ class ApplierConfig:
 
     # Ollama
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
     ollama_timeout: int = 60
 
     # TinyFish (for job discovery — from autopilot-jobhunt .env)

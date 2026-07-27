@@ -86,9 +86,9 @@ class DynamicResumeBuilder:
         # Ensure staged directory exists
         _STAGED_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Generate a unique filename
-        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in job_title)[:30]
-        safe_company = "".join(c if c.isalnum() or c in " -_" else "_" for c in company)[:20]
+        # Generate a unique filename (also sanitizing Windows-illegal chars)
+        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in job_title)[:30].rstrip(". _")
+        safe_company = "".join(c if c.isalnum() or c in " -_" else "_" for c in company)[:20].rstrip(". _")
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"resume_{safe_company}_{safe_title}_{timestamp}.pdf"
         output_path = _STAGED_DIR / filename

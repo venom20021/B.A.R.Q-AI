@@ -1,5 +1,6 @@
 """
-AI Job Matcher — scores job descriptions against the user's resume using Ollama.
+AI Job Matcher — scores job descriptions against the user's resume using OllamaClient
+(supports LM Studio, Groq fallback).
 
 Scoring criteria (0-100):
 - Skills match percentage
@@ -16,6 +17,7 @@ import re
 from typing import Any
 
 from config import get_settings
+from utils.ollama_client import OllamaClient
 
 
 class JobMatcher:
@@ -23,6 +25,7 @@ class JobMatcher:
 
     def __init__(self):
         self.settings = get_settings()
+        self._llm = OllamaClient(temperature=0.3)
 
     async def match(self, job: dict[str, Any], resume: dict[str, Any]) -> dict[str, Any]:
         """
@@ -38,25 +41,28 @@ class JobMatcher:
         prompt = self._build_match_prompt(job, resume)
 
         try:
-            import ollama
-            response = ollama.chat(
-                model=self.settings.ollama_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert career matching AI. Score how well a candidate's "
-                            "resume fits a job description. Be honest and specific. "
-                            "Return ONLY valid JSON with the scoring breakdown."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                format="json",
-                options={"temperature": 0.3},
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert career matching AI. Score how well a candidate's "
+                        "resume fits a job description. Be honest and specific. "
+                        "Return ONLY valid JSON with the scoring breakdown."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
 
-            result = json.loads(response["message"]["content"])
+            response_text = await self._llm.chat(messages)
+
+            # Extract JSON from response (LLM may wrap in markdown code blocks)
+            response_text = response_text.strip()
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [l for l in lines if not l.startswith("```")]
+                response_text = "\n".join(lines)
+
+            result = json.loads(response_text)
             return self._normalize(result, job, resume)
 
         except Exception as e:
@@ -121,33 +127,79 @@ Return format:
             "evaluated_at": __import__("datetime").datetime.utcnow().isoformat(),
         }
 
+    @staticmethod
+    def _extract_flat_skills(skills_raw: list) -> list:
+        """Extract clean skill keywords from resume skills that may have
+        markdown formatting like '- **Backend:** Python'."""
+        flat = []
+        for s in skills_raw:
+            if not s:
+                continue
+            cleaned = s.lower().replace("**", "").strip().lstrip("- ").lstrip("* ")
+            if ":" in cleaned:
+                cleaned = cleaned.split(":")[-1].strip()
+            for part in cleaned.split(","):
+                p = part.strip().split("(")[0].strip()
+                if p and len(p) > 1:
+                    flat.append(p)
+        return flat
+
     def _fallback_match(self, job: dict[str, Any], resume: dict[str, Any]) -> dict[str, Any]:
-        """Fallback keyword-based matching when LLM is unavailable."""
-        title = job.get("title", "").lower()
-        description = job.get("description", "").lower()
-        resume_skills = [s.lower() for s in resume.get("skills", [])]
+        """Fallback keyword-based matching when LLM is unavailable.
 
-        matching = [s for s in resume_skills if s in title or s in description]
-        missing = [s for s in resume_skills if s not in title and s not in description]
+        Uses weighted scoring: title matches count more than description-only
+        matches. Caps at 65% to indicate LLM would give more accurate results.
+        Avoids the "all skills match because descriptions contain every buzzword" bug.
+        """
+        title = (job.get("title", "") or "").lower()
+        description = (job.get("description", "") or "").lower()
+        desc_head = description[:500]
+        resume_skills = self._extract_flat_skills(resume.get("skills", []))
 
-        skill_pct = int((len(matching) / max(len(resume_skills), 1)) * 100)
+        if not resume_skills:
+            return {
+                "job_id": job.get("id", ""), "job_title": job.get("title", ""),
+                "company": job.get("company", ""), "overall_score": 40,
+                "breakdown": {"skills_match": 40, "experience_match": 40, "location_match": 40, "salary_match": 40},
+                "missing_skills": [], "matching_skills": [],
+                "fit_summary": "No resume skills data available for matching.",
+                "recommended_actions": ["Upload a complete resume with skills listed"],
+                "evaluated_at": __import__("datetime").datetime.utcnow().isoformat(),
+            }
+
+        # Score based on matched skills: title matches = 15% each, desc matches = 5% each
+        title_matches = []
+        desc_matches = []
+        no_match = []
+        for skill in resume_skills:
+            if skill and len(skill) > 1:
+                if skill in title:
+                    title_matches.append(skill)
+                elif skill in desc_head:
+                    desc_matches.append(skill)
+                else:
+                    no_match.append(skill)
+
+        raw_score = len(title_matches) * 15 + len(desc_matches) * 5
+        final_score = min(raw_score, 65)
 
         return {
             "job_id": job.get("id", ""),
             "job_title": job.get("title", ""),
             "company": job.get("company", ""),
-            "overall_score": skill_pct,
+            "overall_score": final_score,
             "breakdown": {
-                "skills_match": skill_pct,
+                "skills_match": final_score,
                 "experience_match": 50,
                 "location_match": 50,
                 "salary_match": 50,
             },
-            "missing_skills": missing,
-            "matching_skills": matching,
-            "fit_summary": "Fallback keyword-based evaluation (LLM unavailable). "
-                           f"Found {len(matching)} matching skills out of {len(resume_skills)}.",
-            "recommended_actions": ["Run LLM-based evaluation when Ollama is available"],
+            "missing_skills": no_match,
+            "matching_skills": title_matches + desc_matches,
+            "fit_summary": f"Fallback weighted evaluation (LLM unavailable). "
+                           f"Matched {len(title_matches + desc_matches)} skill(s): "
+                           f"{', '.join((title_matches + desc_matches)[:8])}.",
+            "recommended_actions": ["Enable LM Studio/Ollama for accurate AI-based scoring"],
             "evaluated_at": __import__("datetime").datetime.utcnow().isoformat(),
         }
 
@@ -192,4 +244,3 @@ Return format:
         for exp in resume.get("experience", [])[:3]:
             roles.append(f"- {exp.get('role', 'Unknown')} at {exp.get('company', 'Unknown')}")
         return "\n".join(roles) if roles else "No experience listed"
-

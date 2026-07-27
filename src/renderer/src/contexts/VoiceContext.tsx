@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { api } from '../utils/api'
+import { getBackendConfig } from '../utils/backendConfig'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,18 @@ export function useVoice(): VoiceContextValue {
 
 // ─── Provider ────────────────────────────────────────────────────────────────
 
-const WS_URL = 'ws://127.0.0.1:8970/voice/ws/status'
+let _wsUrl: string | null = null
+async function getWsUrl(): Promise<string> {
+  if (!_wsUrl) {
+    try {
+      const config = await getBackendConfig()
+      _wsUrl = `${config.wsUrl}/voice/ws/status`
+    } catch {
+      _wsUrl = 'ws://127.0.0.1:8970/voice/ws/status'
+    }
+  }
+  return _wsUrl
+}
 
 export function VoiceProvider({ children }: { children: ReactNode }): JSX.Element {
   const [voiceListening, setVoiceListening] = useState(false)
@@ -133,14 +145,15 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
       poll()
     }
 
-    const connect = () => {
+    const connect = async (): Promise<void> => {
       try {
-        ws = new WebSocket(WS_URL)
+        const url = await getWsUrl()
+        ws = new WebSocket(url)
         wsFailedAt = null
       } catch {
         if (!wsFailedAt) wsFailedAt = Date.now()
         if (wsFailedAt && Date.now() - wsFailedAt > 5000) startHttpPoll()
-        reconnectTimer = setTimeout(connect, 2000)
+        reconnectTimer = setTimeout(() => void connect(), 2000)
         return
       }
 

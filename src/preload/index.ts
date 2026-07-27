@@ -13,7 +13,10 @@ contextBridge.exposeInMainWorld('barq', {
       }
       return result
     },
-    health: () => ipcRenderer.invoke('python:health')
+    health: () => ipcRenderer.invoke('python:health'),
+    getConfig: () => ipcRenderer.invoke('python:get-config'),
+    setRemoteMode: (enabled: boolean, url?: string) =>
+      ipcRenderer.invoke('python:set-remote-mode', enabled, url),
   },
 
   // Voice control
@@ -36,6 +39,7 @@ contextBridge.exposeInMainWorld('barq', {
     matches: () => ipcRenderer.invoke('jobs:matches'),
     approve: (jobId: string) => ipcRenderer.invoke('jobs:approve', jobId),
     responseAnalytics: () => ipcRenderer.invoke('jobs:response-analytics'),
+    matchAnalytics: () => ipcRenderer.invoke('jobs:match-analytics'),
     recordResponse: (data: unknown) => ipcRenderer.invoke('jobs:record-response', data),
     followupCandidates: () => ipcRenderer.invoke('jobs:followup-candidates'),
     scheduleFollowups: () => ipcRenderer.invoke('jobs:schedule-followups'),
@@ -209,5 +213,8 @@ contextBridge.exposeInMainWorld('barq', {
     toggle: () => ipcRenderer.send('window:toggle'),
     minimize: () => ipcRenderer.send('window:minimize'),
     close: () => ipcRenderer.send('window:close')
-  }
+  },
+
+  // Secure external URL opener (uses shell.openExternal in main process)
+  openExternal: (url: string) => ipcRenderer.invoke('open-external-url', url)
 })

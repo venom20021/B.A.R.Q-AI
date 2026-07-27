@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { api } from '../utils/api'
-import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, Cloud, Wifi, WifiOff, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
 import { useTheme, type AccentColor } from '../contexts/ThemeContext'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -22,6 +22,7 @@ const sections: SettingsSection[] = [
   { id: 'security', label: 'Security', icon: Shield, description: 'Command whitelist and approvals' },
   { id: 'debug', label: 'Debug', icon: Terminal, description: 'Debug logging and diagnostics' },
   { id: 'profile', label: 'Profile', icon: User, description: 'Your name and personal details' },
+  { id: 'connection', label: 'Connection', icon: Cloud, description: 'Local or cloud backend mode' },
   { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display settings' },
 ]
 
@@ -191,6 +192,7 @@ export function SettingsPage(): JSX.Element {
   const [energyThreshold, setEnergyThreshold] = useState(300)
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsLanguage, setVoiceSettingsLanguage] = useState('en')
+  const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
   // TTS backend selection
   const [ttsBackend, setTtsBackend] = useState('edge')
   const [ttsBackendUpdating, setTtsBackendUpdating] = useState(false)
@@ -256,6 +258,58 @@ export function SettingsPage(): JSX.Element {
   const [cloudLLMSaving, setCloudLLMSaving] = useState(false)
   const [cloudLLMSaved, setCloudLLMSaved] = useState('')
   const [cloudLLMKeyVisible, setCloudLLMKeyVisible] = useState(false)
+
+  // ─── Cloud Connection State ──────────────────────────────────
+  const [cloudMode, setCloudMode] = useState(false)
+  const [cloudUrl, setCloudUrl] = useState('http://155.248.247.224')
+  const [cloudModeLoading, setCloudModeLoading] = useState(true)
+  const [cloudModeStatus, setCloudModeStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking')
+  const [cloudModeMsg, setCloudModeMsg] = useState('')
+
+  // Fetch current cloud config on mount
+  const fetchCloudConfig = useCallback(async () => {
+    setCloudModeLoading(true)
+    try {
+      const resp = await window.barq?.python.getConfig()
+      if (resp?.success && resp.data) {
+        setCloudMode(resp.data.isRemote)
+        if (resp.data.isRemote) {
+          setCloudUrl(resp.data.httpUrl)
+          setCloudModeStatus('connected')
+        } else {
+          setCloudModeStatus('disconnected')
+        }
+      }
+    } catch { /* ignore */ }
+    setCloudModeLoading(false)
+  }, [])
+
+  const handleCloudModeToggle = useCallback(async () => {
+    const newMode = !cloudMode
+    setCloudMode(newMode)
+    setCloudModeStatus('checking')
+    setCloudModeMsg('')
+    try {
+      const resp = await window.barq?.python.setRemoteMode(newMode, newMode ? cloudUrl : undefined)
+      if (resp?.success && resp.data) {
+        setCloudMode(resp.data.isRemote)
+        setCloudModeStatus(resp.data.isRemote ? 'connected' : 'disconnected')
+        setCloudModeMsg(resp.data.isRemote ? 'Connected to cloud backend' : 'Switched to local backend')
+        // Invalidate cached config in renderer
+        const { invalidateBackendConfig } = await import('../utils/backendConfig')
+        invalidateBackendConfig()
+      } else {
+        setCloudMode(!newMode) // revert
+        setCloudModeStatus('disconnected')
+        setCloudModeMsg('Failed to switch mode')
+      }
+    } catch {
+      setCloudMode(!newMode)
+      setCloudModeStatus('disconnected')
+      setCloudModeMsg('Error switching mode')
+    }
+    setTimeout(() => setCloudModeMsg(''), 3000)
+  }, [cloudMode, cloudUrl])
 
   // Appearance settings
   const [appearanceSettings, setAppearanceSettings] = useState({
@@ -716,8 +770,9 @@ export function SettingsPage(): JSX.Element {
       void fetchTtsBackend()
       void fetchTelegramCredentials()
       void fetchCloudLLM()
+      void fetchCloudConfig()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM, fetchCloudConfig])
 
   const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
     <button
@@ -1996,6 +2051,105 @@ export function SettingsPage(): JSX.Element {
                   <p className="text-xs font-exo text-dim-500">
                     Your name is stored locally and never sent to any server. It only appears
                     in the dashboard greeting to make the experience feel more personal.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Connection Section ─── */}
+          {activeSection === 'connection' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider mb-1">Connection</h3>
+                <p className="text-sm font-rajdhani text-dim-400">Toggle between local and cloud backend mode</p>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${cloudMode ? 'bg-green-500/15' : 'bg-void-600/30'}`}>
+                      {cloudModeStatus === 'checking' ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+                      ) : cloudMode ? (
+                        <Cloud className="w-4 h-4 text-green-400" />
+                      ) : (
+                        <WifiOff className="w-4 h-4 text-dim-400" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-rajdhani font-semibold text-ghost">Cloud Mode</p>
+                      <p className="text-xs font-exo text-dim-400">
+                        {cloudMode ? 'Connected to remote backend' : 'Using local Python sidecar'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {cloudModeLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+                    ) : (
+                      renderToggle(cloudMode, handleCloudModeToggle)
+                    )}
+                  </div>
+                </div>
+
+                {cloudMode && (
+                  <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                    <div>
+                      <p className="text-sm font-rajdhani font-semibold text-ghost">Backend URL</p>
+                      <p className="text-xs font-exo text-dim-400">Remote sidebar API endpoint</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={cloudUrl}
+                        onChange={(e) => setCloudUrl(e.target.value)}
+                        className="bg-void-800/60 text-ghost text-xs font-mono px-3 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 placeholder:text-dim-500 w-52"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Status</p>
+                    <p className="text-xs font-exo text-dim-400">Current backend connectivity</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-block w-2 h-2 rounded-full ${
+                      cloudModeStatus === 'connected'
+                        ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
+                        : cloudModeStatus === 'checking'
+                          ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)] animate-pulse'
+                          : 'bg-dim-500/50'
+                    }`} />
+                    <span className={`text-[10px] font-mono font-bold tracking-wider uppercase ${
+                      cloudModeStatus === 'connected'
+                        ? 'text-green-400'
+                        : cloudModeStatus === 'checking'
+                          ? 'text-amber-400'
+                          : 'text-dim-500'
+                    }`}>
+                      {cloudModeStatus === 'connected' ? 'Connected' : cloudModeStatus === 'checking' ? 'Checking...' : 'Local'}
+                    </span>
+                  </div>
+                </div>
+
+                {cloudModeMsg && (
+                  <div className={`px-3 py-2 rounded-lg text-xs font-exo ${
+                    cloudModeStatus === 'connected'
+                      ? 'bg-green-500/10 text-green-300 border border-green-500/15'
+                      : 'bg-amber-500/10 text-amber-300 border border-amber-500/15'
+                  }`}>
+                    {cloudModeMsg}
+                  </div>
+                )}
+
+                <div className="pt-2">
+                  <p className="text-xs font-exo text-dim-500">
+                    Cloud mode sends all API requests to a remote BARQ server. Use this when
+                    running the Electron frontend on one machine and the backend on another
+                    (e.g. your Oracle VM at {cloudMode ? cloudUrl : 'http://YOUR_VM_IP'}).
+                    Local mode runs the Python sidecar on this machine.
                   </p>
                 </div>
               </div>

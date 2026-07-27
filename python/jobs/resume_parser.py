@@ -55,11 +55,12 @@ def parse_resume(file_path: str | None = None) -> dict[str, Any]:
         "github_url": _extract_url(raw_md, "github"),
         "portfolio_url": _extract_url(raw_md, "portfolio") or _extract_url(raw_md, "website"),
         "headline": _extract_headline(raw_md),
-        "summary": _extract_section(raw_md, "summary|profile|about"),
+        "summary": _extract_section(raw_md, "professional summary|summary|profile|about"),
         "skills": _extract_skills(raw_md),
         "experience": _extract_experience(raw_md),
         "education": _extract_education(raw_md),
         "projects": _extract_projects(raw_md),
+        "certifications": _extract_certifications(raw_md),
         "raw_md": raw_md,
         "parsed_at": datetime.utcnow().isoformat(),
     }
@@ -86,6 +87,7 @@ def _empty_resume(path: str) -> dict[str, Any]:
         "experience": [],
         "education": [],
         "projects": [],
+        "certifications": [],
         "raw_md": "",
         "parsed_at": "",
         "_error": f"Resume file not found at: {path}",
@@ -169,13 +171,15 @@ def _extract_headline(md: str) -> str:
 
 
 def _extract_section(md: str, section_names: str) -> str:
-    """Extract content from a named section (case-insensitive)."""
-    pattern = rf"(?i)(?:^|\n)#{{1,3}}\s*({section_names})\s*\n(.*?)(?=\n#{{1,3}}\s|\Z)"
+    """Extract content from a named section (case-insensitive).
+
+    Stops at the next top-level (##) heading, allowing sub-headings
+    (###) within the section (e.g., individual project or job entries).
+    """
+    pattern = rf"(?i)(?:^|\n)##\s*({section_names})\s*\n(.*?)(?=\n##\s|\Z)"
     match = re.search(pattern, md, re.DOTALL)
     if match:
         content = match.group(2).strip()
-        # Remove bullet markers for clean text
-        content = re.sub(r"^[-*+]\s+", "", content, flags=re.MULTILINE)
         return content.strip()
     return ""
 
@@ -218,8 +222,8 @@ def _extract_experience(md: str) -> list[dict[str, Any]]:
             continue
 
         lines = block.split("\n")
-        # First line is usually the role + company
-        title_line = lines[0].strip().lstrip("-*+").strip()
+        # First line is usually the role + company (may have ### heading prefix)
+        title_line = lines[0].strip().lstrip("-*+#").strip()
 
         # Try to parse: "Role at Company" or "Role — Company" or "Role, Company"
         role = title_line
@@ -297,13 +301,97 @@ def _extract_projects(md: str) -> list[dict[str, Any]]:
         if not block:
             continue
 
-        lines = [ln.strip().lstrip("-*+").strip() for ln in block.split("\n") if ln.strip()]
+        # Each block starts with ### project-name; strip the ### and any markers
+        lines = [ln.strip().lstrip("-*+#").strip() for ln in block.split("\n") if ln.strip()]
         title = lines[0] if lines else ""
         description = " ".join(lines[1:]) if len(lines) > 1 else ""
 
         entries.append({
             "name": title,
             "description": description,
+        })
+
+    return entries
+
+
+def _extract_certifications(md: str) -> list[dict[str, Any]]:
+    """Extract certification entries from the resume.
+
+    Handles formats like:
+      - **Cert Name** — Issuer (Date)
+        Credential: link-or-id
+
+      - **Cert Name** — Issuer (Date)
+        Credential ID: ABC123
+    """
+    section = _extract_section(md, "certifications|certification|certs|credentials")
+    if not section:
+        return []
+
+    entries = []
+    # Each entry is a bullet point line (starting with - or *)
+    # Possibly followed by an indented credential line
+    lines = section.split("\n")
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+
+        # Look for bullet-pointed cert entries
+        if not (line.startswith("-") or line.startswith("*")):
+            continue
+
+        # Remove bullet marker and strip
+        content = line.lstrip("-* ").strip()
+        if not content:
+            continue
+
+        # Remove bold markers (**)
+        clean = content.replace("**", "")
+
+        # Parse: "Cert Name — Issuer (Date)" or "Cert Name — Issuer (Date)"
+        cert_name = clean
+        issuer = ""
+        date = ""
+        credential = ""
+
+        # Split on em-dash or hyphen-with-spaces
+        for sep in [" — ", " – ", " - ", " -- "]:
+            if sep in clean:
+                parts = clean.split(sep, 1)
+                cert_name = parts[0].strip()
+                rest = parts[1].strip()
+                # Extract date from parentheses: (Jun 2026)
+                date_match = re.search(r"\(([^)]+)\)", rest)
+                if date_match:
+                    date = date_match.group(1).strip()
+                    issuer = rest[:date_match.start()].strip()
+                else:
+                    issuer = rest
+                break
+
+        # Check next line for credential link/ID (indented, no bullet)
+        if i < len(lines):
+            next_line = lines[i].strip()
+            if next_line and not next_line.startswith("-") and not next_line.startswith("*"):
+                # Could be "Credential: link" or "Credential ID: ABC123" or just a URL
+                if "credential" in next_line.lower() or "verify" in next_line.lower():
+                    cred_match = re.search(r"https?://[^\s)]+", next_line)
+                    if cred_match:
+                        credential = cred_match.group(0)
+                    else:
+                        # Extract after the colon as raw text
+                        col_match = re.search(r":\s*(.+)$", next_line)
+                        if col_match:
+                            credential = col_match.group(1).strip()
+                    i += 1
+
+        entries.append({
+            "name": cert_name,
+            "issuer": issuer,
+            "date": date,
+            "credential": credential,
         })
 
     return entries

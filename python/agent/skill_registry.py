@@ -21,6 +21,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,45 @@ from typing import Any, Optional
 
 # Type alias for an async callable: ``(**kwargs) -> str``
 AsyncCallable = Callable[..., Awaitable[str]]
+
+
+# ─── Skill Performance Analytics ────────────────────────────────────────────
+
+
+@dataclass
+class SkillExecutionStats:
+    """Execution metrics for a single skill."""
+    skill_name: str
+    total_calls: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    total_duration_seconds: float = 0.0
+    last_duration_seconds: float = 0.0
+    last_error: str = ""
+    last_called_at: float = 0.0
+    error_patterns: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def success_rate(self) -> float:
+        return self.success_count / max(self.total_calls, 1) * 100
+
+    @property
+    def avg_duration(self) -> float:
+        return self.total_duration_seconds / max(self.total_calls, 1)
+
+    def to_dict(self) -> dict:
+        return {
+            "skill": self.skill_name,
+            "total_calls": self.total_calls,
+            "success_count": self.success_count,
+            "error_count": self.error_count,
+            "success_rate_pct": round(self.success_rate, 1),
+            "avg_duration_seconds": round(self.avg_duration, 3),
+            "last_duration_seconds": round(self.last_duration_seconds, 3),
+            "last_error": self.last_error[:200] if self.last_error else "",
+            "last_called_at": self.last_called_at,
+            "error_patterns": dict(sorted(self.error_patterns.items(), key=lambda x: -x[1])[:10]),
+        }
 
 
 # ─── Skill Data Model ───────────────────────────────────────────────────────
@@ -201,8 +241,59 @@ class SkillRegistry:
 
     # ── Execution ─────────────────────────────────────────────────────
 
+    # ── Performance Analytics ────────────────────────────────────────
+
+    _stats: dict[str, SkillExecutionStats] = {}
+
+    def _get_stats(self, skill_name: str) -> SkillExecutionStats:
+        """Get (or create) the execution stats tracker for a skill."""
+        if skill_name not in self._stats:
+            self._stats[skill_name] = SkillExecutionStats(skill_name=skill_name)
+        return self._stats[skill_name]
+
+    def get_skill_stats(self, skill_name: str) -> Optional[dict]:
+        """Get execution stats for a specific skill."""
+        stats = self._stats.get(skill_name)
+        return stats.to_dict() if stats else None
+
+    def get_all_stats(self) -> list[dict]:
+        """Get execution stats for all skills."""
+        return [s.to_dict() for s in sorted(self._stats.values(), key=lambda s: -s.total_calls)]
+
+    def get_stats_summary(self) -> dict:
+        """Get a high-level summary of all skill analytics."""
+        if not self._stats:
+            return {"total_executions": 0, "avg_success_rate": 0.0, "skills": []}
+        total = sum(s.total_calls for s in self._stats.values())
+        successes = sum(s.success_count for s in self._stats.values())
+        errors = sum(s.error_count for s in self._stats.values())
+        durations = [s.avg_duration for s in self._stats.values() if s.total_calls > 0]
+        avg_dur = sum(durations) / max(len(durations), 1)
+        # Aggregate the most common error patterns across all skills
+        error_counts: dict[str, int] = {}
+        for s in self._stats.values():
+            for pattern, count in s.error_patterns.items():
+                error_counts[pattern] = error_counts.get(pattern, 0) + count
+        return {
+            "total_executions": total,
+            "total_successes": successes,
+            "total_errors": errors,
+            "avg_success_rate_pct": round(successes / max(total, 1) * 100, 1),
+            "avg_duration_seconds": round(avg_dur, 3),
+            "active_skills": len(self._stats),
+            "registered_skills": self.count(),
+            "top_errors": dict(
+                sorted(error_counts.items(), key=lambda x: -x[1])[:5]
+            ),
+        }
+
+    # ── Execution ─────────────────────────────────────────────────────
+
     async def call(self, skill_name: str, **params: Any) -> str:
         """Execute a skill by name with the given parameters.
+
+        Tracks execution time, success/failure, and error patterns
+        for performance analytics.
 
         If the skill has an explicit ``handler``, it is called directly.
         Otherwise, the registry dispatches via HTTP using the convention
@@ -223,15 +314,44 @@ class SkillRegistry:
         if skill is None:
             raise ValueError(f"Unknown skill: {skill_name}")
 
-        if skill.handler is not None:
-            # Direct handler call
-            try:
-                result = await skill.handler(**params)
-                return result
-            except Exception as e:
-                raise RuntimeError(f"Skill '{skill_name}' execution failed: {e}") from e
+        stats = self._get_stats(skill_name)
+        start_time = time.monotonic()
 
-        # HTTP dispatch
+        try:
+            if skill.handler is not None:
+                result = await skill.handler(**params)
+            else:
+                result = await self._dispatch_http(skill, params)
+
+            # Record success
+            duration = time.monotonic() - start_time
+            stats.total_calls += 1
+            stats.success_count += 1
+            stats.total_duration_seconds += duration
+            stats.last_duration_seconds = duration
+            stats.last_called_at = time.time()
+
+            return result
+
+        except Exception as e:
+            duration = time.monotonic() - start_time
+            error_msg = str(e)[:200]
+
+            stats.total_calls += 1
+            stats.error_count += 1
+            stats.total_duration_seconds += duration
+            stats.last_duration_seconds = duration
+            stats.last_error = error_msg
+            stats.last_called_at = time.time()
+
+            # Track error patterns (first 40 chars as key)
+            error_key = error_msg[:40].lower()
+            stats.error_patterns[error_key] = stats.error_patterns.get(error_key, 0) + 1
+
+            raise RuntimeError(f"Skill '{skill_name}' execution failed: {e}") from e
+
+    async def _dispatch_http(self, skill: Skill, params: dict) -> str:
+        """Execute a skill via HTTP dispatch to BARQ's FastAPI routes."""
         method = skill.metadata.get("route_method", "POST")
         path = skill.metadata.get("route_path", "")
         payload_template = skill.metadata.get("route_payload", {})
@@ -240,7 +360,6 @@ class SkillRegistry:
         payload = {}
         for key, default in payload_template.items():
             if default == "" or default is None:
-                # Use param value if provided, else empty/None
                 payload[key] = params.get(key, default if default is None else "")
             else:
                 payload[key] = params.get(key, default)
@@ -252,33 +371,28 @@ class SkillRegistry:
         settings = get_settings()
         url = f"http://{settings.host}:{settings.port}{path}"
 
-        try:
-            # Use a client per call (no shared state issues)
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                if method == "GET":
-                    resp = await client.get(url, params=payload, timeout=30.0)
-                else:
-                    resp = await client.post(url, json=payload, timeout=30.0)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                resp = await client.get(url, params=payload, timeout=30.0)
+            else:
+                resp = await client.post(url, json=payload, timeout=30.0)
 
-                if resp.status_code >= 400:
-                    error_detail = ""
-                    try:
-                        error_detail = resp.json().get("detail", resp.text)
-                    except Exception:
-                        error_detail = resp.text[:200]
-                    raise RuntimeError(
-                        f"Skill '{skill_name}' returned HTTP {resp.status_code}: {error_detail}"
-                    )
+            if resp.status_code >= 400:
+                error_detail = ""
+                try:
+                    error_detail = resp.json().get("detail", resp.text)
+                except Exception:
+                    error_detail = resp.text[:200]
+                raise RuntimeError(
+                    f"HTTP {resp.status_code}: {error_detail}"
+                )
 
-                data = resp.json()
-                if isinstance(data, dict):
-                    for key in ("output", "text", "result", "message", "content", "status"):
-                        if key in data and data[key]:
-                            return str(data[key])
-                return str(data)[:200]
-
-        except httpx.RequestError as e:
-            raise RuntimeError(f"Skill '{skill_name}' network error: {e}")
+            data = resp.json()
+            if isinstance(data, dict):
+                for key in ("output", "text", "result", "message", "content", "status"):
+                    if key in data and data[key]:
+                        return str(data[key])
+            return str(data)[:200]
 
     # ── File-based Discovery ────────────────────────────────────────
 
@@ -350,8 +464,9 @@ class SkillRegistry:
         return [s.to_dict() for s in self._skills.values()]
 
     def clear(self) -> None:
-        """Remove all registered skills (useful for testing)."""
+        """Remove all registered skills and reset analytics (useful for testing)."""
         self._skills.clear()
+        self._stats.clear()
 
 
 # ─── Singleton Accessor ───────────────────────────────────────────────────

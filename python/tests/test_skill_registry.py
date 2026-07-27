@@ -7,6 +7,14 @@ built-in skill registration, file-based discovery, and the create_skill_from_han
 
 import pytest
 
+# Override the conftest.py autouse DB fixture — these tests are pure
+# function tests and do not need a database connection.
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Override conftest's autouse DB fixture — no DB needed for these tests."""
+    return
+
+
 from agent.skill_registry import (
     Skill,
     SkillParameter,
@@ -228,13 +236,18 @@ class TestRegisterBuiltinSkills:
 
     def test_registers_all_builtins(self, clean_registry):
         register_builtin_skills(clean_registry)
-        assert clean_registry.count() == 9
+        assert clean_registry.count() == 15
 
     def test_includes_expected_tools(self, clean_registry):
         register_builtin_skills(clean_registry)
         names = set(clean_registry.names())
-        expected = {"web_search", "launch_app", "system_command", "create_file",
-                    "read_file", "get_weather", "browse_url", "send_message", "check_trends"}
+        expected = {
+            "web_search", "launch_app", "system_command", "create_file",
+            "read_file", "get_weather", "browse_url", "send_message", "check_trends",
+            "respond", "deep_research",
+            "recruitment_extract", "recruitment_match", "recruitment_write",
+            "recruitment_pipeline",
+        }
         assert names == expected
 
     def test_web_search_is_critical(self, clean_registry):
@@ -257,16 +270,24 @@ class TestRegisterBuiltinSkills:
         assert "browse_url" in skiplist
         assert "send_message" in skiplist
         assert "check_trends" in skiplist
+        assert "respond" in skiplist
+        assert "deep_research" in skiplist
+        assert "recruitment_extract" in skiplist
+        assert "recruitment_match" in skiplist
+        assert "recruitment_write" in skiplist
+        assert "recruitment_pipeline" in skiplist
         # Critical tools
         assert "web_search" not in skiplist
         assert "launch_app" not in skiplist
-        assert len(skiplist) == 5
+        assert "system_command" not in skiplist
+        assert "create_file" not in skiplist
+        assert len(skiplist) == 11
 
     def test_idempotent(self, clean_registry):
         register_builtin_skills(clean_registry)
         register_builtin_skills(clean_registry)
-        # Should still be 9, not 18 (duplicates silently ignored)
-        assert clean_registry.count() == 9
+        # Should still be 15, not 30 (duplicates silently ignored)
+        assert clean_registry.count() == 15
 
 
 # ─── create_skill_from_handler ──────────────────────────────────────────────

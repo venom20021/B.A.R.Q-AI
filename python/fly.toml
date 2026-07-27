@@ -1,0 +1,53 @@
+# ─── BARQ — Fly.io Deployment Configuration ─────────────────────────
+# Deploy: cd python && fly launch --copy-config
+#         fly secrets set KEY=value (see .env.production)
+#         fly deploy
+# ───────────────────────────────────────────────────────────────────────
+
+app = "barq-sidecar"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # Keep alive 24/7 (free tier allows 1 VM)
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 1
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  # Port 8956 is the default BARQ sidecar port
+  # Optional: only needed if connecting existing tools that expect 8956
+  [[services.ports]]
+    port = 8956
+    handlers = ["tls", "http"]
+
+[env]
+  PYTHONUNBUFFERED = "1"
+  TURSO_ENABLED = "true"
+
+[mounts]
+  source = "barq_data"
+  destination = "/app/data"
+
+[checks]
+  [checks.health]
+    type = "http"
+    path = "/health"
+    method = "GET"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"

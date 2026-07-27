@@ -1,4 +1,18 @@
 import { useState, useRef, useCallback } from 'react'
+import { getBackendConfig } from '../utils/backendConfig'
+
+let _baseUrl: string | null = null
+async function getHttpUrl(): Promise<string> {
+  if (!_baseUrl) {
+    try {
+      const config = await getBackendConfig()
+      _baseUrl = config.httpUrl
+    } catch {
+      _baseUrl = 'http://127.0.0.1:8970'
+    }
+  }
+  return _baseUrl
+}
 
 interface StreamingChatOptions {
   onToken?: (token: string) => void
@@ -34,7 +48,7 @@ export function useStreamingChat(options: StreamingChatOptions = {}): StreamingC
     setFullText('')
 
     try {
-      const baseUrl = 'http://127.0.0.1:8970'
+      const baseUrl = await getHttpUrl()
       const response = await fetch(`${baseUrl}/voice/chat/stream`, {
         method: 'POST',
         headers: {

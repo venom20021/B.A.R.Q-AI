@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Coroutine
 
 from fastapi import WebSocket
 
@@ -26,7 +26,12 @@ logger = logging.getLogger("barq.voice.ws")
 
 
 class VoiceWSManager:
-    """Thread-safe singleton WebSocket connection manager for voice state broadcasts."""
+    """Thread-safe singleton WebSocket connection manager for voice state broadcasts.
+
+    Tracks all background ``asyncio.Task``s spawned via ``fire_broadcast()`` so they
+    can be properly cancelled on shutdown — preventing the "Task was destroyed
+    but it is pending!" storm that was caused by untracked ``ensure_future()`` calls.
+    """
 
     _instance: VoiceWSManager | None = None
     _lock = asyncio.Lock()
@@ -35,6 +40,7 @@ class VoiceWSManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._clients: set[WebSocket] = set()
+            cls._instance._bg_tasks: set[asyncio.Task] = set()
             cls._instance._initialized = False
         return cls._instance
 
@@ -61,6 +67,46 @@ class VoiceWSManager:
             self._clients.discard(ws)
         logger.debug("[VoiceWS] Client unregistered (%d remaining)", len(self._clients))
 
+    # ── Background task tracking ────────────────────────────────────────
+    # Replaces unsafe ``asyncio.ensure_future()`` calls with tracked tasks
+    # that are properly cancelled on conversation shutdown.
+
+    def fire(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        """Fire a coroutine as a tracked background task.
+
+        The task is automatically removed from ``_bg_tasks`` when it completes.
+        Call ``cancel_all()`` on shutdown to prevent pending-task warnings.
+
+        Use this INSTEAD of ``asyncio.ensure_future()`` or ``asyncio.create_task()``
+        for all fire-and-forget broadcasts.
+
+        Args:
+            coro: The coroutine to run in the background.
+
+        Returns:
+            The created ``asyncio.Task``.
+        """
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
+
+    async def cancel_all(self) -> None:
+        """Cancel all pending background tasks.
+
+        Call this BEFORE stopping the managed event loop to prevent the
+        "Task was destroyed but it is pending!" storm.
+        """
+        if not self._bg_tasks:
+            return
+        pending = list(self._bg_tasks)
+        self._bg_tasks.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        logger.debug("[VoiceWS] Cancelled %d pending background task(s)", len(pending))
+
     @staticmethod
     def _ws_is_connected(ws: WebSocket) -> bool:
         """Check if a WebSocket is still in a connected state.
@@ -82,7 +128,7 @@ class VoiceWSManager:
             return True
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
-        """Fire-and-forget broadcast to all connected clients.
+        """Broadcast to all connected clients, pruning dead connections.
 
         Failed sends are silently dropped — the client will reconnect
         and re-register naturally via the WS endpoint's accept loop.
@@ -90,7 +136,6 @@ class VoiceWSManager:
         async with self._lock:
             dead: list[WebSocket] = []
             for ws in self._clients:
-                # Check WebSocket state before sending
                 if not self._ws_is_connected(ws):
                     dead.append(ws)
                     continue
@@ -102,7 +147,6 @@ class VoiceWSManager:
                 self._clients.discard(ws)
             if dead:
                 logger.debug("[VoiceWS] Pruned %d dead client(s)", len(dead))
-                # Log WS disconnect events to evolution tracker
                 evo = get_evolution_logger()
                 for _ in dead:
                     evo.record("ws_disconnect", metadata={"client_type": "voice_status"})
@@ -138,10 +182,8 @@ class VoiceWSManager:
             return True
         except Exception as e:
             logger.debug("[VoiceWS] Send failed: %s", e)
-            # Remove from active clients
             async with self._lock:
                 self._clients.discard(ws)
-            # Log to evolution tracker
             evo = get_evolution_logger()
             evo.record("ws_disconnect", metadata={
                 "client_type": "voice_status",

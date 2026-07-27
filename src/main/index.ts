@@ -114,7 +114,12 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    // Only open http/https URLs — reject everything else (Windows paths, etc.)
+    if (details.url && (details.url.startsWith('http://') || details.url.startsWith('https://'))) {
+      shell.openExternal(details.url)
+    } else {
+      console.warn('[MainWindow] Blocked window.open() with non-http URL:', details.url)
+    }
     return { action: 'deny' }
   })
 

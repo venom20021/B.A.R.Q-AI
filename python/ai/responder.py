@@ -154,7 +154,7 @@ class BARQResponder:
             await asyncio.sleep(interval)
             if not self.is_processing or self._interrupt_requested:
                 break
-            asyncio.ensure_future(self.ws_manager.broadcast_state("processing"))
+            self.ws_manager.fire(self.ws_manager.broadcast_state("processing"))
             print("[Responder] Heartbeat — processing...")
 
     async def stream_respond(self, user_input: str, confidence: float = 0.0) -> AsyncIterable[dict]:
@@ -178,7 +178,7 @@ class BARQResponder:
         self.is_processing = True
         self._interrupt_requested = False
         # Broadcast processing state to frontend
-        asyncio.ensure_future(self.ws_manager.broadcast_state("processing"))
+        self.ws_manager.fire(self.ws_manager.broadcast_state("processing"))
         try:
             # ── 0. Small talk check (faster than LLM) ───────────────
             small_talk_reply = get_small_talk(user_input)
@@ -187,8 +187,8 @@ class BARQResponder:
                 self.conversation.add_assistant_message(small_talk_reply)
                 self.response_text = small_talk_reply
                 # Broadcast speaking + caption_barq for small talk
-                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
-                asyncio.ensure_future(self.ws_manager.broadcast({
+                self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                self.ws_manager.fire(self.ws_manager.broadcast({
                     "type": "caption_barq",
                     "text": small_talk_reply,
                 }))
@@ -209,8 +209,8 @@ class BARQResponder:
                 self.response_text = "Processing command..."
                 result = await self.respond(user_input)
                 # Broadcast speaking + caption_barq for command response
-                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
-                asyncio.ensure_future(self.ws_manager.broadcast({
+                self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                self.ws_manager.fire(self.ws_manager.broadcast({
                     "type": "caption_barq",
                     "text": result.get("text", ""),
                 }))
@@ -233,19 +233,53 @@ class BARQResponder:
             _ttfb_recorded = False  # track time-to-first-token
 
             # Start heartbeat task to keep frontend alive during long generations
-            heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+            heartbeat_task = self.ws_manager.fire(self._heartbeat_loop())
+
+            # ── Wrap LLM stream with first-token timeout ────────────
+            # If the LLM doesn't produce the first token within 15 seconds,
+            # fall back to a graceful apology instead of hanging silently.
+            _LLM_FIRST_TOKEN_TIMEOUT = 15.0  # seconds
+            _LLM_TOTAL_TIMEOUT = 60.0        # seconds total
+
+            llm_stream = self.llm.stream_chat(context)
+            llm_iter = llm_stream.__aiter__()
 
             try:
-                async for token in self.llm.stream_chat(context):
+                # Wait for first token with timeout
+                first_token_task = asyncio.ensure_future(llm_iter.__anext__())
+                try:
+                    token = await asyncio.wait_for(first_token_task, timeout=_LLM_FIRST_TOKEN_TIMEOUT)
+                    # ── First token received ────────────────────
+                    if self._interrupt_requested:
+                        return
+                    _ttfb_recorded = True
+                    ttfb_ms = (time.perf_counter() - self.wake_word_timestamp) * 1000 if self.wake_word_timestamp > 0 else 0.0
+                    self.evo_logger.record("ttfb", duration_ms=ttfb_ms, metadata={"model": "ollama"})
+                    buffer += token
+                    full_text += token
+                    self.response_text = full_text
+                except asyncio.TimeoutError:
+                    # First token took too long — graceful fallback
+                    print(f"[Responder] LLM first-token timeout after {_LLM_FIRST_TOKEN_TIMEOUT}s")
+                    self.evo_logger.record("ttfb", duration_ms=_LLM_FIRST_TOKEN_TIMEOUT * 1000,
+                                           metadata={"model": "ollama", "timeout": True})
+                    full_text = "I'm sorry, the response is taking longer than expected. Please try again."
+                    self.conversation.add_assistant_message(full_text)
+                    self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                    self.ws_manager.fire(self.ws_manager.broadcast({
+                        "type": "caption_barq", "text": full_text,
+                    }))
+                    audio_path, audio_pcm = await self._text_to_speech_both(full_text)
+                    yield {"text": full_text, "audio_path": str(audio_path), "audio_pcm": audio_pcm}
+                    return
+
+                # ── Continue streaming remaining tokens ──────────
+                # IMPORTANT: use `llm_iter` (the SAME iterator that already consumed
+                # the first token), NOT `llm_stream` which would create a fresh
+                # iterator and duplicate the first token.
+                async for token in llm_iter:
                     if self._interrupt_requested:
                         break
-
-                    # Record TTFB on first token (actual wake-word-to-first-token duration)
-                    if not _ttfb_recorded:
-                        _ttfb_recorded = True
-                        ttfb_ms = (time.perf_counter() - self.wake_word_timestamp) * 1000 if self.wake_word_timestamp > 0 else 0.0
-                        self.evo_logger.record("ttfb", duration_ms=ttfb_ms, metadata={"model": "ollama"})
-
                     buffer += token
                     full_text += token
                     self.response_text = full_text  # update live display text
@@ -259,8 +293,8 @@ class BARQResponder:
                         for sentence in complete:
                             if sentence.strip():
                                 # Broadcast speaking state + caption_barq for each sentence chunk
-                                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
-                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                                self.ws_manager.fire(self.ws_manager.broadcast({
                                     "type": "caption_barq",
                                     "text": sentence,
                                 }))
@@ -282,8 +316,8 @@ class BARQResponder:
                 if not full_text.strip():
                     full_text = f"Sorry, I encountered an error. {e}"
                     # Broadcast speaking + error caption
-                    asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
-                    asyncio.ensure_future(self.ws_manager.broadcast({
+                    self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                    self.ws_manager.fire(self.ws_manager.broadcast({
                         "type": "caption_barq",
                         "text": full_text,
                     }))
@@ -298,8 +332,8 @@ class BARQResponder:
             # ── 3. Flush remaining buffer ───────────────────────────
             if buffer.strip() and not self._interrupt_requested:
                 # Broadcast speaking + remaining caption
-                asyncio.ensure_future(self.ws_manager.broadcast_state("speaking"))
-                asyncio.ensure_future(self.ws_manager.broadcast({
+                self.ws_manager.fire(self.ws_manager.broadcast_state("speaking"))
+                self.ws_manager.fire(self.ws_manager.broadcast({
                     "type": "caption_barq",
                     "text": buffer,
                 }))

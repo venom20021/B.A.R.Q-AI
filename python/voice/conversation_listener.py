@@ -131,10 +131,14 @@ class ConversationListener:
             self._loop_task = None
         self.responder.conversation.end_session()
 
+        # Cancel ALL pending broadcast tasks FIRST to prevent the
+        # "Task was destroyed but it is pending!" storm when the event loop stops.
+        await self.ws_manager.cancel_all()
+
         # Stop the managed event loop (set by the wake word callback) so that
         # loop.run_forever() in the callback thread can exit cleanly.
-        # This must happen BEFORE on_stop so the event loop is fully stopped
-        # before the wake detector reopens its mic stream.
+        # This must happen AFTER cancel_all() so pending broadcasts are cleaned
+        # up before the loop is destroyed.
         if self._managed_loop is not None and self._managed_loop.is_running():
             try:
                 self._managed_loop.stop()
@@ -145,8 +149,8 @@ class ConversationListener:
         # Stop the background mic monitor (conversation is done).
         self.stt.stop_mic_monitor()
 
-        # Broadcast idle state to frontend
-        asyncio.ensure_future(self.ws_manager.broadcast_state("idle"))
+        # Broadcast idle state to frontend via fire()
+        self.ws_manager.fire(self.ws_manager.broadcast_state("idle"))
 
         # Notify caller that conversation has stopped (e.g. resume wake detector)
         if self.on_stop:
@@ -200,7 +204,7 @@ class ConversationListener:
                             self.responder.stt_text = result["text"]
                             self.responder.stt_confidence = result.get("confidence", 0.0)
                             # Broadcast interim STT caption to frontend
-                            asyncio.ensure_future(self.ws_manager.broadcast({
+                            self.ws_manager.fire(self.ws_manager.broadcast({
                                 "type": "caption_user",
                                 "text": result["text"],
                                 "isFinal": False,
@@ -218,7 +222,7 @@ class ConversationListener:
                             })
                             # Broadcast final STT caption to frontend
                             if text:
-                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                self.ws_manager.fire(self.ws_manager.broadcast({
                                     "type": "caption_user",
                                     "text": text,
                                     "isFinal": True,
@@ -373,7 +377,7 @@ class ConversationListener:
                         if result["type"] == "interim":
                             self.responder.stt_text = result["text"]
                             self.responder.stt_confidence = result.get("confidence", 0.0)
-                            asyncio.ensure_future(self.ws_manager.broadcast({
+                            self.ws_manager.fire(self.ws_manager.broadcast({
                                 "type": "caption_user",
                                 "text": result["text"],
                                 "isFinal": False,
@@ -389,7 +393,7 @@ class ConversationListener:
                                 "silence_timeout": self.vad_silence_timeout,
                             })
                             if text:
-                                asyncio.ensure_future(self.ws_manager.broadcast({
+                                self.ws_manager.fire(self.ws_manager.broadcast({
                                     "type": "caption_user",
                                     "text": text,
                                     "isFinal": True,

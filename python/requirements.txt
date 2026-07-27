@@ -29,6 +29,9 @@ python-multipart>=0.0.9
 # SQLite (async)
 aiosqlite>=0.20.0
 
+# Turso Cloud (HTTP API)
+aiohttp>=3.9.0
+
 # Video Rendering
 moviepy>=1.0.3
 pillow>=11.0.0
@@ -87,6 +90,10 @@ watchdog>=4.0.0
 # Utilities
 python-dotenv>=1.0.1
 rich>=13.8.0
+
+# PDF text extraction (resume upload)
+PyMuPDF>=1.25.0
+pypdf>=5.0
 
 # Knowledge Graph
 networkx>=3.2.1

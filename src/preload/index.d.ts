@@ -4,6 +4,8 @@ interface BarqAPI {
   python: {
     request: (endpoint: string, data?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
     health: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+    getConfig: () => Promise<{ success: boolean; data?: { httpUrl: string; wsUrl: string; isRemote: boolean }; error?: string }>
+    setRemoteMode: (enabled: boolean, url?: string) => Promise<{ success: boolean; data?: { httpUrl: string; wsUrl: string; isRemote: boolean }; error?: string }>
   }
   voice: {
     start: () => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -133,6 +135,9 @@ interface BarqAPI {
     minimize: () => void
     close: () => void
   }
+
+  // Secure external URL opener
+  openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
 }
 
 declare global {

@@ -14,7 +14,7 @@ const { spawn, execSync } = require('child_process')
 const { existsSync } = require('fs')
 const { join } = require('path')
 
-const PORT = 8970
+const PORT = 8956
 const HOST = '127.0.0.1'
 
 // ── Python discovery (mirrors python-bridge.ts) ──────────────────────────

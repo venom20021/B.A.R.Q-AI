@@ -1,0 +1,79 @@
+# ─── BARQ — Caddy Reverse Proxy Configuration ───────────────────────
+# Caddy auto-provisions Let's Encrypt SSL certificates.
+# Place at: /etc/caddy/Caddyfile
+# Restart:  sudo systemctl restart caddy
+# ─────────────────────────────────────────────────────────────────────
+
+# ── Global Options ──
+{
+    # Email for Let's Encrypt certificate notifications
+    # email admin@example.com
+
+    # OCSP stapling
+    ocsp_stapling on
+}
+
+# ── Production: Domain (requires A record pointing to your VM IP) ──
+# Replace `barq.example.com` with your actual domain
+barq.example.com {
+    # Reverse proxy to BARQ backend
+    reverse_proxy localhost:8970 {
+        # WebSocket support (for voice streaming & SSE)
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # Compression
+    encode gzip
+
+    # Rate limiting
+    rate_limit {
+        zone dynamic {
+            key {remote_host}
+            events 100
+            window 1m
+        }
+    }
+
+    # Logs
+    log {
+        output file /var/log/caddy/barq.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format json
+    }
+}
+
+# ── Development: Direct IP access (no SSL) ──────────────────────────
+# Uncomment this if you don't have a domain yet
+# :80 {
+#     reverse_proxy localhost:8970 {
+#         header_up X-Real-IP {remote_host}
+#     }
+#     log {
+#         output file /var/log/caddy/barq-dev.log
+#     }
+# }
+
+# ── HTTP → HTTPS Redirect ──
+http://barq.example.com {
+    redir https://barq.example.com{uri} 301
+}
+
+# ── Static Health Page (optional) ───────────────────────────────────
+# :80 {
+#     respond /health 200 {
+#         body `{"status":"ok","service":"caddy-reverse-proxy"}`
+#     }
+# }

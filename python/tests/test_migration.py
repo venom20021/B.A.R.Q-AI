@@ -10,6 +10,15 @@ import json
 import os
 import tempfile
 from pathlib import Path
+
+import pytest
+
+# Override the conftest.py autouse DB fixture — these tests are pure
+# function tests and do not need a database connection.
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Override conftest's autouse DB fixture — no DB needed for these tests."""
+    return
 from unittest.mock import MagicMock, patch
 
 import pytest

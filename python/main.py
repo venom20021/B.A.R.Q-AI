@@ -24,6 +24,18 @@ from fastapi.middleware.cors import CORSMiddleware
 # Ensure the python directory is on the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Line-buffer stdout so that print() output is immediately visible in log
+# files when running in background mode (nohup, Task Scheduler, etc.).
+# Without this, Python buffers output when stdout is not a TTY, making
+# the log appear to freeze during the startup lifespan.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+
+from agent.agent_kernel_routes import (
+    kernel_router as agent_kernel_router,
+    skill_router as agent_skill_router,
+    memory_bus_router as memory_bus_router,
+)
 from agent.recruitment.routes import router as recruitment_router
 from agent.research.routes import router as research_router
 from agent.routes import router as agent_router
@@ -206,7 +218,7 @@ async def lifespan(app: FastAPI):
         _cloud = CloudLLMClient()
 
         if await _ollama_check.is_available():
-            print(f"[BARQ Sidecar] ✅ Ollama '{settings.ollama_model}' ready at {settings.ollama_host}")
+            print(f"[BARQ Sidecar] [OK] Ollama '{settings.ollama_model}' ready at {settings.ollama_host}")
         else:
             # Socket check to give a friendly diagnostic message
             import socket as _socket
@@ -215,11 +227,11 @@ async def lifespan(app: FastAPI):
             try:
                 _s.connect(("127.0.0.1", 11434))
                 _s.close()
-                print(f"[BARQ Sidecar] ⚠ Ollama is running but model '{settings.ollama_model}' is not pulled yet")
-                print(f"[BARQ Sidecar]   ➡ Run: ollama pull {settings.ollama_model}")
+                print(f"[BARQ Sidecar] [WARN] Ollama is running but model '{settings.ollama_model}' is not pulled yet")
+                print(f"[BARQ Sidecar]   >> Run: ollama pull {settings.ollama_model}")
             except Exception:
-                print("[BARQ Sidecar] ⚠ Ollama is NOT running")
-                print(f"[BARQ Sidecar]   ➡ Install from: https://ollama.com/download/windows")
+                print("[BARQ Sidecar] [WARN] Ollama is NOT running")
+                print(f"[BARQ Sidecar]   >> Install from: https://ollama.com/download/windows")
             finally:
                 try:
                     _s.close()
@@ -228,10 +240,10 @@ async def lifespan(app: FastAPI):
 
             # Check cloud fallback
             if _cloud.enabled:
-                print(f"[BARQ Sidecar] ✅ Cloud LLM fallback ready ({_cloud.model} at {_cloud.base_url})")
+                print(f"[BARQ Sidecar] [OK] Cloud LLM fallback ready ({_cloud.model} at {_cloud.base_url})")
             else:
-                print("[BARQ Sidecar] ⚠ No cloud LLM fallback — set OPENAI_API_KEY in .env to enable")
-                print("[BARQ Sidecar]   ➡ Get a key at: https://platform.openai.com/api-keys")
+                print("[BARQ Sidecar] [WARN] No cloud LLM fallback -- set OPENAI_API_KEY in .env to enable")
+                print("[BARQ Sidecar]   >> Get a key at: https://platform.openai.com/api-keys")
     except Exception:
         pass  # don't crash on startup diagnostics
 
@@ -266,6 +278,26 @@ async def lifespan(app: FastAPI):
         print(f"[BARQ Sidecar] Agent task queue start error: {e}")
 
     # Skills auto-register on import via agent.skill_registry
+
+    # Start the AgentKernel (central mediation for all LLM calls)
+    try:
+        from agent.agent_kernel import get_agent_kernel
+        kernel = get_agent_kernel()
+        kernel.start()
+        print("[BARQ Sidecar] AgentKernel started")
+    except Exception as e:
+        print(f"[BARQ Sidecar] AgentKernel start error: {e}")
+
+    # Start the MemoryBus (unified memory with FTS5)
+    try:
+        from memory.memory_bus import get_memory_bus
+        bus = get_memory_bus()
+        bus.start()
+        # Migrate any legacy long-term memory
+        bus.load_legacy_memory()
+        print("[BARQ Sidecar] MemoryBus started (legacy migration done)")
+    except Exception as e:
+        print(f"[BARQ Sidecar] MemoryBus start error: {e}")
 
     # Start the ingestion drop-folder watcher
     _ingestion_monitor = None
@@ -304,9 +336,70 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # ── Start Telegram Ingestion Bot ─────────────────────────────────────
+    _telegram_app = None
+    if settings.telegram_bot_token:
+        try:
+            from telegram import Update as _TGUpdate
+            from telegram.ext import (
+                Application as _TGApplication,
+                CommandHandler as _TGCommandHandler,
+                MessageHandler as _TGMessageHandler,
+                filters as _TGFilters,
+            )
+
+            from telegram_ingestion_bot import (
+                cmd_start as _tg_cmd_start,
+                cmd_help as _tg_cmd_help,
+                handle_message as _tg_handle_message,
+                handle_pdf_document as _tg_handle_pdf,
+                error_handler as _tg_error_handler,
+            )
+
+            _telegram_app = (
+                _TGApplication.builder()
+                .token(settings.telegram_bot_token)
+                .concurrent_updates(True)
+                .read_timeout(30)
+                .write_timeout(30)
+                .build()
+            )
+
+            _telegram_app.add_handler(_TGCommandHandler("start", _tg_cmd_start))
+            _telegram_app.add_handler(_TGCommandHandler("help", _tg_cmd_help))
+            _telegram_app.add_handler(_TGMessageHandler(_TGFilters.TEXT & ~_TGFilters.COMMAND, _tg_handle_message))
+            _telegram_app.add_handler(_TGMessageHandler(_TGFilters.Document.PDF, _tg_handle_pdf))
+            _telegram_app.add_error_handler(_tg_error_handler)
+
+            # Non-blocking start: initialize + start polling in background
+            await _telegram_app.initialize()
+            await _telegram_app.start()
+            await _telegram_app.updater.start_polling(allowed_updates=_TGUpdate.ALL_TYPES)
+
+            print(f"[BARQ Sidecar] Telegram ingestion bot started")
+        except ImportError as _tg_ie:
+            print(f"[BARQ Sidecar] [WARN] Telegram bot unavailable: {_tg_ie}")
+            print("[BARQ Sidecar]   >> Run: pip install python-telegram-bot")
+            _telegram_app = None
+        except Exception as _tg_e:
+            print(f"[BARQ Sidecar] [WARN] Telegram bot failed to start: {_tg_e}")
+            _telegram_app = None
+    else:
+        print("[BARQ Sidecar] [WARN] Telegram bot not configured -- set TELEGRAM_BOT_TOKEN in .env")
+
     print("[BARQ Sidecar] Ready for requests")
     yield
     # Shutdown
+    # Stop Telegram ingestion bot
+    if _telegram_app is not None:
+        try:
+            await _telegram_app.updater.stop()
+            await _telegram_app.stop()
+            await _telegram_app.shutdown()
+            print("[BARQ Sidecar] Telegram ingestion bot stopped")
+        except Exception as _tg_se:
+            print(f"[BARQ Sidecar] [WARN] Telegram bot shutdown error: {_tg_se}")
+
     # Stop the ingestion watcher
     if _ingestion_monitor is not None:
         try:
@@ -330,6 +423,23 @@ async def lifespan(app: FastAPI):
         print("[BARQ Sidecar] Agent task queue stopped")
     except Exception as e:
         print(f"[BARQ Sidecar] Agent task queue stop error: {e}")
+
+    # Stop the AgentKernel
+    try:
+        from agent.agent_kernel import get_agent_kernel
+        await get_agent_kernel().stop()
+        print("[BARQ Sidecar] AgentKernel stopped")
+    except Exception as e:
+        print(f"[BARQ Sidecar] AgentKernel stop error: {e}")
+
+    # Stop the MemoryBus
+    try:
+        from memory.memory_bus import get_memory_bus
+        await get_memory_bus().stop()
+        print("[BARQ Sidecar] MemoryBus stopped")
+    except Exception as e:
+        print(f"[BARQ Sidecar] MemoryBus stop error: {e}")
+
     try:
         await analytics_dao.log_activity(
             "system", "shutdown", "BARQ Sidecar shutting down",
@@ -385,6 +495,11 @@ app.include_router(migration_router, tags=["Graph Migration"])
 app.include_router(gemini_router, tags=["Gemini File Watcher"])
 app.include_router(settings_router, tags=["Settings"])
 app.include_router(external_apis_router, tags=["Free Public APIs"])
+
+# Register Agent Kernel & Analytics routers
+app.include_router(agent_kernel_router)
+app.include_router(agent_skill_router)
+app.include_router(memory_bus_router)
 
 # Register auto-apply router (DynamicResumeBuilder, pipeline, etc.)
 from jobs.auto_applier.routes import router as auto_apply_router

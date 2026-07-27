@@ -12,8 +12,7 @@ toolset and async architecture.
 import json
 import re
 
-from utils.ollama_client import OllamaClient
-
+from .agent_kernel import get_agent_kernel
 from .skill_registry import get_skill_registry
 
 # Dynamically generated from the SkillRegistry — reflects the actual
@@ -59,6 +58,8 @@ def _get_planner_system_prompt() -> str:
 async def create_plan(goal: str, context: str = "") -> dict:
     """Break a user goal into a step-by-step plan using the LLM.
 
+    Routes through the AgentKernel for rate limiting and concurrency control.
+
     Args:
         goal: The user's high-level goal (e.g. "research quantum computing and save to file").
         context: Optional additional context about the user or environment.
@@ -67,7 +68,7 @@ async def create_plan(goal: str, context: str = "") -> dict:
         A dict with ``goal`` and ``steps`` (list of step dicts).
         Each step has: step, tool, description, parameters, critical.
     """
-    llm = OllamaClient()
+    kernel = get_agent_kernel()
     user_input = f"Goal: {goal}"
     if context:
         user_input += f"\n\nContext: {context}"
@@ -79,7 +80,7 @@ async def create_plan(goal: str, context: str = "") -> dict:
     ]
 
     try:
-        response = await llm.chat(messages)
+        response = await kernel.chat(messages, agent_name="planner")
 
         text = response.strip()
         # Strip markdown fences if present
@@ -134,6 +135,8 @@ async def replan(
 ) -> dict:
     """Create a revised plan after a step has failed.
 
+    Routes through the AgentKernel for rate limiting and concurrency control.
+
     Args:
         goal: Original user goal.
         completed_steps: Steps that completed successfully.
@@ -143,7 +146,7 @@ async def replan(
     Returns:
         A revised plan dict with remaining steps.
     """
-    llm = OllamaClient()
+    kernel = get_agent_kernel()
 
     completed_summary = "\n".join(
         f"  - Step {s['step']} ({s['tool']}): DONE" for s in completed_steps
@@ -166,7 +169,7 @@ Create a REVISED plan for the remaining work only. Do not repeat completed steps
     ]
 
     try:
-        response = await llm.chat(messages)
+        response = await kernel.chat(messages, agent_name="planner_replan")
         text = response.strip()
         text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
         plan = json.loads(text)

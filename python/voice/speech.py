@@ -383,7 +383,19 @@ class SpeechProcessor:
         # When stt_language is "en" (default) we explicitly pass "en".
         # User can change language at runtime via /voice/language endpoint.
         transcribe_language = self.stt_language if self.stt_language else None
-        segments, info = model.transcribe(str(audio_path), language=transcribe_language, beam_size=3, vad_filter=True)
+        segments, info = model.transcribe(
+            str(audio_path),
+            language=transcribe_language,
+            beam_size=5,                          # 3→5: broader search reduces hallucinations
+            vad_filter=True,                      # filter out non-speech / silence
+            vad_parameters={
+                "threshold": 0.5,                # Silero VAD sensitivity (0-1, lower=more sensitive)
+                "min_silence_duration_ms": 500,   # ms of silence before considering end of speech
+            },
+            no_speech_threshold=0.6,              # raise from implicit ~0.45: reject more noise as non-speech
+            compression_ratio_threshold=2.0,       # lower from default 2.4: catch repetitive loops earlier
+            log_prob_threshold=-1.0,               # explicit default — skip low-prob segments
+        )
         # Build segments list once for both text and confidence
         segments_list = list(segments)
         text = " ".join(seg.text.strip() for seg in segments_list)
@@ -737,7 +749,19 @@ class SpeechProcessor:
             model = self._get_model()
             # Lock to configured language for consistency with transcribe()
             transcribe_language = self.stt_language if self.stt_language else None
-            segments, info = model.transcribe(str(temp_path), language=transcribe_language, beam_size=3, vad_filter=True)
+            segments, info = model.transcribe(
+                str(temp_path),
+                language=transcribe_language,
+                beam_size=5,                          # 3→5: broader search reduces hallucinations
+                vad_filter=True,                      # filter out non-speech / silence
+                vad_parameters={
+                    "threshold": 0.5,                # Silero VAD sensitivity (0-1, lower=more sensitive)
+                    "min_silence_duration_ms": 500,   # ms of silence before considering end of speech
+                },
+                no_speech_threshold=0.6,              # raise from implicit ~0.45: reject more noise as non-speech
+                compression_ratio_threshold=2.0,       # lower from default 2.4: catch repetitive loops earlier
+                log_prob_threshold=-1.0,               # explicit default — skip low-prob segments
+            )
             segments_list = list(segments)
             text = " ".join(seg.text.strip() for seg in segments_list)
             confidence = self._compute_confidence(segments_list)

@@ -1,5 +1,5 @@
 """
-AI job evaluation using local LLM (Ollama/Llama 3.1).
+AI job evaluation using local LLM via OllamaClient (supports LM Studio, Groq fallback).
 Scores jobs on fit, culture, compensation, and red flags.
 """
 
@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from config import get_settings
+from utils.ollama_client import OllamaClient
 
 
 class JobEvaluator:
@@ -14,6 +15,7 @@ class JobEvaluator:
 
     def __init__(self):
         self.settings = get_settings()
+        self._llm = OllamaClient(temperature=0.3)
 
     async def evaluate(self, job: dict[str, Any], user_profile: dict[str, Any]) -> dict[str, Any]:
         """
@@ -29,24 +31,28 @@ class JobEvaluator:
         prompt = self._build_evaluation_prompt(job, user_profile)
 
         try:
-            import ollama
-            response = ollama.chat(
-                model=self.settings.ollama_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a career advisor AI. Evaluate the job listing against the "
-                            "user's profile. Return ONLY a JSON object with scores and reasoning."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                format="json",
-                options={"temperature": 0.3},
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a career advisor AI. Evaluate the job listing against the "
+                        "user's profile. Return ONLY a JSON object with scores and reasoning."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
 
-            result = json.loads(response["message"]["content"])
+            response_text = await self._llm.chat(messages)
+
+            # Extract JSON from response (LLM may wrap in markdown code blocks)
+            response_text = response_text.strip()
+            if response_text.startswith("```"):
+                # Remove markdown code fences
+                lines = response_text.split("\n")
+                lines = [l for l in lines if not l.startswith("```")]
+                response_text = "\n".join(lines)
+
+            result = json.loads(response_text)
             return self._normalize_evaluation(result, job)
 
         except Exception as e:
@@ -105,32 +111,87 @@ Return format:
             ),
         }
 
+    @staticmethod
+    def _extract_flat_skills(skills_raw: list) -> list:
+        """Extract clean skill keywords from resume skills that may have
+        markdown formatting like '- **Backend:** Python'."""
+        flat = []
+        for s in skills_raw:
+            if not s:
+                continue
+            cleaned = s.lower().replace("**", "").strip().lstrip("- ").lstrip("* ")
+            # If format is "category: skills" take the skills part after colon
+            if ":" in cleaned:
+                cleaned = cleaned.split(":")[-1].strip()
+            # Split on commas for compound entries
+            for part in cleaned.split(","):
+                p = part.strip().split("(")[0].strip()
+                if p and len(p) > 1:
+                    flat.append(p)
+        return flat
+
     def _fallback_evaluation(
         self, job: dict[str, Any], profile: dict[str, Any]
     ) -> dict[str, Any]:
-        """Fallback evaluation when LLM is unavailable."""
-        # Simple keyword-based scoring
-        title = job.get("title", "").lower()
-        description = job.get("description", "").lower()
-        skills = [s.lower() for s in profile.get("skills", [])]
+        """Fallback evaluation when LLM is unavailable.
 
-        matching_skills = sum(1 for skill in skills if skill in title or skill in description)
-        skill_score = min(matching_skills / max(len(skills), 1) * 5, 5)
+        Uses weighted keyword matching to avoid the "all skills match because
+        descriptions contain every buzzword" bug. Skills found in the job
+        TITLE count MORE than skills only found in the description body.
+        Returns a conservative score (max 60%) so the user knows LLM eval
+        would give better results.
+        """
+        title = (job.get("title", "") or "").lower()
+        description = (job.get("description", "") or "").lower()
+        desc_head = description[:500]
+
+        skills_raw = profile.get("skills", []) or profile.get("tech_skills", [])
+        skills = self._extract_flat_skills(skills_raw)
+        if not skills:
+            return {
+                "job_id": job.get("id", ""),
+                "title": job.get("title", ""),
+                "company": job.get("company", ""),
+                "overall_score": 2.5,
+                "scores": {"role_fit": 2.5, "culture": 2.5, "compensation": 2.5, "growth": 2.5, "red_flags": 0.0},
+                "reasoning": "Insufficient skill data for evaluation.",
+                "pros": [], "cons": ["No resume data available for detailed matching"],
+                "match_percentage": 50.0,
+            }
+
+        # Score based on matched skills: title matches = 15% each, desc matches = 5% each
+        # This avoids the "dividing by 34 skills makes everything 0" problem
+        title_matches = 0
+        desc_matches = 0
+        matched_skills = []
+        for skill in skills:
+            if skill and len(skill) > 1:
+                if skill in title:
+                    title_matches += 1
+                    matched_skills.append(skill)
+                elif skill in desc_head:
+                    desc_matches += 1
+                    matched_skills.append(skill)
+
+        raw_score = title_matches * 15 + desc_matches * 5
+        final_score_pct = min(raw_score, 60)
+        overall = round(final_score_pct / 20, 1)  # Convert 0-60% to 0-3.0 / 5
 
         return {
             "job_id": job.get("id", ""),
             "title": job.get("title", ""),
             "company": job.get("company", ""),
-            "overall_score": skill_score,
+            "overall_score": overall,
             "scores": {
-                "role_fit": skill_score,
+                "role_fit": overall,
                 "culture": 3.0,
                 "compensation": 3.0,
                 "growth": 3.0,
                 "red_flags": 0.0,
             },
-            "reasoning": "Fallback evaluation (LLM unavailable). Based on keyword matching.",
-            "pros": [],
-            "cons": ["LLM evaluation unavailable"],
-            "match_percentage": round(skill_score * 20, 1),
+            "reasoning": "Fallback evaluation (LLM unavailable). Based on keyword matching. "
+                           f"Matched {len(matched_skills)} skill(s): {', '.join(matched_skills[:8])}.",
+            "pros": [f"{title_matches} skills found in job title"],
+            "cons": ["LLM evaluation unavailable — install LM Studio or Ollama for accurate scoring"],
+            "match_percentage": final_score_pct,
         }
