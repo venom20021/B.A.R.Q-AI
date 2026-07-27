@@ -95,6 +95,9 @@ rich>=13.8.0
 PyMuPDF>=1.25.0
 pypdf>=5.0
 
+# Gemini AI Vision
+google-genai>=1.0.0
+
 # Knowledge Graph
 networkx>=3.2.1
 aiogram

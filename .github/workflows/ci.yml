@@ -24,7 +24,9 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # FIXME: --legacy-peer-deps avoids @react-three/postprocessing vs @react-three/fiber conflict
+        #        Update @react-three/fiber to ^9.0.0 or downgrade @react-three/postprocessing
+        run: npm ci --legacy-peer-deps
 
       - name: Lint
         run: npm run lint
@@ -54,6 +56,14 @@ jobs:
           cache-dependency-path: |
             python/requirements.txt
             python/requirements-dev.txt
+
+      - name: Install system dependencies (pyaudio)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y portaudio19-dev
+
+      - name: Install system dependencies (pyaudio)
+        if: runner.os == 'macOS'
+        run: brew update && brew install portaudio || brew install portaudio
 
       - name: Install production dependencies
         run: pip install -r python/requirements.txt
