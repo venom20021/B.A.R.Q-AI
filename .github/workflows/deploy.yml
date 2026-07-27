@@ -40,7 +40,9 @@ jobs:
             echo "=== Backing up .env ==="
             cp .env /tmp/barq-env-backup 2>/dev/null || echo "No .env to back up"
 
-            # ── Pull latest code ──
+            # ── Discard local hotfixes (pushed master has them) & pull ──
+            echo "=== Resetting local changes ==="
+            git reset --hard HEAD
             echo "=== Pulling latest code ==="
             git pull origin master 2>&1
 
