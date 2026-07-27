@@ -29,7 +29,12 @@ class TursoConnection:
     """
 
     def __init__(self, database_url: str, auth_token: str):
-        self._base_url = database_url.rstrip("/")
+        # Turso URLs use the libsql:// protocol, but the HTTP API requires https://
+        url = database_url.rstrip("/")
+        if url.startswith("libsql://"):
+            url = "https://" + url[9:]
+            print(f"[Turso] Converted libsql:// to https:// for HTTP API")
+        self._base_url = url
         self._auth_token = auth_token
         self._session: Optional[Any] = None  # aiohttp.ClientSession
 
