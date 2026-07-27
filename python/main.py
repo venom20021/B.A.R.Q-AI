@@ -354,9 +354,15 @@ async def lifespan(app: FastAPI):
 
     # ── Start Telegram Ingestion Bot ─────────────────────────────────────
     _telegram_app = None
-    if settings.telegram_bot_token:
+    # If BARQ_SKIP_TELEGRAM=1 or true, skip the bot (local dev instances should
+    # set this env var so they don't conflict with the VM's polling bot).
+    _skip_telegram = os.getenv("BARQ_SKIP_TELEGRAM", "").lower() in ("1", "true")
+    if _skip_telegram:
+        print("[BARQ Sidecar] [INFO] Telegram bot skipped locally (BARQ_SKIP_TELEGRAM is set)")
+    elif settings.telegram_bot_token:
         try:
             from telegram import Update as _TGUpdate
+            from telegram.error import Conflict as _TGConflict
             from telegram.ext import (
                 Application as _TGApplication,
                 CommandHandler as _TGCommandHandler,
@@ -396,6 +402,9 @@ async def lifespan(app: FastAPI):
         except ImportError as _tg_ie:
             print(f"[BARQ Sidecar] [WARN] Telegram bot unavailable: {_tg_ie}")
             print("[BARQ Sidecar]   >> Run: pip install python-telegram-bot")
+            _telegram_app = None
+        except _TGConflict:
+            print("[BARQ Sidecar] [WARN] Telegram bot Conflict — another instance is already polling, skipping local bot")
             _telegram_app = None
         except Exception as _tg_e:
             print(f"[BARQ Sidecar] [WARN] Telegram bot failed to start: {_tg_e}")

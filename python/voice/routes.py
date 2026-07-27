@@ -619,14 +619,21 @@ async def _lightweight_wake_greeting(command_text: str = ""):
     - If a command followed the wake word, feed it to the LLM
     - Fire a background task to gather system info (jobs, weather, etc.)
     - Enter conversation mode so the user can speak immediately
+
+    IMPORTANT: Each step is wrapped in its own try/except so that a failure
+    in analytics logging or command processing NEVER prevents the conversation
+    loop from starting.  This fixes the "greeting error → mic never activates"
+    bug where an ``asyncio.timeout()`` RuntimeError (from a library like httpx
+    when run outside a running Task) would skip ``start_conversation()``.
     """
     # ── Step 0: Broadcast "listening" state immediately ──
     # This runs inside the proper event loop (created by _on_wake_word_callback)
     _voice_ws.fire(_voice_ws.broadcast_state("listening"))
 
     responder.is_processing = True
+
+    # ── Step 1: Log wake activity (own try/except — NEVER block conversation) ──
     try:
-        # Log wake activity
         if command_text:
             await analytics_dao.log_activity(
                 "voice", "wake_with_command",
@@ -634,19 +641,40 @@ async def _lightweight_wake_greeting(command_text: str = ""):
             )
         else:
             await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected")
+    except Exception as e:
+        print(f"[Voice] Analytics log error (non-fatal): {e}")
 
-        # Fire background info gathering (fire-and-forget)
+    # ── Step 2: Fire background info gathering (fire-and-forget — own try/except) ──
+    try:
         _voice_ws.fire(_inject_background_info())
+    except Exception as e:
+        print(f"[Voice] Background info fire error (non-fatal): {e}")
 
-        # ═══ START CONVERSATION FIRST ═══
-        # Start the conversation loop BEFORE processing the command, so that
-        # even if the LLM call fails (asyncio timeout, Ollama unavailable, etc.),
-        # the conversation loop is already active and the user can speak again.
-        # This fixes the "no response after wake" bug where the LLM error
-        # prevented start_conversation() from ever being called.
+    # ═══ Step 3: START CONVERSATION (ALWAYS — own try/except) ═══
+    # Start the conversation loop BEFORE processing the command, so that
+    # even if the LLM call fails (asyncio timeout, Ollama unavailable, etc.),
+    # the conversation loop is already active and the user can speak again.
+    try:
         await conversation_listener.start_conversation()
+    except Exception as e:
+        print(f"[Voice] start_conversation error (will retry): {e}")
+        # Last-resort: start conversation directly without the pipeline
+        # Only run fallback if conversation isn't already active (guard against
+        # double-start if start_conversation() partially completed)
+        if not conversation_listener.is_active:
+            try:
+                responder.conversation.start_session("voice_conversation")
+                speech_processor.start_mic_monitor()
+                conversation_listener._conversation_active = True
+                conversation_listener._loop_task = asyncio.create_task(
+                    conversation_listener._conversation_loop_pipeline()
+                )
+                print("[Voice] Conversation started via fallback path")
+            except Exception as e2:
+                print(f"[Voice] Fallback conversation start also failed: {e2}")
 
-        # ═══ THEN process command text (if any) ═══
+    # ═══ Step 4: Process command text (if any — own try/except) ═══
+    try:
         if command_text:
             print(f"[Voice] Processing wake command: '{command_text}' — streaming response")
             try:
@@ -675,9 +703,8 @@ async def _lightweight_wake_greeting(command_text: str = ""):
                     pass
         else:
             print("[Voice] No command — entering conversation mode directly")
-
     except Exception as e:
-        print(f"[Voice] Lightweight greeting error: {e}")
+        print(f"[Voice] Command processing error (non-fatal, conversation running): {e}")
     finally:
         responder.is_processing = False
 
