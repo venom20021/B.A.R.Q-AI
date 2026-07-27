@@ -9,6 +9,20 @@ const SIDECAR_HOST = '127.0.0.1'
 const SIDECAR_URL = `http://${SIDECAR_HOST}:${SIDECAR_PORT}`
 
 /**
+ * Default remote URL — the Oracle VM backend.
+ * The app auto-tries this URL first on startup. If unreachable,
+ * it falls back to starting a local Python backend.
+ * Set SIDECAR_REMOTE_URL to override, or SIDECAR_AUTO_REMOTE=false to skip auto-connect.
+ */
+const DEFAULT_REMOTE_URL = 'http://155.248.247.224'
+
+/**
+ * Auto-remote mode: try the default remote URL first, fall back to local.
+ * Disable by setting SIDECAR_AUTO_REMOTE=false in env.
+ */
+const AUTO_REMOTE = process.env['SIDECAR_AUTO_REMOTE'] !== 'false'
+
+/**
  * Remote sidecar URL — when set, the app connects to a remote BARQ instance
  * instead of starting a local Python process.
  * Set via SIDECAR_REMOTE_URL env var.
@@ -61,6 +75,11 @@ class PythonSidecar {
     return this._remoteUrl
   }
 
+  /** Whether auto-remote fallback is available */
+  get isAutoRemoteEnabled(): boolean {
+    return AUTO_REMOTE
+  }
+
   /**
    * Get backend configuration for the renderer.
    * Returns HTTP and WebSocket base URLs.
@@ -76,7 +95,7 @@ class PythonSidecar {
     }
     return {
       httpUrl: `http://${SIDECAR_HOST}:${SIDECAR_PORT}`,
-      wsUrl: `ws://${SIDECAR_HOST}:${8970}`,
+      wsUrl: `ws://${SIDECAR_HOST}:${SIDECAR_PORT}`,
       isRemote: false,
     }
   }
@@ -151,11 +170,10 @@ class PythonSidecar {
   async start(): Promise<void> {
     if (this.isRunning) return
 
-    // Remote mode — skip starting local Python
+    // ── Remote mode (explicit via SIDECAR_REMOTE_URL) — skip local entirely ──
     if (this.remoteMode && this._remoteUrl) {
       console.log(`[PythonSidecar] Remote mode — connecting to ${this._remoteUrl}`)
       this.isRunning = true
-      // Verify the remote backend is healthy
       try {
         const response = await fetch(`${this._remoteUrl}/health`, { signal: AbortSignal.timeout(5000) })
         if (response.ok) {
@@ -164,13 +182,33 @@ class PythonSidecar {
           return
         }
       } catch {
-        console.warn('[PythonSidecar] Remote backend not reachable. Will retry with health checks.')
+        console.warn('[PythonSidecar] Explicit remote backend not reachable. Will retry.')
       }
-      // Start health checks anyway — will retry connecting
       this.startHealthChecks()
       return
     }
 
+    // ── Auto-remote mode (default) — try cloud first, fall back to local ──
+    if (AUTO_REMOTE && !this.remoteMode) {
+      const autoUrl = DEFAULT_REMOTE_URL
+      console.log(`[PythonSidecar] Auto-remote — trying ${autoUrl}...`)
+      try {
+        const response = await fetch(`${autoUrl}/health`, { signal: AbortSignal.timeout(5000) })
+        if (response.ok) {
+          console.log('[PythonSidecar] ✅ Remote backend reachable — using cloud mode')
+          this.remoteMode = true
+          this._remoteUrl = autoUrl
+          this.isRunning = true
+          this.startHealthChecks()
+          return
+        }
+      } catch {
+        console.warn('[PythonSidecar] Remote backend not reachable — falling back to local Python')
+      }
+    }
+
+    // ── Local Python mode (fallback or explicit) ──
+    console.log('[PythonSidecar] Starting local Python backend...')
     // Try starting with up to 2 retries
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
