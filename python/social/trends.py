@@ -78,7 +78,7 @@ class TrendResearch:
             url = f"https://www.reddit.com/r/{sub}/hot.json"
             response = await self.client.get(
                 url,
-                headers={"User-Agent": "BARQ/1.0"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
                 params={"limit": 25},
             )
             response.raise_for_status()

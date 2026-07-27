@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS trends (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     source TEXT NOT NULL
-        CHECK (source IN ('reddit', 'twitter', 'news', 'google_trends', 'manual')),
+        CHECK (source IN ('reddit', 'twitter', 'news', 'google_trends', 'manual', 'github', 'product_hunt')),
     subreddit TEXT NOT NULL DEFAULT '',
     url TEXT NOT NULL DEFAULT '',
     score REAL NOT NULL DEFAULT 0.0,
@@ -511,9 +511,8 @@ async def initialize_schema(db):
 async def seed_defaults(db):
     """Insert default data if tables are empty."""
     # Default user profile if none exists
-    cursor = await db.execute("SELECT COUNT(*) as count FROM user_profiles")
-    row = await cursor.fetchone()
-    if row and row[0] == 0:
+    row = await db.fetch_one("SELECT COUNT(*) as count FROM user_profiles")
+    if row and row["count"] == 0:
         await db.execute("""
             INSERT INTO user_profiles (full_name, email, headline, skills)
             VALUES ('User', '', 'Professional', '["Communication"]')
@@ -552,20 +551,18 @@ async def seed_defaults(db):
     ]
 
     for key, value, category in default_settings:
-        cursor = await db.execute(
+        result = await db.fetch_one(
             "SELECT COUNT(*) as count FROM user_settings WHERE key = ?", (key,)
         )
-        result = await cursor.fetchone()
-        if result and result[0] == 0:
+        if result and result["count"] == 0:
             await db.execute(
                 "INSERT INTO user_settings (key, value, category) VALUES (?, ?, ?)",
                 (key, value, category),
             )
 
     # Seed default scheduled tasks
-    cursor = await db.execute("SELECT COUNT(*) as count FROM scheduled_tasks")
-    row = await cursor.fetchone()
-    if row and row[0] == 0:
+    row = await db.fetch_one("SELECT COUNT(*) as count FROM scheduled_tasks")
+    if row and row["count"] == 0:
         default_tasks = [
             ("job_scan", "Auto Job Scan", '{"keywords": ["software engineer", "developer", "full stack"], "location": "remote"}', "0 */6 * * *"),
             ("trend_check", "Trend Check", '{"niche": "technology"}', "0 */6 * * *"),

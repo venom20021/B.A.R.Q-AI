@@ -67,6 +67,20 @@ class SkillRegisterRequest(BaseModel):
 
 # ─── Agent Execution ─────────────────────────────────────────────────────────
 
+@router.get("")
+@router.get("/")
+async def agent_root():
+    """Agent system root — returns module status and available routes."""
+    from .skill_registry import get_skill_registry
+    registry = get_skill_registry()
+    return {
+        "module": "agent",
+        "status": "ready",
+        "skills": registry.count(),
+        "endpoints": ["/execute", "/queue", "/plan", "/memory", "/skills"],
+    }
+
+
 @router.post("/execute", summary="Execute a goal synchronously")
 async def execute_goal(request: GoalRequest):
     """Execute a multi-step plan for a goal and return the result immediately.

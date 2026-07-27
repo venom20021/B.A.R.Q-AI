@@ -37,6 +37,19 @@ class RAGQuery(BaseModel):
     collection: str = "default"
 
 
+# ─── Root Status ───────────────────────────────────────────────────────────
+
+@router.get("")
+@router.get("/")
+async def memory_root():
+    """Memory & Knowledge root — returns module status."""
+    return {
+        "module": "memory",
+        "status": "ready",
+        "features": ["memory", "notes", "vector_search", "rag", "agent_history"],
+    }
+
+
 # ─── Core Memory ──────────────────────────────────────────────────────────────
 
 @router.get("/memory")

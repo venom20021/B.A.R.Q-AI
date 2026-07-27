@@ -73,6 +73,22 @@ class GraphStatsResponse(BaseModel):
     top_entities: list[dict[str, Any]] = []
 
 
+# ─── Root Status ───────────────────────────────────────────────────────────
+
+@router.get("")
+@router.get("/")
+async def graph_root():
+    """Graph Brain root — returns module status and statistics."""
+    stats = graph_brain.get_statistics()
+    return {
+        "module": "graph_brain",
+        "status": "ready",
+        "nodes": stats.get("nodes", 0),
+        "edges": stats.get("edges", 0),
+        "endpoints": ["/ingest", "/triplet", "/top-entities", "/path", "/neighbours", "/save", "/load", "/clear", "/stats"],
+    }
+
+
 # ─── Ingestion Endpoints ────────────────────────────────────────────────────
 
 @router.post("/ingest", response_model=IngestResponse)

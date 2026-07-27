@@ -105,6 +105,17 @@ async def get_revenue():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("")
+@router.get("/")
+async def analytics_root():
+    """Analytics module root — returns module status."""
+    return {
+        "module": "analytics",
+        "status": "ready",
+        "endpoints": ["/activity", "/career", "/social", "/charts"],
+    }
+
+
 @router.get("/activity")
 async def get_activity(limit: int = 50, activity_type: str = ""):
     """Get recent activity log entries, optionally filtered by type."""

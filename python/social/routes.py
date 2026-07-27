@@ -117,6 +117,17 @@ class CalendarMonthRequest(BaseModel):
     month: int
 
 
+@router.get("")
+@router.get("/")
+async def social_root():
+    """Social media module root — returns module status."""
+    return {
+        "module": "social",
+        "status": "ready",
+        "endpoints": ["/trends", "/scripts", "/videos", "/pipeline", "/calendar", "/status", "/generate-script", "/render-video", "/post"],
+    }
+
+
 @router.get("/trends")
 async def get_trends():
     """Get current trending topics, stored in DB."""

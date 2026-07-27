@@ -3,10 +3,13 @@ FastAPI routes for job search automation.
 Uses database DAOs for all CRUD operations.
 """
 
+import asyncio
 import json
+import re
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from database import analytics_dao, db_connection, jobs_dao
@@ -15,7 +18,7 @@ from . import (
     FollowUpAutomation, JobApplier, JobEvaluator, JobScanner,
     ResponseTracker, get_pipeline_progress, get_pipeline_settings, run_pipeline,
 )
-from .scanner import get_scan_progress, set_scan_error
+from .scanner import get_scan_progress, notify_progress_changed, set_scan_error
 
 router = APIRouter()
 
@@ -26,6 +29,17 @@ response_tracker = ResponseTracker()
 followup_automation = FollowUpAutomation()
 
 
+@router.get("")
+@router.get("/")
+async def jobs_root():
+    """Jobs module root — returns module status."""
+    return {
+        "module": "jobs",
+        "status": "ready",
+        "endpoints": ["/scan", "/matches", "/applications", "/approve", "/resume", "/analytics", "/followups"],
+    }
+
+
 class ApproveRequest(BaseModel):
     job_id: str
 
@@ -34,8 +48,14 @@ async def _run_scan():
     """Background scan that runs in a separate asyncio task."""
     try:
         jobs = await scanner.scan_all(
-            keywords=["software engineer", "developer", "full stack"],
-            location="remote",
+            keywords=[
+                "software engineer", "developer", "full stack",
+                "backend", "frontend", "devops", "data engineer",
+                "machine learning", "python", "javascript", "typescript",
+                "full stack developer", "software developer", "sde",
+                "cloud engineer", "backend engineer", "python developer",
+            ],
+            location="global",  # Global scan: Italy, Luxembourg, Middle East, UK, US, Canada, India
         )
         count = 0
         for job in jobs[:50]:
@@ -94,11 +114,75 @@ async def scan_progress():
     return progress
 
 
+@router.get("/scan/stream")
+async def scan_stream():
+    """Server-Sent Events endpoint that streams real-time scan progress.
+
+    Keeps the connection open, yielding progress updates as the scanner
+    works. Closes automatically when the scan completes or errors.
+    Returns immediately with a keepalive comment if no scan is active.
+    """
+    async def event_generator():
+        last_message = ""
+        last_pct = -1
+        try:
+            while True:
+                progress = get_scan_progress()
+
+                # If no scan has been seen yet, wait (don't close — scan may be starting)
+                if progress.get("status") == "idle" and last_message == "":
+                    yield f"data: {json.dumps({'status': 'waiting', 'message': 'Waiting for scan to start...'})}\n\n"
+                    last_message = "waiting"
+                    await asyncio.sleep(1)
+                    continue
+
+                # Only yield when progress actually changes
+                msg = progress.get("message", "")
+                pct = progress.get("progress_pct", 0)
+                status = progress.get("status", "idle")
+
+                if msg != last_message or pct != last_pct or status in ("complete", "error"):
+                    yield f"data: {json.dumps(progress)}\n\n"
+                    last_message = msg
+                    last_pct = pct
+
+                # Stop streaming on completion / error
+                if status in ("complete", "error"):
+                    yield f"data: {json.dumps({'status': 'completed', 'final': True})}\n\n"
+                    return
+
+                # Wait for next notification (with heartbeat ping every 2s)
+                from .scanner import _get_event
+                try:
+                    await asyncio.wait_for(_get_event().wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass  # Heartbeat — send keepalive comment
+                finally:
+                    # Event was consumed; reset for next round
+                    _get_event().clear()
+        except Exception:
+            pass  # Client disconnected
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/matches")
 async def get_matches(min_score: float = 3.0, limit: int = 20):
-    """Get evaluated job matches from the database."""
+    """Get evaluated job matches from the database with real application status."""
     try:
         matches = await jobs_dao.get_top_matches(min_score=min_score, limit=limit)
+        # Batch-fetch application statuses for all returned jobs
+        job_ids = [m["id"] for m in matches]
+        app_statuses = await jobs_dao.get_application_statuses_for_jobs(job_ids)
+        print(f"[MATCHES] Fetched {len(matches)} jobs, batch-app statuses found for {len(app_statuses)} jobs: {app_statuses}")
         return {
             "matches": [
                 {
@@ -114,7 +198,9 @@ async def get_matches(min_score: float = 3.0, limit: int = 20):
                     "cons": m.get("cons", "[]"),
                     "reasoning": m.get("reasoning", ""),
                     "source": m.get("source_board", ""),
-                    "status": "new",
+                    "description": m.get("description", ""),
+                    "source_url": m.get("source_url", ""),
+                    "status": app_statuses.get(m["id"], "new"),
                 }
                 for m in matches
             ]
@@ -148,6 +234,165 @@ async def approve_application(request: ApproveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{job_id}/apply", status_code=202)
+async def apply_to_job(job_id: int, background_tasks: BackgroundTasks):
+    """Submit an application for a specific job. Returns immediately (202).
+
+    Validates the job exists, queues the application, and runs the
+    apply worker in the background so the UI feels instantly responsive.
+    """
+    try:
+        # Validate job exists
+        job = await jobs_dao.get_job_listing(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job #{job_id} not found")
+
+        # Insert application record — start as 'queued' (proven to pass CHECK constraint)
+        # The worker will transition to 'submitted'/'ready_for_review'/'failed'
+        app_id = await jobs_dao.insert_application({
+            "job_listing_id": job_id,
+            "status": "queued",
+            "application_type": "auto",
+        })
+
+        # 🚨 DIAGNOSTIC: Verify DB commit — re-query immediately
+        verify_app = await jobs_dao.get_application(app_id)
+        print(f"[APPLY] Created app #{app_id} for job #{job_id}, DB verify: status={verify_app['status'] if verify_app else 'NOT_FOUND'}, job_title={verify_app.get('title','') if verify_app else '?'}")
+
+        await analytics_dao.log_activity(
+            "job", "apply_start", f"Application started for #{job_id}: {job.get('title', '')} at {job.get('company', '')}"
+        )
+
+        # Background apply worker — runs async, doesn't block the response
+        async def _apply_worker():
+            """Background worker that runs the actual application process.
+
+            Stages:
+            1. Parse resume → build user_profile
+            2. Generate cover letter
+            3. Generate optimized resume PDF
+            4. If job has a URL, attempt Playwright auto-fill (headful)
+            5. Update application status
+            """
+            try:
+                from .resume_parser import parse_resume
+                resume = parse_resume()
+
+                # Build user profile from parsed resume
+                user_profile = {
+                    "full_name": resume.get("full_name", ""),
+                    "email": resume.get("email", ""),
+                    "phone": resume.get("phone", ""),
+                    "linkedin_url": resume.get("linkedin_url", ""),
+                    "github_url": resume.get("github_url", ""),
+                    "portfolio_url": resume.get("portfolio_url", ""),
+                    "skills": resume.get("skills", []),
+                    "experience": resume.get("experience", []),
+                    "education": resume.get("education", []),
+                }
+
+                app_status = "queued"
+                auto_fill_result = None
+
+                # Generate cover letter
+                from .cover_letter import CoverLetterGenerator
+                cl_gen = CoverLetterGenerator()
+                cover_letter = await cl_gen.generate(job, resume)
+
+                # Generate optimized resume PDF
+                pdf_result = None
+                pdf_path = None
+                try:
+                    from .pdf_generator import ResumePDFGenerator
+                    pdf_gen = ResumePDFGenerator()
+                    pdf_result = await pdf_gen.generate(resume)
+                    pdf_path = pdf_result.get("pdf_path", "") if isinstance(pdf_result, dict) else ""
+                except Exception as pdf_err:
+                    print(f"[ApplyWorker] PDF generation failed: {pdf_err}")
+
+                # Stage 4: Playwright-based auto-fill (headful attempt)
+                job_url = (job.get("source_url", "") or job.get("url", "") or "").strip()
+                # Sanitize: only proceed if it's a valid http/https URL
+                if job_url and not job_url.startswith(("http://", "https://")):
+                    print(f"[ApplyWorker] Blocked invalid job URL (not http/https): {job_url}")
+                    job_url = ""
+                if job_url and len(job_url) > 10 and (job_url.startswith("http://") or job_url.startswith("https://")):
+                    try:
+                        print(f"[ApplyWorker] Attempting Playwright auto-fill for {job_url}")
+                        auto_fill_result = await applier.auto_fill_application(
+                            job_url=job_url,
+                            user_profile=user_profile,
+                            resume_path=pdf_path if pdf_path else None,
+                        )
+                        if auto_fill_result and auto_fill_result.get("status") == "completed":
+                            app_status = "submitted"
+                            platform = auto_fill_result.get("detected_platform", "unknown")
+                            print(f"[ApplyWorker] Playwright auto-fill completed — {platform}")
+                        else:
+                            app_status = "ready_for_review"
+                            reason = auto_fill_result.get("message", "auto-fill unavailable") if auto_fill_result else "no result"
+                            print(f"[ApplyWorker] Playwright auto-fill: {reason}")
+                    except Exception as pw_err:
+                        print(f"[ApplyWorker] Playwright error (non-fatal): {pw_err}")
+                        app_status = "ready_for_review"
+                else:
+                    print(f"[ApplyWorker] No job URL available — documents only")
+                    app_status = "ready_for_review"
+
+                # Update application with results
+                update_data: dict[str, Any] = {
+                    "status": app_status,
+                    "notes": json.dumps({
+                        "cover_letter_generated": len(cover_letter) > 0,
+                        "pdf_generated": bool(pdf_result),
+                    }),
+                }
+                if auto_fill_result:
+                    notes = json.loads(update_data["notes"])
+                    notes["playwright"] = auto_fill_result.get("status")
+                    notes["platform"] = auto_fill_result.get("detected_platform", "")
+                    notes["filled_fields"] = len(auto_fill_result.get("filled_fields", {}))
+                    notes["screenshot"] = auto_fill_result.get("screenshot_path", "")
+                    update_data["notes"] = json.dumps(notes)
+
+                # Use update_application_status — the correct method name in JobsDAO
+                # kwargs expands into named params for the SQL SET clause
+                await jobs_dao.update_application_status(
+                    app_id,
+                    status=update_data["status"],
+                    notes=update_data.get("notes", ""),
+                )
+
+                await analytics_dao.log_activity(
+                    "job", "apply_complete",
+                    f"Application #{app_id} for #{job_id} — {app_status}"
+                )
+            except Exception as worker_err:
+                print(f"[ApplyWorker] Fatal error: {worker_err}")
+                await jobs_dao.update_application_status(
+                    app_id,
+                    status="failed",
+                    notes=f"Error: {worker_err}",
+                )
+                await analytics_dao.log_activity(
+                    "job", "apply_error", str(worker_err), severity="error"
+                )
+
+        background_tasks.add_task(_apply_worker)
+
+        return {
+            "status": "accepted",
+            "application_id": app_id,
+            "job_id": job_id,
+            "message": f"Application for #{job_id} accepted — processing in background",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/applications")
 async def get_applications(status: str = "", limit: int = 50):
     """Get applications, optionally filtered by status."""
@@ -169,6 +414,16 @@ async def get_response_analytics():
     """Get comprehensive response rate analytics."""
     try:
         analytics = await response_tracker.get_response_analytics()
+        return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/matches")
+async def get_match_analytics():
+    """Get job match analytics: score tiers, top sources, scan stats."""
+    try:
+        analytics = await jobs_dao.get_match_analytics()
         return analytics
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -277,6 +532,107 @@ async def upload_resume(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/resume/upload-pdf", summary="Upload a PDF resume and extract text to ~/career-ops/cv.md")
+async def upload_resume_pdf(file: UploadFile = File(...)):
+    """
+    Accept a PDF resume file, extract its text content using PyMuPDF,
+    and save the extracted text as ~/career-ops/cv.md for the pipeline.
+
+    Supports .pdf files only. Extracted markdown preserves headings, paragraphs,
+    and bullet points where possible.
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    # Validate file type
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    # Read the uploaded PDF bytes
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) < 100:
+        raise HTTPException(status_code=400, detail="PDF file appears empty")
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file exceeds 10MB limit")
+
+    try:
+        # Try PyMuPDF for text extraction
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        extracted_pages = []
+        for page_num, page in enumerate(doc):
+            text = page.get_text()
+            if text.strip():
+                extracted_pages.append(text.strip())
+        doc.close()
+
+        if not extracted_pages or all(
+            len(p.strip()) < 20 for p in extracted_pages
+        ):
+            # PDF has no extractable text (scanned image) — fallback
+            raise HTTPException(
+                status_code=400,
+                detail="No extractable text found in PDF. The PDF may be scanned/inage-based. "
+                       "Try a text-based PDF or paste the resume markdown directly.",
+            )
+
+        # Join pages and normalise whitespace
+        full_text = "\n\n".join(extracted_pages)
+        full_text = re.sub(r"\n{3,}", "\n\n", full_text)
+        full_text = full_text.strip()
+
+        if len(full_text) < 50:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {len(full_text)} characters extracted — PDF may be scanned. "
+                       "Try a text-based PDF or paste markdown directly.",
+            )
+
+        # Save as markdown
+        from .resume_parser import DEFAULT_RESUME_PATH, clear_parse_cache
+        path = Path(DEFAULT_RESUME_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(full_text, encoding="utf-8")
+        clear_parse_cache()
+
+        await analytics_dao.log_activity(
+            "job", "resume_upload_pdf",
+            f"Resume parsed from PDF ({len(full_text)} chars, {len(extracted_pages)} pages)",
+        )
+
+        # Parse the newly saved resume to return structured info
+        from .resume_parser import parse_resume
+        parsed = parse_resume()
+
+        return {
+            "status": "saved",
+            "message": f"Resume extracted from PDF — {len(full_text)} characters, {len(extracted_pages)} pages",
+            "path": str(path),
+            "char_count": len(full_text),
+            "page_count": len(extracted_pages),
+            "parsed": {
+                "full_name": parsed.get("full_name", ""),
+                "skills_count": len(parsed.get("skills", [])),
+                "experience_count": len(parsed.get("experience", [])),
+            },
+        }
+
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="PDF text extraction requires PyMuPDF. Install with: pip install PyMuPDF",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse PDF: {str(e)}",
+        )
+
+
 @router.get("/resume", summary="Get the current resume content and parse status")
 async def get_resume():
     """Get the current resume file content and parsed data."""
@@ -364,6 +720,266 @@ async def pipeline_settings():
     return get_pipeline_settings()
 
 
+@router.get("/scan/history")
+async def scan_history(hours: int = 24):
+    """Get scan history from the activity log for the last N hours."""
+    try:
+        from datetime import datetime, timezone
+        rows = await db_connection.fetch_all(
+            """SELECT id, action, description, metadata, severity, created_at
+               FROM activity_log
+               WHERE type = 'job' AND action IN ('scan', 'scan_error')
+                 AND created_at >= datetime('now', ? || ' hours', 'localtime')
+               ORDER BY created_at DESC
+               LIMIT 20""",
+            (f"-{hours}",),
+        )
+        return {
+            "scans": [
+                {
+                    "id": r["id"],
+                    "action": r["action"],
+                    "description": r["description"],
+                    "severity": r["severity"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Auto-Scan Scheduler ──────────────────────────────────────────────────
+
+# Module-level state for the auto-scan background task
+_auto_scan_enabled: bool = False
+_auto_scan_task: asyncio.Task | None = None
+
+
+def _get_auto_scan_interval() -> int:
+    """Get the auto-scan interval in seconds from config."""
+    from config import get_settings
+    return max(1800, get_settings().job_scan_interval_hours * 3600)  # Min 30 min
+
+
+async def _auto_scan_loop():
+    """Background loop that periodically triggers job scans."""
+    global _auto_scan_enabled
+    while _auto_scan_enabled:
+        interval = _get_auto_scan_interval()
+        print(f"[AutoScan] Next scan in {interval // 3600}h {(interval % 3600) // 60}m")
+        await asyncio.sleep(interval)
+        if not _auto_scan_enabled:
+            break
+        try:
+            print("[AutoScan] Starting scheduled scan...")
+            await _run_scan()
+            print("[AutoScan] Scheduled scan completed")
+        except Exception as e:
+            print(f"[AutoScan] Scan failed: {e}")
+
+
+@router.post("/scan/auto-toggle")
+async def toggle_auto_scan(data: dict):
+    """Enable or disable the automatic hourly job scan."""
+    global _auto_scan_enabled, _auto_scan_task
+    try:
+        enable = bool(data.get("enabled", False))
+
+        if enable and not _auto_scan_enabled:
+            _auto_scan_enabled = True
+            _auto_scan_task = asyncio.create_task(_auto_scan_loop())
+            await analytics_dao.log_activity(
+                "job", "auto_scan_enabled",
+                f"Auto-scan enabled (every {_get_auto_scan_interval() // 60} min)",
+            )
+            return {"status": "enabled", "interval_minutes": _get_auto_scan_interval() // 60}
+
+        elif not enable and _auto_scan_enabled:
+            _auto_scan_enabled = False
+            if _auto_scan_task and not _auto_scan_task.done():
+                _auto_scan_task.cancel()
+                _auto_scan_task = None
+            await analytics_dao.log_activity(
+                "job", "auto_scan_disabled", "Auto-scan disabled"
+            )
+            return {"status": "disabled"}
+
+        return {"status": "enabled" if _auto_scan_enabled else "disabled"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scan/auto-status")
+async def auto_scan_status():
+    """Check whether auto-scan is currently enabled."""
+    return {
+        "enabled": _auto_scan_enabled,
+        "interval_seconds": _get_auto_scan_interval(),
+        "interval_minutes": _get_auto_scan_interval() // 60,
+        "interval_hours": _get_auto_scan_interval() / 3600,
+    }
+
+
+# ─── Resume-Based Job Role Suggestions ───────────────────────────────
+
+
+async def _generate_role_suggestions() -> list[dict]:
+    """
+    Analyze the parsed resume and suggest job roles the user should target.
+
+    Uses the LLM (via OllamaClient) for intelligent suggestions, falls back
+    to a keyword-based approach when the LLM is unavailable.
+    """
+    from .resume_parser import parse_resume
+    from utils.ollama_client import OllamaClient
+    import json
+
+    resume = parse_resume()
+    if resume.get("_error"):
+        return []
+
+    skills = resume.get("skills", [])
+    experience = resume.get("experience", [])
+    education = resume.get("education", [])
+    summary = resume.get("summary", "") or resume.get("headline", "")
+
+    # Build skill summary
+    skill_text = ", ".join(skills[:30]) if skills else "Not listed"
+
+    # Build experience summary
+    exp_text = ""
+    for exp in experience[:4]:
+        role = exp.get("role", "")
+        company = exp.get("company", "")
+        bullets = exp.get("bullets", [])
+        exp_text += f"- {role} at {company}\n"
+        for b in bullets[:3]:
+            exp_text += f"  • {b[:100]}\n"
+
+    # Build education summary
+    edu_text = ""
+    for edu in education[:2]:
+        edu_text += f"- {edu.get('title', '')}\n"
+
+    # Try LLM-based suggestions first
+    try:
+        client = OllamaClient(temperature=0.3)
+        prompt = f"""Analyze this resume and suggest 6 job roles the person should apply for.
+
+SKILLS:
+{skill_text}
+
+EXPERIENCE:
+{exp_text}
+
+EDUCATION:
+{edu_text}
+
+SUMMARY:
+{summary[:300]}
+
+Respond ONLY with a JSON array. Each entry: {{"title": "Job Title", "match_score": 0-100, "reasoning": "Why this fits", "matched_skills": ["skill1", "skill2"]}}"""
+
+        content = await client.chat([
+            {"role": "system", "content": "You are a career coach. Analyze resumes and suggest fitting job roles. Respond ONLY with valid JSON array."},
+            {"role": "user", "content": prompt},
+        ])
+
+        # Extract JSON from markdown code fences if present
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+        if json_match:
+            content = json_match.group(1)
+        # Parse JSON response
+        suggestions = json.loads(content)
+        if isinstance(suggestions, list):
+            return suggestions[:8]
+    except Exception:
+        pass
+
+    # Fallback: keyword-based suggestions
+    return _keyword_suggestions(skills, experience)
+
+
+def _keyword_suggestions(skills: list[str], experience: list[dict]) -> list[dict]:
+    """Generate role suggestions based on keyword matching against known roles."""
+    skill_lower = " ".join(s.lower() for s in skills)
+    exp_text = " "
+    for exp in experience:
+        exp_text += f" {exp.get('role', '')} {exp.get('company', '')} "
+        for b in exp.get("bullets", []):
+            exp_text += f" {b}"
+    exp_text = exp_text.lower()
+    combined = f"{skill_lower} {exp_text}"
+
+    # Define role profiles with keywords
+    role_profiles = [
+        ("Full Stack Developer", ["react", "node", "typescript", "javascript", "python", "frontend", "backend", "fullstack", "angular", "vue", "api", "rest", "css", "html"], 95),
+        ("Backend Engineer", ["backend", "api", "microservice", "python", "java", "golang", "node", "c#", ".net", "rest", "grpc", "sql", "nosql", "postgres", "mongodb", "redis", "kafka", "rabbitmq", "aws", "docker"], 85),
+        ("Frontend Engineer", ["react", "angular", "vue", "typescript", "javascript", "css", "html", "frontend", "ui", "ux", "tailwind", "framer", "webpack", "next"], 75),
+        ("Software Engineer", ["software", "engineer", "developer", "python", "java", "c++", "golang", "rust", "system", "design", "algorithms", "data", "structure"], 90),
+        ("DevOps Engineer", ["devops", "docker", "kubernetes", "k8s", "aws", "gcp", "azure", "ci/cd", "pipeline", "infrastructure", "terraform", "ansible", "linux", "shell"], 70),
+        ("Data Engineer", ["data", "pipeline", "etl", "spark", "hadoop", "sql", "nosql", "python", "airflow", "kafka", "big", "analytics", "warehouse"], 65),
+        ("Machine Learning Engineer", ["machine", "learning", "ml", "ai", "deep", "tensorflow", "pytorch", "python", "data", "model", "nlp", "neural", "llm"], 60),
+        ("Cloud Engineer", ["aws", "gcp", "azure", "cloud", "ec2", "s3", "lambda", "serverless", "docker", "kubernetes", "terraform", "infrastructure"], 70),
+        ("Tech Lead", ["lead", "architect", "mentor", "team", "system", "design", "microservice", "scalable", "distributed", "technical"], 55),
+        ("Solutions Architect", ["architect", "solution", "system", "design", "scalable", "distributed", "aws", "cloud", "microservice", "technical"], 50),
+    ]
+
+    suggestions = []
+    for title, keywords, base_score in role_profiles:
+        matched = [kw for kw in keywords if kw in combined]
+        match_count = len(matched)
+        total = len(keywords)
+        # Proportional scoring: base_score * (matched/total), capped at 85% max.
+        # No multiplier — if you match 8/14 keywords, you get 8/14 of base_score.
+        score = min(int(base_score * (match_count / max(total, 1))), 85)
+        if score >= 20:
+            suggestions.append({
+                "title": title,
+                "match_score": score,
+                "reasoning": f"Matched {match_count}/{total} relevant keywords",
+                "matched_skills": matched[:6],
+            })
+
+    suggestions.sort(key=lambda x: x["match_score"], reverse=True)
+    return suggestions[:8]
+
+
+@router.get("/suggestions")
+async def get_role_suggestions():
+    """
+    Analyze the user's resume and suggest job roles they should target.
+
+    Uses LLM (via OllamaClient) for intelligent suggestions with reasoning.
+    Falls back to keyword-based matching when LLM is unavailable.
+    Returns a list of suggested roles with match scores, reasoning,
+    and matched skills.
+    """
+    try:
+        from .resume_parser import parse_resume
+
+        resume = parse_resume()
+        name = resume.get("full_name", "User")
+        skills = resume.get("skills", [])
+        experience = resume.get("experience", [])
+
+        suggestions = await _generate_role_suggestions()
+
+        return {
+            "suggestions": suggestions,
+            "resume_info": {
+                "name": name,
+                "skills_count": len(skills),
+                "experience_count": len(experience),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/status")
 async def job_status():
     """Get current job search status from the database."""
@@ -376,6 +992,7 @@ async def job_status():
         total_scanned = row["count"] if row else 0
         return {
             "is_scanning": False,
+            "auto_scan": _auto_scan_enabled,
             "total_jobs_scanned": total_scanned,
             "pending_review": status_map.get("ready_for_review", 0),
             "applications_queued": status_map.get("queued", 0),

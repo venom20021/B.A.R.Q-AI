@@ -6,6 +6,7 @@ automatically falls back to an OpenAI-compatible cloud API so AI features
 keep working even when the local LLM is offline.
 """
 
+import asyncio
 import json as _json
 from typing import AsyncIterable
 
@@ -96,11 +97,12 @@ class CloudLLMClient:
         CLOUD_LLM_BASE_URL=https://api.openai.com/v1  (default)
     """
 
-    def __init__(self):
+    def __init__(self, temperature: float = 0.7):
         settings = get_settings()
         self.api_key = settings.openai_api_key
         self.model = settings.cloud_llm_model
         self.base_url = settings.cloud_llm_base_url.rstrip("/")
+        self.temperature = temperature
         self._enabled = settings.cloud_llm_enabled and bool(self.api_key)
 
     @property
@@ -124,7 +126,7 @@ class CloudLLMClient:
                     json={
                         "model": self.model,
                         "messages": messages,
-                        "temperature": 0.7,
+                        "temperature": self.temperature,
                         "top_p": 0.9,
                     },
                 )
@@ -154,7 +156,7 @@ class CloudLLMClient:
                         "model": self.model,
                         "messages": messages,
                         "stream": True,
-                        "temperature": 0.7,
+                        "temperature": self.temperature,
                         "top_p": 0.9,
                     },
                 ) as response:
@@ -210,23 +212,89 @@ class CloudLLMClient:
 
 
 class OllamaClient:
-    """Client for Ollama's local LLM API with automatic cloud fallback.
+    """Client for local LLM API with automatic cloud fallback.
 
-    All methods try Ollama first. If Ollama is unreachable and a cloud
-    API key is configured, they transparently fall back to the cloud LLM.
-    If neither is available, an appropriate error is raised.
+    Supports two backends:
+    - Ollama format (default): uses /api/chat, /api/generate endpoints
+    - OpenAI format (LM Studio, etc.): uses /v1/chat/completions endpoint
+
+    When backend is "auto", probes the host on first use to detect the
+    correct format. Falls back to cloud LLM (e.g. Groq) when the local
+    server is unreachable.
     """
 
-    def __init__(self, host: str = "http://127.0.0.1:11434", model: str | None = None):
-        self.host = host
-        self.model = model or get_settings().ollama_model
-        self._cloud = CloudLLMClient()
+    def __init__(self, host: str | None = None, model: str | None = None, temperature: float = 0.7):
+        settings = get_settings()
+        self.host = (host or settings.ollama_host).rstrip("/")
+        self.model = model or settings.ollama_model
+        self.temperature = temperature
+        self._backend_override = settings.llm_backend  # "auto", "ollama", "openai"
+        self._backend: str | None = None  # Detected on first use when "auto"
+        self._cloud = CloudLLMClient(temperature=temperature)  # Primary: LM Studio via CLOUD_LLM_BASE_URL
+        # Secondary Groq fallback
+        self._groq_fallback: CloudLLMClient | None = None
+        self._init_groq_fallback(settings)
         self._fallback_reported = False  # only print fallback message once
+
+    def _init_groq_fallback(self, settings) -> None:
+        """Initialize a secondary Groq client for when LM Studio is unreachable."""
+        fallback_url = settings.cloud_llm_fallback_base_url
+        if fallback_url and settings.cloud_llm_fallback_enabled:
+            self._groq_fallback = CloudLLMClient()
+            # Override the cloud client's URL and model for Groq
+            self._groq_fallback.base_url = fallback_url.rstrip("/")
+            self._groq_fallback.model = settings.cloud_llm_fallback_model
+            self._groq_fallback.api_key = settings.openai_api_key
+            self._groq_fallback._enabled = bool(settings.openai_api_key)
+
+    async def _ensure_backend_detected(self) -> None:
+        """Probe the host to detect the API format.
+
+        Sets self._backend to "ollama" or "openai".
+        When llm_backend config is explicit, uses that directly.
+        """
+        if self._backend is not None:
+            return
+
+        # Use explicit override if set
+        if self._backend_override in ("ollama", "openai"):
+            self._backend = self._backend_override
+            return
+
+        # Auto-detect: probe both endpoints in parallel
+        async def _probe_openai() -> bool:
+            try:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    resp = await client.get(f"{self.host}/v1/models")
+                    return resp.status_code == 200
+            except Exception:
+                return False
+
+        async def _probe_ollama() -> bool:
+            try:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    resp = await client.get(f"{self.host}/api/tags")
+                    return resp.status_code == 200
+            except Exception:
+                return False
+
+        openai_ok, ollama_ok = await asyncio.gather(
+            _probe_openai(), _probe_ollama()
+        )
+
+        if openai_ok:
+            self._backend = "openai"
+        elif ollama_ok:
+            self._backend = "ollama"
+        else:
+            self._backend = "ollama"  # Default
 
     async def chat(self, messages: list[dict]) -> str:
         """Send a conversation to the LLM and get a response.
 
-        Tries local Ollama first. Falls back to cloud LLM if configured.
+        When backend is Ollama: tries local Ollama format first.
+        When backend is OpenAI: talks directly to LM Studio / OpenAI-compatible server.
+        Falls back to Groq (if configured) when the primary is unreachable.
 
         Args:
             messages: List of message dicts with 'role' and 'content' keys.
@@ -235,18 +303,48 @@ class OllamaClient:
             Generated response text.
 
         Raises:
-            OllamaNotAvailableError: If Ollama is down and no cloud fallback.
-            CloudLLMNotConfiguredError: If both are unavailable.
+            CloudLLMNotConfiguredError: If all backends are unavailable.
         """
+        await self._ensure_backend_detected()
+
+        if self._backend == "openai":
+            return await self._chat_openai_format(messages)
+
+        # Ollama format
         try:
             return await self._ollama_chat(messages)
         except OllamaNotAvailableError:
             return await self._fallback_chat(messages)
 
+    async def _chat_openai_format(self, messages: list[dict]) -> str:
+        """Talk directly to an OpenAI-compatible server (LM Studio).
+
+        Tier 1: Try primary cloud client (LM Studio via CLOUD_LLM_BASE_URL)
+        Tier 2: Try Groq fallback if configured
+        """
+        # Tier 1: Primary cloud client (should be LM Studio)
+        if self._cloud.enabled:
+            try:
+                return await self._cloud.chat(messages)
+            except (ConnectionError, httpx.HTTPStatusError) as e:
+                print(f"[Ollama] Primary cloud (LM Studio) unavailable: {e}")
+
+        # Tier 2: Groq fallback
+        if self._groq_fallback and self._groq_fallback.enabled:
+            try:
+                await self._report_fallback_once()
+                return await self._groq_fallback.chat(messages)
+            except Exception as e:
+                print(f"[Ollama] Groq fallback also failed: {e}")
+
+        raise CloudLLMNotConfiguredError()
+
     async def stream_chat(self, messages: list[dict]) -> AsyncIterable[str]:
         """Stream a conversation response token-by-token.
 
-        Tries local Ollama first. Falls back to cloud LLM if configured.
+        When backend is Ollama: streams from local Ollama.
+        When backend is OpenAI: streams directly from LM Studio.
+        Falls back to Groq when the primary is unreachable.
 
         Args:
             messages: List of message dicts with 'role' and 'content' keys.
@@ -255,9 +353,16 @@ class OllamaClient:
             Each text token as it arrives.
 
         Raises:
-            OllamaNotAvailableError: If Ollama is down and no cloud fallback.
-            CloudLLMNotConfiguredError: If both are unavailable.
+            CloudLLMNotConfiguredError: If all backends are unavailable.
         """
+        await self._ensure_backend_detected()
+
+        if self._backend == "openai":
+            async for token in self._stream_openai_format(messages):
+                yield token
+            return
+
+        # Ollama format
         try:
             async for token in self._ollama_stream_chat(messages):
                 yield token
@@ -265,10 +370,33 @@ class OllamaClient:
             async for token in self._fallback_stream_chat(messages):
                 yield token
 
+    async def _stream_openai_format(self, messages: list[dict]) -> AsyncIterable[str]:
+        """Stream from an OpenAI-compatible server with Groq fallback."""
+        # Tier 1: Primary cloud client (LM Studio)
+        if self._cloud.enabled:
+            try:
+                async for token in self._cloud.stream_chat(messages):
+                    yield token
+                return
+            except (ConnectionError, httpx.HTTPStatusError) as e:
+                print(f"[Ollama] Primary cloud stream unavailable: {e}")
+
+        # Tier 2: Groq fallback
+        if self._groq_fallback and self._groq_fallback.enabled:
+            try:
+                await self._report_fallback_once()
+                async for token in self._groq_fallback.stream_chat(messages):
+                    yield token
+                return
+            except Exception as e:
+                print(f"[Ollama] Groq fallback stream error: {e}")
+
+        raise CloudLLMNotConfiguredError()
+
     async def generate(self, prompt: str) -> str:
         """Simple single-prompt generation (no conversation history).
 
-        Tries local Ollama first. Falls back to cloud LLM if configured.
+        Tries local Ollama/OpenAI first. Falls back to cloud LLM if configured.
 
         Args:
             prompt: The prompt text.
@@ -276,27 +404,41 @@ class OllamaClient:
         Returns:
             Generated response text.
         """
+        await self._ensure_backend_detected()
+
+        if self._backend == "openai":
+            messages = [{"role": "user", "content": prompt}]
+            return await self._chat_openai_format(messages)
+
         try:
             return await self._ollama_generate(prompt)
         except OllamaNotAvailableError:
-            # Use chat method as generate for cloud (wrapped in user message)
             messages = [{"role": "user", "content": prompt}]
             return await self._fallback_chat(messages)
 
     async def is_available(self) -> bool:
-        """Check if any LLM backend is available (Ollama or cloud)."""
-        # Check Ollama first
+        """Check if any LLM backend is available (Ollama, LM Studio, or cloud)."""
+        # Check local backend first
+        await self._ensure_backend_detected()
         try:
-            async with httpx.AsyncClient(timeout=2) as client:
-                resp = await client.get(f"{self.host}/api/tags")
-                if resp.status_code == 200:
-                    models = resp.json().get("models", [])
-                    if any(m["name"].startswith(self.model) for m in models):
+            if self._backend == "openai":
+                async with httpx.AsyncClient(timeout=2) as client:
+                    resp = await client.get(f"{self.host}/v1/models")
+                    if resp.status_code == 200:
                         return True
+            else:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    resp = await client.get(f"{self.host}/api/tags")
+                    if resp.status_code == 200:
+                        models = resp.json().get("models", [])
+                        if any(m["name"].startswith(self.model) for m in models):
+                            return True
         except Exception:
             pass
-        # Fallback: check cloud
-        return self._cloud.is_available()
+        # Fallback: check cloud or Groq
+        if self._groq_fallback and self._groq_fallback.enabled:
+            return True
+        return await self._cloud.is_available()
 
     # ── Internal: Ollama methods ─────────────────────────────────────
 
@@ -309,17 +451,13 @@ class OllamaClient:
                         "model": self.model,
                         "messages": messages,
                         "stream": False,
-                        "options": {"temperature": 0.7, "top_p": 0.9},
+                        "options": {"temperature": self.temperature, "top_p": 0.9},
                     },
                 )
                 resp.raise_for_status()
                 return resp.json()["message"]["content"]
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
             raise OllamaNotAvailableError(self.host, self.model)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise OllamaNotAvailableError(self.host, self.model)
-            raise
 
     async def _ollama_stream_chat(self, messages: list[dict]) -> AsyncIterable[str]:
         try:
@@ -331,9 +469,10 @@ class OllamaClient:
                         "model": self.model,
                         "messages": messages,
                         "stream": True,
-                        "options": {"temperature": 0.7, "top_p": 0.9},
+                        "options": {"temperature": self.temperature, "top_p": 0.9},
                     },
                 ) as response:
+                    response.raise_for_status()
                     try:
                         async for line in response.aiter_lines():
                             if not line.strip():
@@ -363,7 +502,7 @@ class OllamaClient:
                             )
                         except Exception:
                             pass
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
             raise OllamaNotAvailableError(self.host, self.model)
 
     async def _ollama_generate(self, prompt: str) -> str:
@@ -375,12 +514,8 @@ class OllamaClient:
                 )
                 resp.raise_for_status()
                 return resp.json()["response"]
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.HTTPStatusError, KeyError, IndexError, TypeError, ValueError):
             raise OllamaNotAvailableError(self.host, self.model)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise OllamaNotAvailableError(self.host, self.model)
-            raise
 
     # ── Internal: Cloud fallback methods ────────────────────────────
 

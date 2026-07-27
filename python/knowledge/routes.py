@@ -56,6 +56,21 @@ class GeminiImportTextRequest(BaseModel):
 
 
 # ═════════════════════════════════════════════════════════════════════
+#  Root Status
+# ═════════════════════════════════════════════════════════════════════
+
+@router.get("")
+@router.get("/")
+async def knowledge_root():
+    """Knowledge module root — returns module status."""
+    return {
+        "module": "knowledge",
+        "status": "ready",
+        "features": ["obsidian", "extraction", "gemini_import"],
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════
 #  Obsidian Vault Configuration
 # ═════════════════════════════════════════════════════════════════════
 
