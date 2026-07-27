@@ -10,31 +10,33 @@ const SIDECAR_URL = `http://${SIDECAR_HOST}:${SIDECAR_PORT}`
 
 /**
  * Default remote URL — the Oracle VM backend.
- * The app auto-tries this URL first on startup. If unreachable,
- * it falls back to starting a local Python backend.
+ * When reachable, non-voice API calls go to this URL.
+ * Voice always runs locally (mic/speakers are on this machine).
  * Set SIDECAR_REMOTE_URL to override, or SIDECAR_AUTO_REMOTE=false to skip auto-connect.
  */
 const DEFAULT_REMOTE_URL = 'http://155.248.247.224'
 
 /**
- * Auto-remote mode: try the default remote URL first, fall back to local.
+ * Auto-remote mode: try the default remote URL first.
  * Disable by setting SIDECAR_AUTO_REMOTE=false in env.
  */
 const AUTO_REMOTE = process.env['SIDECAR_AUTO_REMOTE'] !== 'false'
 
 /**
- * Remote sidecar URL — when set, the app connects to a remote BARQ instance
- * instead of starting a local Python process.
+ * Remote sidecar URL — when set, the app connects to a remote BARQ instance.
+ * Voice endpoints always route to local Python regardless.
  * Set via SIDECAR_REMOTE_URL env var.
  */
 const SIDECAR_REMOTE_URL = process.env['SIDECAR_REMOTE_URL'] || ''
 const isRemote = !!SIDECAR_REMOTE_URL
 
+/** Endpoint prefixes that must always hit the local Python sidecar (voice needs local mic/speakers) */
+const LOCAL_ONLY_PREFIXES = ['/voice/', '/speech/']
+
 /**
  * Common Python installation paths on Windows, checked in order.
  */
 const WINDOWS_PYTHON_PATHS = [
-  // User-local Python 3.13 (most common for winget installs)
   join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python313', 'python.exe'),
   join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python312', 'python.exe'),
   join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default', 'Programs', 'Python', 'Python311', 'python.exe'),
@@ -55,10 +57,13 @@ class PythonSidecar {
   private lastRestartAttempt = 0
   private remoteMode = isRemote
   private _remoteUrl = SIDECAR_REMOTE_URL
+  /** Whether a remote backend is actually connected and healthy */
+  private _remoteConnected = false
 
   /**
    * Set remote mode configuration.
-   * When enabled, the app talks to a remote BARQ instance and skips starting local Python.
+   * Non-voice requests route to the remote URL when enabled.
+   * Voice requests always route to the local Python sidecar.
    */
   setRemoteMode(enabled: boolean, url?: string): void {
     this.remoteMode = enabled
@@ -68,6 +73,11 @@ class PythonSidecar {
   /** Whether the sidecar is in remote mode */
   get isRemoteMode(): boolean {
     return this.remoteMode
+  }
+
+  /** Whether a remote backend is actually connected */
+  get isRemoteConnected(): boolean {
+    return this._remoteConnected
   }
 
   /** The remote URL (empty string when not in remote mode) */
@@ -82,14 +92,17 @@ class PythonSidecar {
 
   /**
    * Get backend configuration for the renderer.
-   * Returns HTTP and WebSocket base URLs.
+   * Voice WS always points to localhost (voice pipeline runs locally).
+   * HTTP API points to remote when in cloud mode, local otherwise.
    */
   getBackendConfig(): { httpUrl: string; wsUrl: string; isRemote: boolean } {
     if (this.remoteMode && this._remoteUrl) {
       const base = this._remoteUrl.replace(/\/+$/, '')
       return {
         httpUrl: base,
-        wsUrl: base.replace(/^http/, 'ws'),
+        // Non-voice WS (vision, etc.) connects to the remote backend.
+        // Voice WS always uses localhost (VoiceContext hardcodes it).
+        wsUrl: base.replace(/^http:/, 'ws:'),
         isRemote: true,
       }
     }
@@ -102,14 +115,12 @@ class PythonSidecar {
 
   /**
    * Kill any existing process holding the sidecar port (Windows only).
-   * Uses multiple methods to find and kill the offending process.
    */
   private async freePort(): Promise<void> {
     if (process.platform !== 'win32') return
 
     const pids = new Set<number>()
 
-    // Method 1: netstat
     try {
       const result = execSync(
         `netstat -ano | findstr :${SIDECAR_PORT}`,
@@ -124,99 +135,94 @@ class PythonSidecar {
         }
       }
     } catch {
-      // netstat not available — fall through
+      // netstat not available
     }
 
-    if (pids.size === 0) return // No process found on port
+    if (pids.size === 0) return
 
-    // Kill all PIDs found
     for (const pid of pids) {
       try {
         console.log(`[PythonSidecar] Killing process ${pid} on port ${SIDECAR_PORT}...`)
         execSync(`taskkill /F /PID ${pid}`, { encoding: 'utf8', timeout: 3000 })
-        console.log(`[PythonSidecar] Killed PID ${pid}`)
       } catch {
-        // Process may have already exited — that's fine
+        // Process may have already exited
       }
     }
 
-    // Wait for the port to be released (OS may hold TIME_WAIT for a bit)
     await new Promise((resolve) => setTimeout(resolve, 1500))
 
-    // Verify the port is actually free now
     try {
       const check = execSync(
         `netstat -ano | findstr :${SIDECAR_PORT}`,
         { encoding: 'utf8', timeout: 3000 },
       )
       if (check.trim().length > 0) {
-        console.warn(`[PythonSidecar] Port ${SIDECAR_PORT} still in use after killing. Retrying in 2s...`)
-        // Give it more time for TIME_WAIT to clear
         await new Promise((resolve) => setTimeout(resolve, 2000))
-      } else {
-        console.log(`[PythonSidecar] Port ${SIDECAR_PORT} is now free`)
       }
     } catch {
-      // No output means port is free
-      console.log(`[PythonSidecar] Port ${SIDECAR_PORT} is now free`)
+      // Port is free
     }
   }
 
   /**
-   * Start the Python sidecar process.
-   * In development, runs `uvicorn main:app` directly.
-   * In production, runs the PyInstaller-bundled executable.
+   * Start the Python sidecar.
+   *
+   * Architecture:
+   * - Voice endpoints (talk, listen, wake word) ALWAYS go to the LOCAL Python process
+   *   because the microphone and speakers are physically on this machine.
+   * - Non-voice endpoints go to the REMOTE backend when in cloud mode.
+   *
+   * So this method always starts a local Python process. If a remote backend
+   * is also reachable, non-voice requests are forwarded there.
    */
   async start(): Promise<void> {
     if (this.isRunning) return
 
-    // ── Remote mode (explicit via SIDECAR_REMOTE_URL) — skip local entirely ──
+    // ── If explicitly set to remote or auto-remote, probe the remote URL ──
+    let remoteUrl = ''
     if (this.remoteMode && this._remoteUrl) {
-      console.log(`[PythonSidecar] Remote mode — connecting to ${this._remoteUrl}`)
-      this.isRunning = true
-      try {
-        const response = await fetch(`${this._remoteUrl}/health`, { signal: AbortSignal.timeout(5000) })
-        if (response.ok) {
-          console.log('[PythonSidecar] Remote backend health check passed')
-          this.startHealthChecks()
-          return
-        }
-      } catch {
-        console.warn('[PythonSidecar] Explicit remote backend not reachable. Will retry.')
-      }
-      this.startHealthChecks()
-      return
-    }
-
-    // ── Auto-remote mode (default) — try cloud first, fall back to local ──
-    if (AUTO_REMOTE && !this.remoteMode) {
+      remoteUrl = this._remoteUrl
+      console.log(`[PythonSidecar] Remote mode configured — will probe ${remoteUrl}`)
+    } else if (AUTO_REMOTE && !this.remoteMode) {
       const autoUrl = DEFAULT_REMOTE_URL
-      console.log(`[PythonSidecar] Auto-remote — trying ${autoUrl}...`)
+      console.log(`[PythonSidecar] Auto-remote — probing ${autoUrl}...`)
       try {
         const response = await fetch(`${autoUrl}/health`, { signal: AbortSignal.timeout(5000) })
         if (response.ok) {
-          console.log('[PythonSidecar] ✅ Remote backend reachable — using cloud mode')
+          console.log('[PythonSidecar] ✅ Remote backend reachable — voice stays local, API uses cloud')
+          remoteUrl = autoUrl
           this.remoteMode = true
           this._remoteUrl = autoUrl
-          this.isRunning = true
-          this.startHealthChecks()
-          return
+          this._remoteConnected = true
         }
       } catch {
-        console.warn('[PythonSidecar] Remote backend not reachable — falling back to local Python')
+        console.warn('[PythonSidecar] Remote backend not reachable — local only')
       }
     }
 
-    // ── Local Python mode (fallback or explicit) ──
-    console.log('[PythonSidecar] Starting local Python backend...')
-    // Try starting with up to 2 retries
+    // ── ALWAYS start local Python for voice (mic/speakers are on this machine) ──
+    console.log('[PythonSidecar] Starting local Python backend for voice...')
+    try {
+      await this._startLocalProcess()
+    } catch (err) {
+      // Catch the final error after all retries are exhausted.
+      // The error is already logged in _startLocalProcess with full detail.
+      // We swallow it here so the caller (index.ts) doesn't get an unhandled
+      // promise rejection. The app will show "Waiting for backend..." until
+      // the health check system restarts the sidecar or the user intervenes.
+      console.warn(`[PythonSidecar] Local backend failed to start — ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /**
+   * Start the local Python process (voice + API fallback).
+   */
+  private async _startLocalProcess(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
         console.log(`[PythonSidecar] Retry attempt ${attempt + 1}/3...`)
-        // Aggressively free the port before retry
         await this.freePort()
       } else {
-        // Free the port if another process is holding it
         await this.freePort()
       }
 
@@ -236,7 +242,6 @@ class PythonSidecar {
         }
       })
 
-      // Track if this attempt failed early (port in use, etc.)
       let earlyExit = false
 
       this.process.stdout?.on('data', (data: Buffer) => {
@@ -258,7 +263,6 @@ class PythonSidecar {
           }
           return
         }
-        // Log stderr but detect address-in-use errors
         if (text.includes('Address already in use') || text.includes('errno 10048') || text.includes('EADDRINUSE')) {
           console.error(`[PythonSidecar] Port ${SIDECAR_PORT} is already in use (detected in stderr)`)
           earlyExit = true
@@ -287,10 +291,7 @@ class PythonSidecar {
         })
       })
 
-      // Wait for the sidecar to become healthy, but also race against early exit
       try {
-        // If the process exits for ANY reason before the health check passes,
-        // reject immediately instead of waiting 30s for timeout
         const exitRace = exitPromise.then(() => {
           throw new Error(
             earlyExit
@@ -298,15 +299,14 @@ class PythonSidecar {
               : 'Process exited unexpectedly before health check'
           )
         })
-        // Prevent unhandled rejection if health check wins and process later exits
         exitRace.catch(() => {})
 
         await Promise.race([this.waitForHealth(30_000), exitRace])
         this.isRunning = true
         this.startHealthChecks()
-        return // Success!
+        console.log('[PythonSidecar] ✅ Local Python backend ready for voice')
+        return
       } catch (err) {
-        // Save reference before any null-assignment in callbacks
         const proc = this.process
         console.warn(
           `[PythonSidecar] Attempt ${attempt + 1}/3 failed` +
@@ -335,14 +335,12 @@ class PythonSidecar {
     if (this.process) {
       console.log('[PythonSidecar] Stopping...')
 
-      // Try graceful shutdown via API first
       try {
         await this.request('/shutdown', {}, 2000)
       } catch {
-        // Ignore shutdown request failures
+        // Ignore
       }
 
-      // Force kill after a short delay
       setTimeout(() => {
         if (this.process) {
           this.process.kill('SIGTERM')
@@ -355,30 +353,24 @@ class PythonSidecar {
   }
 
   /**
-   * Get whether Vosk verbose logs are shown in the console.
+   * Get whether Vosk verbose logs are shown.
    */
   get showVoskLogs(): boolean {
     return this._showVoskLogs
   }
 
-  /**
-   * Set whether Vosk verbose logs are shown in the console.
-   */
   set showVoskLogs(enabled: boolean) {
     this._showVoskLogs = enabled
     console.log(`[PythonSidecar] Vosk verbose logs ${enabled ? 'enabled' : 'disabled'}`)
   }
 
   /**
-   * Get whether Whisper/STT verbose logs are shown in the console.
+   * Get whether Whisper/STT verbose logs are shown.
    */
   get showWhisperLogs(): boolean {
     return this._showWhisperLogs
   }
 
-  /**
-   * Set whether Whisper/STT verbose logs are shown in the console.
-   */
   set showWhisperLogs(enabled: boolean) {
     this._showWhisperLogs = enabled
     console.log(`[PythonSidecar] Whisper/STT verbose logs ${enabled ? 'enabled' : 'disabled'}`)
@@ -386,9 +378,17 @@ class PythonSidecar {
 
   /**
    * Send a request to the Python sidecar HTTP API.
+   *
+   * Voice endpoints (/voice/*, /speech/*) ALWAYS route to the LOCAL Python
+   * process because the microphone and speakers are on this machine.
+   *
+   * Non-voice endpoints route to the REMOTE backend when in cloud mode,
+   * or to the LOCAL backend otherwise.
    */
   async request<T = unknown>(endpoint: string, data?: unknown, timeout = 10_000): Promise<T> {
-    const baseUrl = this.remoteMode && this._remoteUrl ? this._remoteUrl : SIDECAR_URL
+    // Voice endpoints always hit localhost (mic/speakers are on this machine)
+    const isLocalOnly = LOCAL_ONLY_PREFIXES.some((prefix) => endpoint.startsWith(prefix))
+    const baseUrl = (this.remoteMode && this._remoteUrl && !isLocalOnly) ? this._remoteUrl : SIDECAR_URL
     const url = `${baseUrl}${endpoint}`
 
     const controller = new AbortController()
@@ -399,7 +399,6 @@ class PythonSidecar {
         method: data ? 'POST' : 'GET',
         headers: {
           'Content-Type': 'application/json',
-          ...(data ? {} : {})
         },
         body: data ? JSON.stringify(data) : undefined,
         signal: controller.signal
@@ -422,20 +421,13 @@ class PythonSidecar {
       }
       return 'python3'
     } else {
-      // In production, use the bundled executable
       const resourcesPath = join(process.resourcesPath, 'python')
       const ext = process.platform === 'win32' ? '.exe' : ''
       return join(resourcesPath, `barq-sidecar${ext}`)
     }
   }
 
-  /**
-   * Find a working Python executable on Windows.
-   * Tries `python` command first (skipping the WindowsApp shim),
-   * then checks common installation paths.
-   */
   private findWindowsPython(): string {
-    // 1. Try `py -3` (Python launcher) — avoids the Store redirect
     try {
       const result = execSync('py -3 -c "import sys; print(sys.executable)"', {
         encoding: 'utf8',
@@ -448,10 +440,9 @@ class PythonSidecar {
         return path
       }
     } catch {
-      // py launcher not available — fall through
+      // py launcher not available
     }
 
-    // 2. Try `python -c` and check the actual path isn't the WindowsApp shim
     try {
       const result = execSync('python -c "import sys; print(sys.executable)"', {
         encoding: 'utf8',
@@ -464,10 +455,9 @@ class PythonSidecar {
         return path
       }
     } catch {
-      // Not on PATH — fall through
+      // Not on PATH
     }
 
-    // 3. Check known installation paths
     for (const candidate of WINDOWS_PYTHON_PATHS) {
       if (existsSync(candidate)) {
         console.log(`[PythonSidecar] Found Python at: ${candidate}`)
@@ -475,7 +465,6 @@ class PythonSidecar {
       }
     }
 
-    // 4. Final fallback — let the OS decide (will likely fail with a clear error)
     console.warn('[PythonSidecar] Could not find a real Python installation — falling back to "python"')
     return 'python'
   }
@@ -502,17 +491,20 @@ class PythonSidecar {
 
     while (Date.now() - startTime < timeoutMs) {
       try {
-        const response = await this.request('/health', undefined, 2000)
-        if (response && typeof response === 'object' && 'status' in (response as object)) {
-          console.log('[PythonSidecar] Health check passed')
-          return
+        // Always check localhost — this is the LOCAL voice pipeline's health
+        const response = await fetch(`${SIDECAR_URL}/health`, { signal: AbortSignal.timeout(2000) })
+        if (response.ok) {
+          const body = await response.json()
+          if (body && typeof body === 'object' && body.status === 'ok') {
+            console.log('[PythonSidecar] Local health check passed')
+            return
+          }
         }
       } catch {
-        // Not ready yet, retry
+        // Not ready yet
       }
 
       const elapsed = Date.now() - startTime
-      // Log progress every 5 seconds
       if (elapsed - lastLogTime >= 5000) {
         lastLogTime = elapsed
         console.log(`[PythonSidecar] Waiting for backend... (${Math.round(elapsed / 1000)}s/${Math.round(timeoutMs / 1000)}s)`)
@@ -521,26 +513,20 @@ class PythonSidecar {
       await new Promise((resolve) => setTimeout(resolve, 500))
     }
 
-    // In remote mode, don't throw — the health check loop will retry
-    if (this.remoteMode) {
-      console.warn('[PythonSidecar] Remote backend health check timed out — will retry')
-      return
-    }
-
     throw new Error('[PythonSidecar] Failed to start within timeout')
   }
 
   private startHealthChecks(): void {
     this.healthCheckInterval = setInterval(async () => {
       try {
-        await this.request('/health', undefined, 2000)
-        // Reset restart count on successful health check
+        // Always check localhost — this monitors the LOCAL voice pipeline
+        const response = await fetch(`${SIDECAR_URL}/health`, { signal: AbortSignal.timeout(2000) })
+        if (!response.ok) throw new Error('Health check failed')
         this.restartCount = 0
       } catch {
         const now = Date.now()
         const timeSinceLastRestart = now - this.lastRestartAttempt
 
-        // Backoff: wait at least 10s, 30s, 60s between restart attempts
         const minDelay = [10_000, 30_000, 60_000][Math.min(this.restartCount, 2)]
         if (timeSinceLastRestart < minDelay) {
           console.warn(
@@ -559,7 +545,7 @@ class PythonSidecar {
         await this.stop()
         await this.start()
       }
-    }, 30_000) // Check every 30 seconds
+    }, 30_000)
   }
 }
 

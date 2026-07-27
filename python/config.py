@@ -10,7 +10,41 @@ from pydantic_settings import BaseSettings
 
 # Load .env file from the project root
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-load_dotenv(env_path, override=True)  # .env file values take precedence over OS env vars
+# Safely load .env — handle UTF-16 BOM or encoding issues gracefully.
+# The `moviepy` library also calls `find_dotenv()` at import time, so a
+# corrupted .env file can crash the entire app before our code runs.
+# We try UTF-8 first, then fall back to detecting and fixing encoding.
+if os.path.exists(env_path):
+    try:
+        load_dotenv(env_path, override=True)
+    except UnicodeDecodeError:
+        # The .env file is not valid UTF-8 (e.g. UTF-16 with BOM).
+        # Attempt to decode as UTF-16, strip BOM, and re-save as UTF-8.
+        print(f"[Config] .env file encoding issue detected — attempting repair...")
+        try:
+            with open(env_path, "rb") as f:
+                raw = f.read()
+            # Try UTF-16 LE (with BOM 0xFF 0xFE)
+            if raw[:2] == b"\xff\xfe":
+                decoded = raw.decode("utf-16-le")
+            elif raw[:2] == b"\xfe\xff":
+                decoded = raw.decode("utf-16-be")
+            elif raw[:3] == b"\xef\xbb\xbf":
+                decoded = raw.decode("utf-8-sig")
+            else:
+                decoded = raw.decode("utf-8")
+            # Strip any remaining null characters
+            decoded = decoded.replace("\x00", "")
+            # Write back as clean UTF-8
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write(decoded)
+            print(f"[Config] .env repaired and re-saved as UTF-8")
+            # Now retry load
+            load_dotenv(env_path, override=True)
+        except Exception as repair_err:
+            print(f"[Config] Could not repair .env encoding: {repair_err}")
+else:
+    load_dotenv(env_path, override=True)
 
 
 class Settings(BaseSettings):
