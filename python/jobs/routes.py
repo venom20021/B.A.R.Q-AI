@@ -85,6 +85,22 @@ async def _run_scan():
             "job", "scan",
             f"Scanned {count} new job listings from {source_boards} boards"
         )
+        # ── Auto-trigger pipeline to process high-match jobs ──────────
+        if count > 0:
+            try:
+                from .pipeline import run_pipeline
+                pipeline_result = await run_pipeline({
+                    "mode": "notify",
+                    "max_per_run": 10,
+                    "min_match_score": 60,
+                    "generate_pdf": False,  # Skip PDF gen in auto-mode (speed)
+                    "send_telegram": True,
+                })
+                succeeded = pipeline_result.get("succeeded", 0)
+                print(f"[Scan] Pipeline processed {succeeded} jobs — Telegram notifications sent")
+            except Exception as pipe_err:
+                print(f"[Scan] Pipeline trigger failed: {pipe_err}")
+
     except Exception as e:
         set_scan_error(f"Scan failed: {e}")
         await analytics_dao.log_activity("job", "scan_error", str(e), severity="error")
