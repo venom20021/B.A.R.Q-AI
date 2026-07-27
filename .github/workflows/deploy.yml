@@ -1,0 +1,105 @@
+# ─── BARQ CI/CD: Deploy to Oracle Cloud VM ────────────────────────────
+# Triggers on push to master. Uses appleboy/ssh-action to SSH into the
+# Oracle VM, pull latest code, install deps, and restart the service.
+# ───────────────────────────────────────────────────────────────────────
+
+name: Deploy to Oracle VM
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:          # Allow manual trigger from Actions tab
+
+concurrency:
+  group: deploy-oracle
+  cancel-in-progress: true    # Cancel in-flight deploys on new push
+
+jobs:
+  deploy:
+    name: Deploy BARQ Backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to Oracle Cloud VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USERNAME }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          port: 22
+          script: |
+            set -euo pipefail
+
+            # ── Navigate to project ──
+            cd /home/ubuntu/barq
+
+            # ── Back up .env before pull ──
+            echo "=== Backing up .env ==="
+            cp .env /tmp/barq-env-backup 2>/dev/null || echo "No .env to back up"
+
+            # ── Pull latest code ──
+            echo "=== Pulling latest code ==="
+            git pull origin master 2>&1
+
+            # ── Restore .env (secrets are NEVER in git) ──
+            echo "=== Restoring .env ==="
+            if [ -f /tmp/barq-env-backup ]; then
+              cp /tmp/barq-env-backup .env
+              rm /tmp/barq-env-backup
+              echo ".env restored from backup"
+            fi
+
+            # ── Activate venv & install deps ──
+            echo "=== Installing Python dependencies ==="
+            source /home/ubuntu/venv/bin/activate
+            python3 -m pip install --upgrade pip -q
+            pip install --no-cache-dir -r python/requirements.txt -q
+
+            # ── Clear stale bytecache ──
+            echo "=== Clearing Python bytecache ==="
+            find python -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+            find python -name '*.pyc' -delete 2>/dev/null
+
+            # ── Pre-deploy validation (fail fast, don't kill running service) ──
+            echo "=== Validating code ==="
+            cd python
+            python3 -c "from config import get_settings; s = get_settings(); print('Settings OK:', s.llm_backend if hasattr(s, 'llm_backend') else 'basic')" 2>&1
+            python3 -c "import main; print('app: OK')" 2>&1
+            cd ..
+            echo "✅ Code validation passed"
+
+            # ── Restart service ──
+            echo "=== Restarting BARQ service ==="
+            sudo systemctl daemon-reload
+            sudo systemctl restart barq.service
+
+            # ── Health check with polling ──
+            echo "=== Waiting for health check ==="
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:8970/health > /dev/null 2>&1; then
+                echo "✅ BARQ is RUNNING (responded in ${i}s)"
+                curl -s http://localhost:8970/health | python3 -m json.tool
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "❌ Health check failed after 30s"
+                echo "=== Last 20 service logs ==="
+                sudo journalctl -u barq.service --no-pager -n 20
+                echo "=== Rollback: sudo git revert HEAD --no-edit && sudo systemctl restart barq ==="
+                exit 1
+              fi
+              sleep 1
+            done
+
+      - name: Notify deployment result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ BARQ backend deployed to Oracle VM"
+            echo "   https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            echo "❌ BARQ deployment FAILED"
+          fi
