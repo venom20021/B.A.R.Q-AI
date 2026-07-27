@@ -3,11 +3,11 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createTray, setAppIsQuitting } from './tray'
 import { registerIpcHandlers } from './ipc'
-import { PythonSidecar } from './python-bridge'
+import { pythonBridge } from './python-bridge'
 import { initOverlayManager, destroyOverlayManager } from './overlay-manager'
 
 let mainWindow: BrowserWindow | null = null
-let pythonSidecar: PythonSidecar | null = null
+let pythonSidecar: typeof pythonBridge | null = null
 let isQuitting = false
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -167,8 +167,8 @@ app.whenReady().then(async () => {
   // Initialize desktop overlay manager
   initOverlayManager()
 
-  // Start Python sidecar
-  pythonSidecar = new PythonSidecar()
+  // Start Python sidecar (uses singleton — IPC handlers in ipc.ts share this instance)
+  pythonSidecar = pythonBridge
   await pythonSidecar.start()
 
   // Auto-start wake word detection in Python sidecar
@@ -209,7 +209,5 @@ app.on('before-quit', async () => {
   // Stop wake receiver
   stopWakeReceiver()
   // Cleanup Python sidecar
-  if (pythonSidecar) {
-    await pythonSidecar.stop()
-  }
+  await pythonBridge.stop()
 })

@@ -26,7 +26,7 @@ let fetching: Promise<BackendConfig> | null = null
 // Default fallback config (local mode)
 const DEFAULT_CONFIG: BackendConfig = {
   httpUrl: 'http://127.0.0.1:8956',
-  wsUrl: 'ws://127.0.0.1:8970',
+  wsUrl: 'ws://127.0.0.1:8956',
   isRemote: false,
 }
 
