@@ -51,21 +51,56 @@ class CameraRequest(BaseModel):
 
 # ─── Helpers ───────────────────────────────────────────────────────────
 
-def _check_gemini_api_key() -> bool:
-    """Check if a Gemini API key is actually configured (not just the package)."""
-    # Try config file
+def _resolve_gemini_api_key() -> str:
+    """Resolve the Gemini API key from multiple sources.
+
+    Checks in order:
+    1. config/api_keys.json (the canonical config file)
+    2. os.environ["GEMINI_API_KEY"] (set by load_dotenv in config.py)
+    3. .env file direct read (fallback if load_dotenv failed due to encoding issues)
+
+    Returns:
+        The API key string, or empty string if not found.
+    """
+    # 1. Config file (config/api_keys.json)
     config_path = Path(__file__).parent.parent / "config" / "api_keys.json"
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
-            if data.get("gemini_api_key", ""):
-                return True
+            key = data.get("gemini_api_key", "")
+            if key:
+                return key
         except Exception:
             pass
-    # Try env var
-    if os.getenv("GEMINI_API_KEY", ""):
-        return True
-    return False
+
+    # 2. OS environment variable
+    env_val = os.getenv("GEMINI_API_KEY", "")
+    if env_val:
+        return env_val
+
+    # 3. Read .env file directly (in case load_dotenv didn't load the var)
+    try:
+        env_path = Path(__file__).parent.parent.parent / ".env"
+        if env_path.exists():
+            text = env_path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("GEMINI_API_KEY=") or line.startswith("export GEMINI_API_KEY="):
+                    raw = line.split("=", 1)[1].strip()
+                    # Strip surrounding quotes
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
+                        raw = raw[1:-1]
+                    if raw:
+                        return raw
+    except Exception:
+        pass
+
+    return ""
+
+
+def _check_gemini_api_key() -> bool:
+    """Check if a Gemini API key is actually configured."""
+    return bool(_resolve_gemini_api_key())
 
 
 def _log_evolution_failure(event_type: str, metadata: dict) -> None:
@@ -359,12 +394,12 @@ async def _handle_vision_analyze(
     _start = time.perf_counter()
 
     try:
+        api_key = _resolve_gemini_api_key()
+        if not api_key:
+            await websocket.send_json({"type": "error", "message": "Gemini API key not found in any source."})
+            return
         from google import genai
-        client = genai.Client(api_key=(
-            json.loads((Path(__file__).parent.parent / "config" / "api_keys.json").read_text()).get("gemini_api_key")
-            if (Path(__file__).parent.parent / "config" / "api_keys.json").exists()
-            else os.getenv("GEMINI_API_KEY", "")
-        ))
+        client = genai.Client(api_key=api_key)
 
         # Use streaming generation for real-time token delivery
         response = client.models.generate_content_stream(

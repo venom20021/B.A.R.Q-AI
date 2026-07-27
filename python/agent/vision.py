@@ -256,9 +256,18 @@ async def analyze_image_with_gemini_live(
 # ─── API Key Loading ────────────────────────────────────────────────────────
 
 def _load_gemini_api_key() -> str:
-    """Load the Gemini API key from the config file.
+    """Load the Gemini API key from config file, env var, or .env file.
 
-    Looks for the key in the same config file used by the rest of BARQ.
+    Checks in order:
+    1. config/api_keys.json
+    2. GEMINI_API_KEY environment variable
+    3. .env file direct read (in case load_dotenv didn't load the var)
+
+    Returns:
+        The API key string.
+
+    Raises:
+        RuntimeError: If the key cannot be found in any source.
     """
     config_path = Path(os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "config", "api_keys.json"
@@ -273,10 +282,26 @@ def _load_gemini_api_key() -> str:
         except Exception:
             pass
 
-    # Fall back to environment variable
+    # Environment variable
     key = os.getenv("GEMINI_API_KEY", "")
     if key:
         return key
+
+    # Fallback: read .env file directly
+    try:
+        env_path = Path(__file__).parent.parent.parent / ".env"
+        if env_path.exists():
+            text = env_path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("GEMINI_API_KEY=") or line.startswith("export GEMINI_API_KEY="):
+                    raw = line.split("=", 1)[1].strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
+                        raw = raw[1:-1]
+                    if raw:
+                        return raw
+    except Exception:
+        pass
 
     raise RuntimeError(
         "Gemini API key not found. "
