@@ -13,6 +13,7 @@ interface VoiceContextValue {
   aiState: AIState
   sttText: string
   responseText: string
+  isRemote: boolean
   /** Toggle the backend voice detector on/off */
   toggleDetector: () => Promise<void>
   /** Start the backend voice detector */
@@ -30,6 +31,7 @@ const VoiceContext = createContext<VoiceContextValue>({
   aiState: 'idle',
   sttText: '',
   responseText: '',
+  isRemote: false,
   toggleDetector: async () => {},
   startDetector: async () => {},
   stopDetector: async () => {},
@@ -41,17 +43,26 @@ export function useVoice(): VoiceContextValue {
 
 // ─── Provider ────────────────────────────────────────────────────────────────
 
-let _wsUrl: string | null = null
-async function getWsUrl(): Promise<string> {
-  if (!_wsUrl) {
+/** Voice WS always connects to localhost.
+ * Microphone/speakers are physically on this machine,
+ * so the voice pipeline MUST run locally regardless of
+ * whether non-voice endpoints are in remote mode.
+ */
+const LOCAL_VOICE_WS_URL = 'ws://127.0.0.1:8956/voice/ws/status'
+
+let _voiceWsUrl: string | null = null
+let _isRemote: boolean | null = null
+async function getVoiceWsUrl(): Promise<string> {
+  if (!_voiceWsUrl) {
     try {
       const config = await getBackendConfig()
-      _wsUrl = `${config.wsUrl}/voice/ws/status`
+      _isRemote = config.isRemote
     } catch {
-      _wsUrl = 'ws://127.0.0.1:8970/voice/ws/status'
+      _isRemote = false
     }
+    _voiceWsUrl = LOCAL_VOICE_WS_URL
   }
-  return _wsUrl
+  return _voiceWsUrl
 }
 
 export function VoiceProvider({ children }: { children: ReactNode }): JSX.Element {
@@ -61,9 +72,17 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   const [aiState, setAiState] = useState<AIState>('idle')
   const [sttText, setSttText] = useState('')
   const [responseText, setResponseText] = useState('')
+  const [isRemote, setIsRemote] = useState(false)
 
   // Track current generation for stale caption filtering
   const currentGenerationRef = useRef(0)
+
+  // ── Detect mode on mount ──────────────────────────────────────────
+  useEffect(() => {
+    getBackendConfig().then((config) => {
+      setIsRemote(config.isRemote)
+    })
+  }, [])
 
   // ── Apply status from backend snapshot ────────────────────────────
   const applyStatus = useCallback((data: Record<string, unknown>) => {
@@ -120,7 +139,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     }
   }, [])
 
-  // ── WebSocket + HTTP polling ───────────────────────────────────────
+  // ── WebSocket + HTTP polling (always connects to LOCAL voice pipeline) ──
   useEffect(() => {
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -147,7 +166,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
 
     const connect = async (): Promise<void> => {
       try {
-        const url = await getWsUrl()
+        const url = await getVoiceWsUrl()
         ws = new WebSocket(url)
         wsFailedAt = null
       } catch {
@@ -270,6 +289,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
         aiState,
         sttText,
         responseText,
+        isRemote,
         toggleDetector,
         startDetector,
         stopDetector,

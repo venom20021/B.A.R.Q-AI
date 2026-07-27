@@ -2144,6 +2144,51 @@ export function SettingsPage(): JSX.Element {
                   </div>
                 )}
 
+                {/* ── Quick Switch Buttons ── */}
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Switch Mode</p>
+                    <p className="text-xs font-exo text-dim-400">Choose which backend to use</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        if (cloudMode) {
+                          handleCloudModeToggle()
+                        }
+                      }}
+                      disabled={!cloudMode || cloudModeStatus === 'checking'}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-rajdhani font-semibold rounded-lg border transition-all ${
+                        !cloudMode
+                          ? 'bg-green-500/15 text-green-300 border-green-500/30 cursor-default disabled:opacity-100'
+                          : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:bg-void-700/60 hover:text-ghost disabled:opacity-40'
+                      } disabled:cursor-not-allowed`}
+                    >
+                      <WifiOff className="w-3.5 h-3.5" />
+                      Local
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!cloudMode) {
+                          handleCloudModeToggle()
+                        }
+                      }}
+                      disabled={cloudMode || cloudModeStatus === 'checking'}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-rajdhani font-semibold rounded-lg border transition-all ${
+                        cloudMode
+                          ? 'bg-green-500/15 text-green-300 border-green-500/30 cursor-default disabled:opacity-100'
+                          : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:bg-void-700/60 hover:text-ghost disabled:opacity-40'
+                      } disabled:cursor-not-allowed`}
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      Cloud
+                    </button>
+                    {cloudModeStatus === 'checking' && (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-300" />
+                    )}
+                  </div>
+                </div>
+
                 <div className="pt-2">
                   <p className="text-xs font-exo text-dim-500">
                     Cloud mode sends all API requests to a remote BARQ server. Use this when

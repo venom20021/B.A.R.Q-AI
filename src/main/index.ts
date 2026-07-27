@@ -171,10 +171,11 @@ app.whenReady().then(async () => {
   pythonSidecar = pythonBridge
   await pythonSidecar.start()
 
-  // Auto-start wake word detection in Python sidecar
+  // Auto-start wake word detection on the LOCAL Python sidecar
+  // (voice always runs locally even when connected to a remote backend)
   try {
-    await pythonSidecar.request('/voice/start', {}, 30_000)
-    console.log('[Main] Wake word detection auto-started on Python sidecar')
+    await pythonBridge.request('/voice/start', {}, 30_000)
+    console.log('[Main] Wake word detection auto-started on local voice sidecar')
   } catch (err) {
     console.warn('[Main] Could not auto-start wake detection:', err)
   }

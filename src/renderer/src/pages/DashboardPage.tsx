@@ -362,6 +362,7 @@ export function DashboardPage(): JSX.Element {
     aiState,
     sttText,
     responseText,
+    isRemote,
     toggleDetector,
   } = voice
   const [userName, setUserName] = useState(getStoredUserName)
@@ -997,6 +998,12 @@ export function DashboardPage(): JSX.Element {
               <span className={`text-xs font-sans font-bold tracking-[0.15em] uppercase transition-all duration-300 ${!detectorRunning ? 'text-red-400' : isVoiceActive ? 'text-cyan-300' : 'text-white/40'}`}>
                 {!detectorRunning ? 'MUTED' : isVoiceActive ? 'ON AIR' : 'STANDBY'}
               </span>
+              {isRemote && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20">
+                  <Cloud className="w-2.5 h-2.5 text-cyan-400/70" />
+                  <span className="text-[8px] font-sans font-bold tracking-wider text-cyan-400/70 uppercase">Cloud</span>
+                </span>
+              )}
               {(isVoiceActive || aiState === 'thinking' || aiState === 'responding') && (
                 <span className="relative flex w-2 h-2">
                   <span className={`animate-ping absolute inset-0 rounded-full ${aiState === 'responding' ? 'bg-emerald-400' : aiState === 'thinking' ? 'bg-amber-400' : 'bg-cyan-400'} opacity-50`} />
