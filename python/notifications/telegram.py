@@ -135,9 +135,14 @@ class TelegramChannel(NotificationChannel):
         if event.metadata:
             lines.append("")
             for key, value in event.metadata.items():
-                safe_key = html.escape(key.replace("_", " ").title())
-                safe_val = html.escape(str(value))
-                lines.append(f"• {safe_key}: {safe_val}")
+                # Render job_url and URL-like keys as clickable links
+                if key in ("job_url", "url", "apply_url", "link") and str(value).startswith(("http://", "https://")):
+                    safe_val = html.escape(str(value))
+                    lines.append(f"🔗 <a href=\"{safe_val}\"><b>Open Application Link</b></a>")
+                else:
+                    safe_key = html.escape(key.replace("_", " ").title())
+                    safe_val = html.escape(str(value))
+                    lines.append(f"• {safe_key}: {safe_val}")
 
         return "\n".join(lines)
 

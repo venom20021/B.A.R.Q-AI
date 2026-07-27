@@ -123,18 +123,27 @@ class NotificationManager:
         return await self.send(event)
 
     async def send_job_match_alert(
-        self, job_title: str, company: str, match_score: float, job_id: int
+        self, job_title: str, company: str, match_score: float, job_id: int, job_url: str = ""
     ) -> dict[str, NotificationResult]:
-        """Send a high-priority job match alert."""
+        """Send a high-priority job match alert with clickable job link.
+
+        The job URL is rendered as a clickable link via metadata in the Telegram
+        _format_message() method (which handles html.escape correctly). The body
+        stays plain text to avoid double-escaping.
+        """
+        body = f"{company} — {match_score:.0f}% match score. Ready for review."
+        if job_url:
+            body += f"\n\n📎 Job link available below."
         return await self.send_notification(
             title=f"🎯 Great Job Match: {job_title}",
-            body=f"{company} — {match_score:.0f}% match score. Ready for review.",
+            body=body,
             priority="high",
             category="job_match",
             related_entity_type="job_listing",
             related_entity_id=job_id,
             company=company,
             match_score=f"{match_score:.0f}%",
+            job_url=job_url,
         )
 
     async def send_content_published_alert(

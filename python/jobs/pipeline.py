@@ -688,12 +688,13 @@ async def _send_telegram_notification(
             print("[Pipeline] Telegram not configured; skipping detailed notification")
             return False
 
-        # 1. Send the match alert
+        # 1. Send the match alert with job URL link
         await notification_manager.send_job_match_alert(
             job_title=job_title,
             company=company,
             match_score=match_pct,
             job_id=app_id,
+            job_url=job_url,
         )
 
         priority = "high" if match_pct >= 80 else "normal"

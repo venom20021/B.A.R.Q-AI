@@ -156,6 +156,22 @@ async def _auto_scan_jobs():
             "job", "auto_scan", f"Auto-scanned {count} new jobs"
         )
         logger.info(f"[AutoScan] Found {count} new jobs")
+
+        # ── Auto-trigger pipeline to process high-match jobs ──────────
+        if count > 0:
+            try:
+                from jobs.pipeline import run_pipeline
+                pipeline_result = await run_pipeline({
+                    "mode": "notify",
+                    "max_per_run": 10,
+                    "min_match_score": 60,
+                    "generate_pdf": False,  # Skip PDF gen in auto-mode (speed)
+                    "send_telegram": True,
+                })
+                logger.info(f"[AutoScan] Pipeline processed {pipeline_result.get('succeeded', 0)} jobs")
+            except Exception as pipe_err:
+                logger.warning(f"[AutoScan] Pipeline trigger failed: {pipe_err}")
+
     except Exception as e:
         logger.error(f"[AutoScan] Failed: {e}")
 
