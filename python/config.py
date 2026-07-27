@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     turso_database_url: str = os.getenv("TURSO_DATABASE_URL", "")
     turso_auth_token: str = os.getenv("TURSO_AUTH_TOKEN", "")
 
+    # Deepgram (cloud STT/TTS)
+    deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
+
     # External API Keys (loaded from .env)
     linkedin_email: str = os.getenv("LINKEDIN_EMAIL", "")
     linkedin_password: str = os.getenv("LINKEDIN_PASSWORD", "")

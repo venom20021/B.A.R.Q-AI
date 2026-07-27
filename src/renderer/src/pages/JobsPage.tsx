@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react'
 import { api } from '../utils/api'
-import { getBackendConfig } from '../utils/backendConfig'
 import { usePersistentState } from '../hooks/usePersistentState'
 import {
   Search, Filter, ExternalLink, CheckCircle, XCircle,
@@ -228,6 +227,7 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
   const [scanning, setScanning] = usePersistentState('JobsPage.scanning', false)
   const [progress, setProgress] = usePersistentState<ScanProgress | null>('JobsPage.scanProgress', null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   // Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -316,31 +316,40 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
   useEffect(() => {
     return () => {
       if (eventSourceRef.current) {
-        eventSourceRef.current.close()
+        (eventSourceRef.current as EventSource).close()
         eventSourceRef.current = null
+      }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
       }
     }
   }, [])
 
   const openEventSource = useCallback(() => {
-    // Close any existing connection
+    // Close any existing EventSource or poll interval
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
     if (eventSourceRef.current) {
-      eventSourceRef.current.close()
+      (eventSourceRef.current as EventSource).close()
       eventSourceRef.current = null
     }
 
-    // Use full backend URL for EventSource (same origin as api() calls)
-    // In remote mode, this gets resolved asynchronously before the scan starts
-    const es = new EventSource(`${getSyncHttpUrl()}/jobs/scan/stream`)
-    eventSourceRef.current = es
-
-    es.onmessage = (event) => {
+    // Poll scan progress through the IPC bridge (api() utility) instead of
+    // using EventSource (SSE) directly from the renderer.  Direct EventSource
+    // from the Electron renderer to a remote (cloud) backend URL would be
+    // blocked by CORS — the same issue that plagued the PDF upload.
+    // The api() utility routes through the main process (Node.js HTTP)
+    // which has no CORS restrictions.
+    const pollInterval = setInterval(async () => {
       try {
-        const data = JSON.parse(event.data) as Record<string, unknown>
+        const data = await api<Record<string, unknown>>('/jobs/scan/progress')
+        if (!data) return
 
         if (data.final) {
-          // Stream ended
-          es.close()
+          clearInterval(pollInterval)
           eventSourceRef.current = null
           setScanning(false)
           fetchJobs()
@@ -364,21 +373,15 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
         })
 
         if (data.status === 'complete' || data.status === 'error') {
-          es.close()
+          clearInterval(pollInterval)
           eventSourceRef.current = null
           setScanning(false)
           fetchJobs()
         }
-      } catch { /* ignore parse errors */ }
-    }
+      } catch { /* ignore — next poll will retry */ }
+    }, 2000)
 
-    es.onerror = () => {
-      // EventSource auto-reconnects on error
-      // Only close if the scan is likely done
-      es.close()
-      eventSourceRef.current = null
-      setScanning(false)
-    }
+    pollIntervalRef.current = pollInterval
   }, [fetchJobs])
 
   const handleAutoScanToggle = async (): Promise<void> => {
@@ -416,9 +419,18 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
       openEventSource()
       // Safety timeout: close EventSource after 5 minutes
       setTimeout(() => {
+        let shouldCleanup = false
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current)
+          pollIntervalRef.current = null
+          shouldCleanup = true
+        }
         if (eventSourceRef.current) {
-          eventSourceRef.current.close()
+          (eventSourceRef.current as EventSource).close()
           eventSourceRef.current = null
+          shouldCleanup = true
+        }
+        if (shouldCleanup) {
           setScanning(false)
           fetchJobs()
         }
@@ -462,7 +474,7 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
 
   // On mount: resume EventSource if a scan was in progress
   useEffect(() => {
-    if (scanning && !eventSourceRef.current && progress) {
+    if (scanning && !eventSourceRef.current && !pollIntervalRef.current && progress) {
       if (progress.status === 'scanning' || progress.status === 'evaluating' || progress.status === 'starting') {
         openEventSource()
       } else if (['complete', 'idle', 'error'].includes(progress.status) || !progress) {
@@ -1712,26 +1724,33 @@ function PipelinePanel(): JSX.Element {
     setPdfUploadResult(null)
     setPdfUploadError(null)
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      // Use full backend URL for file upload — FormData can't go through api()
-      const BACKEND_URL = getSyncHttpUrl()
-      const resp = await fetch(`${BACKEND_URL}/jobs/resume/upload-pdf`, {
-        method: 'POST',
-        body: formData,
+      // Read the file as base64 so we can send it through the IPC bridge
+      // (api() utility goes through the main process — no CORS issues).
+      // Direct fetch() from the Electron renderer to a remote backend can
+      // fail due to CORS preflight / web security.
+      const reader = new FileReader()
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string
+          // Strip the "data:application/pdf;base64," prefix
+          const comma = result.indexOf(',')
+          resolve(comma >= 0 ? result.slice(comma + 1) : result)
+        }
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
       })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ detail: 'Upload failed' }))
-        throw new Error(err.detail || `HTTP ${resp.status}`)
-      }
-      const data = await resp.json()
-      if (data.status === 'saved') {
+
+      const resp = await api<{ status: string; message: string; char_count?: number; page_count?: number; parsed?: { full_name?: string; skills_count?: number; experience_count?: number } }>('/jobs/resume/upload-pdf-base64', {
+        filename: file.name,
+        data: base64Data,
+      })
+
+      if (resp?.status === 'saved') {
         setPdfUploadResult({
-          message: data.message || 'Resume extracted from PDF',
+          message: resp.message || 'Resume extracted from PDF',
           parsed: {
-            full_name: data?.parsed?.full_name || '',
-            skills_count: Number(data?.parsed?.skills_count || 0),
+            full_name: resp?.parsed?.full_name || '',
+            skills_count: Number(resp?.parsed?.skills_count || 0),
             page_count: Number(data?.page_count || 0),
           },
         })

@@ -537,6 +537,7 @@ async def upload_resume(data: dict):
         path = Path(DEFAULT_RESUME_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        print(f"[ResumeUpload] Saved {len(content)} chars to {path}")
 
         from .resume_parser import clear_parse_cache
         clear_parse_cache()
@@ -611,6 +612,7 @@ async def upload_resume_pdf(file: UploadFile = File(...)):
         path = Path(DEFAULT_RESUME_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(full_text, encoding="utf-8")
+        print(f"[ResumeUpload] PDF extracted {len(full_text)} chars, {len(extracted_pages)} pages to {path}")
         clear_parse_cache()
 
         await analytics_dao.log_activity(
@@ -647,6 +649,101 @@ async def upload_resume_pdf(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Failed to parse PDF: {str(e)}",
         )
+
+
+class PdfUploadBase64Request(BaseModel):
+    filename: str
+    data: str  # base64-encoded PDF bytes
+
+
+@router.post("/resume/upload-pdf-base64", summary="Upload a PDF resume via base64 JSON (works through proxy bridge)")
+async def upload_resume_pdf_base64(req: PdfUploadBase64Request):
+    """
+    Accept a PDF resume as base64-encoded data inside a JSON payload.
+
+    This endpoint exists so the Electron frontend can send PDFs through the
+    IPC bridge (which speaks JSON) instead of using a direct `fetch()` with
+    FormData, which can fail due to CORS / web security when the renderer
+    targets a remote (cloud) backend.
+
+    Decodes the base64 → extracts text via PyMuPDF → saves as ~/career-ops/cv.md.
+    """
+    import base64
+    import os
+    from pathlib import Path
+
+    # Validate filename
+    if not req.filename or not req.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    # Decode base64 payload
+    try:
+        pdf_bytes = base64.b64decode(req.data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 data")
+
+    if len(pdf_bytes) < 100:
+        raise HTTPException(status_code=400, detail="PDF file appears empty")
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file exceeds 10MB limit")
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        extracted_pages = []
+        for page_num, page in enumerate(doc):
+            text = page.get_text()
+            if text.strip():
+                extracted_pages.append(text.strip())
+        doc.close()
+
+        if not extracted_pages or all(len(p.strip()) < 20 for p in extracted_pages):
+            raise HTTPException(
+                status_code=400,
+                detail="No extractable text found in PDF.",
+            )
+
+        full_text = "\n\n".join(extracted_pages)
+        full_text = re.sub(r"\n{3,}", "\n\n", full_text)
+        full_text = full_text.strip()
+
+        if len(full_text) < 50:
+            raise HTTPException(status_code=400, detail=f"Only {len(full_text)} chars extracted — PDF may be scanned.")
+
+        from .resume_parser import DEFAULT_RESUME_PATH, clear_parse_cache
+        path = Path(DEFAULT_RESUME_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(full_text, encoding="utf-8")
+        clear_parse_cache()
+
+        await analytics_dao.log_activity(
+            "job", "resume_upload_pdf",
+            f"Resume parsed from PDF (base64) ({len(full_text)} chars, {len(extracted_pages)} pages)",
+        )
+
+        from .resume_parser import parse_resume
+        parsed = parse_resume()
+
+        return {
+            "status": "saved",
+            "message": f"Resume extracted from PDF — {len(full_text)} characters, {len(extracted_pages)} pages",
+            "path": str(path),
+            "char_count": len(full_text),
+            "page_count": len(extracted_pages),
+            "parsed": {
+                "full_name": parsed.get("full_name", ""),
+                "skills_count": len(parsed.get("skills", [])),
+                "experience_count": len(parsed.get("experience", [])),
+            },
+        }
+
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF text extraction requires PyMuPDF")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
 
 
 @router.get("/resume", summary="Get the current resume content and parse status")

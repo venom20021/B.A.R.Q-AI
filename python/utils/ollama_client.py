@@ -103,7 +103,10 @@ class CloudLLMClient:
         self.model = settings.cloud_llm_model
         self.base_url = settings.cloud_llm_base_url.rstrip("/")
         self.temperature = temperature
-        self._enabled = settings.cloud_llm_enabled and bool(self.api_key)
+        # Enabled when CLOUD_LLM_ENABLED is true — even without an API key.
+        # This supports local LM Studio instances (no auth required) as well
+        # as cloud providers (OpenAI, Groq, etc. with an API key).
+        self._enabled = settings.cloud_llm_enabled
 
     @property
     def enabled(self) -> bool:

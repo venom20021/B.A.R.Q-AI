@@ -30,7 +30,14 @@ contextBridge.exposeInMainWorld('barq', {
     actionLog: {
       recent: (limit?: number) => ipcRenderer.invoke('voice:action-log:recent', limit || 10),
     },
-    chatStream: (message: string) => ipcRenderer.invoke('voice:chat:stream', message),
+    chatStreamStart: (message: string) => ipcRenderer.invoke('voice:chat:stream-start', message),
+    chatStreamCancel: (streamId: string) => ipcRenderer.invoke('voice:chat:stream-cancel', streamId),
+    onStreamEvent: (callback: (event: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown): void => callback(data)
+      ipcRenderer.on('voice:chat:stream-event', handler)
+      // Return cleanup function
+      return () => { ipcRenderer.removeListener('voice:chat:stream-event', handler) }
+    },
   },
 
   // Job search

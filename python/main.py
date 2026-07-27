@@ -11,6 +11,7 @@ This service runs alongside the Electron app and provides:
 - Playwright-based auto-apply
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -222,9 +223,17 @@ async def _auto_match_jobs():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown events."""
-    # Startup
+    # Startup — wrap database init with a timeout so the health endpoint
+    # becomes available even if Turso cloud is slow or unreachable.
     print(f"[BARQ Sidecar] Starting on {settings.host}:{settings.port}")
-    await init_db()
+    try:
+        await asyncio.wait_for(init_db(), timeout=15.0)
+    except asyncio.TimeoutError:
+        print("[BARQ Sidecar] [WARN] Database init timed out after 15s (Turso may be unreachable)")
+        print("[BARQ Sidecar] [WARN] Starting without database — some features will be degraded")
+    except Exception as e:
+        print(f"[BARQ Sidecar] [WARN] Database init failed: {e}")
+        print("[BARQ Sidecar] [WARN] Starting without database — some features will be degraded")
 
     # Check LLM availability (Ollama + cloud fallback)
     try:

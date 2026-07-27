@@ -135,6 +135,14 @@ export function VisionPage(): JSX.Element {
 
   // Store self-reference for setTimeout callbacks
   const connectWsRef = useRef<() => void>(() => { /* noop */ })
+  const wsRetryCountRef = useRef(0)
+
+  const getReconnectDelay = useCallback((): number => {
+    // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at 30s
+    const delay = Math.min(1000 * Math.pow(2, wsRetryCountRef.current), 30_000)
+    wsRetryCountRef.current++
+    return delay
+  }, [])
 
   const connectWs = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -146,6 +154,7 @@ export function VisionPage(): JSX.Element {
 
       ws.onopen = () => {
         setWsConnected(true)
+        wsRetryCountRef.current = 0  // Reset retry count on successful connect
         console.log('[Vision WS] Connected')
       }
 
@@ -230,30 +239,36 @@ export function VisionPage(): JSX.Element {
         }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setWsConnected(false)
         setWsReady(false)
         setStreamingText('')
         wsRef.current = null
-        // Auto-reconnect after 3s
+        const delay = getReconnectDelay()
+        console.warn(`[Vision WS] Disconnected (code=${event.code}, reason=${event.reason || 'none'}) — reconnecting in ${Math.round(delay / 1000)}s`)
         wsReconnectRef.current = setTimeout(() => {
           connectWsRef.current()
-        }, 3000)
+        }, delay)
       }
 
       ws.onerror = () => {
-        // onclose will fire after this
+        // WebSocket onerror events are opaque (no useful message property).
+        // The actual reason comes from onclose's event.code (e.g., 1006 = abnormal closure).
+        // Just log here; onclose will handle reconnect with backoff.
+        console.warn('[Vision WS] Error (opaque event — see close code for details)')
+        // onclose will fire after this, triggering reconnect with backoff
       }
     } catch (e) {
       console.warn('[Vision WS] Connection error:', e)
       setWsConnected(false)
-      // Retry after 5s
+      const delay = getReconnectDelay()
+      console.warn(`[Vision WS] Retrying in ${Math.round(delay / 1000)}s...`)
       wsReconnectRef.current = setTimeout(() => {
         connectWsRef.current()
-      }, 5000)
+      }, delay)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])  // Intentionally stable — no external deps; connect is called once on mount
+  }, [getReconnectDelay])  // Intentionally stable — no external deps; connect is called once on mount
 
   // Keep ref in sync so setTimeout callbacks can call connectWs without TDZ issues
   useEffect(() => {
@@ -270,6 +285,7 @@ export function VisionPage(): JSX.Element {
       }
       if (wsReconnectRef.current) {
         clearTimeout(wsReconnectRef.current)
+        wsReconnectRef.current = null
       }
     }
   }, [connectWs])

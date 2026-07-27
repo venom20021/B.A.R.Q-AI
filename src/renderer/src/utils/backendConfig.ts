@@ -6,11 +6,18 @@
  * the app is in local mode (Python sidecar on localhost) or remote
  * mode (cloud BARQ instance).
  *
+ * IMPORTANT: Config is NOT cached — every call fetches fresh from the
+ * main process.  This is safe because the main process's
+ * ``getBackendConfig()`` is a synchronous property read (no IPC overhead).
+ * Not caching ensures that when the auto-remote probe completes and
+ * sets ``remoteMode = true`` in the main process, the renderer picks
+ * up the change immediately rather than serving a stale localhost config.
+ *
  * Usage:
  *   import { getBackendConfig } from '../utils/backendConfig'
  *   const config = await getBackendConfig()
  *   // config.httpUrl  → "http://155.248.247.224" or "http://127.0.0.1:8956"
- *   // config.wsUrl    → "ws://155.248.247.224" or "ws://127.0.0.1:8970"
+ *   // config.wsUrl    → "ws://155.248.247.224" or "ws://127.0.0.1:8956"
  *   // config.isRemote → true | false
  */
 
@@ -20,10 +27,12 @@ export interface BackendConfig {
   isRemote: boolean
 }
 
-let cachedConfig: BackendConfig | null = null
-let fetching: Promise<BackendConfig> | null = null
+// No caching — always fetch fresh from main process.
+// The IPC call reads a synchronous property so it's effectively instant.
 
-// Default fallback config (local mode)
+/**
+ * Default fallback config (local mode) — used only when IPC fails.
+ */
 const DEFAULT_CONFIG: BackendConfig = {
   httpUrl: 'http://127.0.0.1:8956',
   wsUrl: 'ws://127.0.0.1:8956',
@@ -32,58 +41,39 @@ const DEFAULT_CONFIG: BackendConfig = {
 
 /**
  * Get the backend configuration (HTTP URL, WS URL, remote mode status).
- * Results are cached after the first call.
+ * Always fetches fresh from the main process — no stale cache.
  */
 export async function getBackendConfig(): Promise<BackendConfig> {
-  if (cachedConfig) return cachedConfig
-
-  if (!fetching) {
-    fetching = (async () => {
-      try {
-        const resp = await window.barq?.python.getConfig()
-        if (resp?.success && resp.data) {
-          const config: BackendConfig = {
-            httpUrl: resp.data.httpUrl,
-            wsUrl: resp.data.wsUrl,
-            isRemote: resp.data.isRemote,
-          }
-          cachedConfig = config
-          return config
-        }
-      } catch {
-        // Fall through to defaults
+  try {
+    const resp = await window.barq?.python.getConfig()
+    if (resp?.success && resp.data) {
+      return {
+        httpUrl: resp.data.httpUrl,
+        wsUrl: resp.data.wsUrl,
+        isRemote: resp.data.isRemote,
       }
-
-      cachedConfig = DEFAULT_CONFIG
-      return DEFAULT_CONFIG
-    })()
+    }
+  } catch {
+    // Fall through to defaults
   }
 
-  return fetching
+  return DEFAULT_CONFIG
 }
 
 /**
- * Invalidate the cached config so the next call re-fetches.
- */
-export function invalidateBackendConfig(): void {
-  cachedConfig = null
-  fetching = null
-}
-
-/**
- * Synchronous HTTP URL getter — returns cached config or default.
- * Use in contexts where await is not possible (EventSource constructor, etc.).
- * The async getBackendConfig() should be called early to populate the cache.
+ * Synchronous HTTP URL getter — returns the default since we don't cache.
+ * For a sync read, call ``getBackendConfig()`` early and store the result.
  */
 export function getSyncHttpUrl(): string {
-  return cachedConfig?.httpUrl ?? DEFAULT_CONFIG.httpUrl
+  return DEFAULT_CONFIG.httpUrl
 }
 
 /**
- * Synchronous WS URL getter — returns cached config or default.
+ * Synchronous WS URL getter — returns the default since we don't cache.
+ * For remote mode, use ``const config = await getBackendConfig()``.
  */
 export function getSyncWsUrl(): string {
-  return cachedConfig?.wsUrl ?? DEFAULT_CONFIG.wsUrl
+  return DEFAULT_CONFIG.wsUrl
 }
 
 /**
@@ -93,17 +83,14 @@ export async function setRemoteMode(enabled: boolean, url?: string): Promise<Bac
   try {
     const resp = await window.barq?.python.setRemoteMode(enabled, url)
     if (resp?.success && resp.data) {
-      const config: BackendConfig = {
+      return {
         httpUrl: resp.data.httpUrl,
         wsUrl: resp.data.wsUrl,
         isRemote: resp.data.isRemote,
       }
-      cachedConfig = config
-      return config
     }
   } catch {
     // ignore
   }
-  invalidateBackendConfig()
   return getBackendConfig()
 }

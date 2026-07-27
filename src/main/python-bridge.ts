@@ -54,11 +54,17 @@ class PythonSidecar {
   private _showVoskLogs = false
   private _showWhisperLogs = false
   private restartCount = 0
+  private consecutiveCrashCount = 0
   private lastRestartAttempt = 0
   private remoteMode = isRemote
   private _remoteUrl = SIDECAR_REMOTE_URL
   /** Whether a remote backend is actually connected and healthy */
   private _remoteConnected = false
+  /** Promise resolve function for ongoing start() call, to avoid race conditions */
+  private _startPromise: Promise<void> | null = null
+  private _startResolve: (() => void) | null = null
+  /** Set to true only after startup health check passes — gates the crash handler */
+  private _startupComplete = false
 
   /**
    * Set remote mode configuration.
@@ -176,42 +182,112 @@ class PythonSidecar {
    * is also reachable, non-voice requests are forwarded there.
    */
   async start(): Promise<void> {
-    if (this.isRunning) return
-
-    // ── If explicitly set to remote or auto-remote, probe the remote URL ──
-    let remoteUrl = ''
-    if (this.remoteMode && this._remoteUrl) {
-      remoteUrl = this._remoteUrl
-      console.log(`[PythonSidecar] Remote mode configured — will probe ${remoteUrl}`)
-    } else if (AUTO_REMOTE && !this.remoteMode) {
-      const autoUrl = DEFAULT_REMOTE_URL
-      console.log(`[PythonSidecar] Auto-remote — probing ${autoUrl}...`)
-      try {
-        const response = await fetch(`${autoUrl}/health`, { signal: AbortSignal.timeout(5000) })
-        if (response.ok) {
-          console.log('[PythonSidecar] ✅ Remote backend reachable — voice stays local, API uses cloud')
-          remoteUrl = autoUrl
-          this.remoteMode = true
-          this._remoteUrl = autoUrl
-          this._remoteConnected = true
-        }
-      } catch {
-        console.warn('[PythonSidecar] Remote backend not reachable — local only')
-      }
+    // Debounce: if start() is already in progress, wait for it
+    if (this._startPromise) {
+      return this._startPromise
     }
 
-    // ── ALWAYS start local Python for voice (mic/speakers are on this machine) ──
-    console.log('[PythonSidecar] Starting local Python backend for voice...')
+    this._startPromise = new Promise<void>((resolve) => {
+      this._startResolve = resolve
+    })
+
+    if (this.isRunning) {
+      this._resolveStart()
+      return
+    }
+
     try {
+      // ── If explicitly set to remote or auto-remote, probe the remote URL ──
+      let remoteUrl = ''
+      if (this.remoteMode && this._remoteUrl) {
+        remoteUrl = this._remoteUrl
+        console.log(`[PythonSidecar] Remote mode configured — will probe ${remoteUrl}`)
+      } else if (AUTO_REMOTE && !this.remoteMode) {
+        const autoUrl = DEFAULT_REMOTE_URL
+        console.log(`[PythonSidecar] Auto-remote — probing ${autoUrl}...`)
+        try {
+          const response = await fetch(`${autoUrl}/health`, { signal: AbortSignal.timeout(5000) })
+          if (response.ok) {
+            console.log('[PythonSidecar] ✅ Remote backend reachable — voice stays local, API uses cloud')
+            remoteUrl = autoUrl
+            this.remoteMode = true
+            this._remoteUrl = autoUrl
+            this._remoteConnected = true
+          }
+        } catch {
+          console.warn('[PythonSidecar] Remote backend not reachable — local only')
+        }
+      }
+
+      // ── ALWAYS start local Python for voice (mic/speakers are on this machine) ──
+      console.log('[PythonSidecar] Starting local Python backend for voice...')
       await this._startLocalProcess()
     } catch (err) {
-      // Catch the final error after all retries are exhausted.
-      // The error is already logged in _startLocalProcess with full detail.
-      // We swallow it here so the caller (index.ts) doesn't get an unhandled
-      // promise rejection. The app will show "Waiting for backend..." until
-      // the health check system restarts the sidecar or the user intervenes.
       console.warn(`[PythonSidecar] Local backend failed to start — ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      this._resolveStart()
     }
+  }
+
+  /** Resolve the start debounce promise. */
+  private _resolveStart(): void {
+    if (this._startResolve) {
+      this._startResolve()
+      this._startResolve = null
+      this._startPromise = null
+    }
+  }
+
+  /** Handle an unexpected process exit (crash).
+   *
+   * Attached to the process 'exit' event AFTER successful startup.
+   * Does NOT fire during the startup retry loop — that is handled
+   * separately by the exit handler in _startLocalProcess.
+   *
+   * Uses exponential backoff: 2s, 5s, 10s, 30s, 60s.
+   * Gives up after 5 consecutive crashes to avoid infinite restart loops.
+   */
+  private _handleProcessCrash(code: number | null): void {
+    if (code === 0) {
+      // Normal shutdown (stop() was called) — don't restart
+      this.consecutiveCrashCount = 0
+      return
+    }
+
+    // If a restart is already in progress (e.g., the startup retry loop
+    // is actively running), skip scheduling another. This prevents a race
+    // where the crash handler's timeout fires AFTER the retry loop has
+    // already spawned a new process, causing freePort() to kill it.
+    if (this._startPromise !== null) {
+      console.log('[PythonSidecar] Crash detected but restart already in progress — skipping')
+      return
+    }
+
+    this.consecutiveCrashCount++
+
+    if (this.consecutiveCrashCount > 5) {
+      console.error(
+        `[PythonSidecar] Too many consecutive crashes (${this.consecutiveCrashCount}) — giving up. ` +
+        `User needs to manually restart the app.`
+      )
+      return
+    }
+
+    // Exponential backoff: 2s, 5s, 10s, 30s, 60s
+    const delays = [2000, 5000, 10000, 30000, 60000]
+    const delay = delays[Math.min(this.consecutiveCrashCount - 1, delays.length - 1)]
+
+    const crashType = code === 3221226356 ? 'native crash (heap corruption)' : `exit code ${code}`
+    console.log(
+      `[PythonSidecar] Process crashed — ${crashType}. ` +
+      `Restarting in ${delay}ms (crash #${this.consecutiveCrashCount})`
+    )
+
+    setTimeout(() => {
+      this.restartCount++
+      this.lastRestartAttempt = Date.now()
+      this.start()
+    }, delay)
   }
 
   /**
@@ -238,7 +314,10 @@ class PythonSidecar {
           ...process.env,
           SIDECAR_PORT: String(SIDECAR_PORT),
           SIDECAR_HOST: SIDECAR_HOST,
-          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1',
+          // Skip Telegram bot on local dev — only the VM's barq.service
+          // should poll Telegram to avoid Conflict errors.
+          BARQ_SKIP_TELEGRAM: 'true'
         }
       })
 
@@ -254,6 +333,8 @@ class PythonSidecar {
         }
         console.log(`[Python] ${text}`)
       })
+      // Silence EPIPE errors when the process exits before all data is flushed
+      this.process.stdout?.on('error', () => {})
 
       this.process.stderr?.on('data', (data: Buffer) => {
         const text = data.toString().trim()
@@ -270,6 +351,7 @@ class PythonSidecar {
           console.warn(`[Python stderr] ${text}`)
         }
       })
+      this.process.stderr?.on('error', () => {})
 
       const exitPromise = new Promise<void>((resolve) => {
         const onExit = (code: number | null): void => {
@@ -281,6 +363,12 @@ class PythonSidecar {
           }
           resolve()
         }
+        // Attach crash handler immediately after spawn (gated by _startupComplete)
+        // This ensures the handler exists from the moment the process starts,
+        // but only triggers restarts after full startup (health check passes).
+        this.process!.once('exit', (code) => {
+          if (this._startupComplete) this._handleProcessCrash(code)
+        })
         this.process!.on('exit', onExit)
         this.process!.on('error', (err) => {
           console.error(`[PythonSidecar] Failed to start:`, err.message)
@@ -302,8 +390,10 @@ class PythonSidecar {
         exitRace.catch(() => {})
 
         await Promise.race([this.waitForHealth(30_000), exitRace])
+        this._startupComplete = true
         this.isRunning = true
         this.startHealthChecks()
+
         console.log('[PythonSidecar] ✅ Local Python backend ready for voice')
         return
       } catch (err) {
@@ -327,6 +417,8 @@ class PythonSidecar {
    * Stop the Python sidecar process gracefully.
    */
   async stop(): Promise<void> {
+    this._startupComplete = false
+
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
@@ -377,6 +469,15 @@ class PythonSidecar {
   }
 
   /**
+   * Determine the correct base URL for a given endpoint.
+   * Voice endpoints always hit localhost; non-voice endpoints hit remote when in cloud mode.
+   */
+  private _resolveBaseUrl(endpoint: string): string {
+    const isLocalOnly = LOCAL_ONLY_PREFIXES.some((prefix) => endpoint.startsWith(prefix))
+    return (this.remoteMode && this._remoteUrl && !isLocalOnly) ? this._remoteUrl : SIDECAR_URL
+  }
+
+  /**
    * Send a request to the Python sidecar HTTP API.
    *
    * Voice endpoints (/voice/*, /speech/*) ALWAYS route to the LOCAL Python
@@ -386,9 +487,7 @@ class PythonSidecar {
    * or to the LOCAL backend otherwise.
    */
   async request<T = unknown>(endpoint: string, data?: unknown, timeout = 10_000): Promise<T> {
-    // Voice endpoints always hit localhost (mic/speakers are on this machine)
-    const isLocalOnly = LOCAL_ONLY_PREFIXES.some((prefix) => endpoint.startsWith(prefix))
-    const baseUrl = (this.remoteMode && this._remoteUrl && !isLocalOnly) ? this._remoteUrl : SIDECAR_URL
+    const baseUrl = this._resolveBaseUrl(endpoint)
     const url = `${baseUrl}${endpoint}`
 
     const controller = new AbortController()
@@ -412,6 +511,119 @@ class PythonSidecar {
     } finally {
       clearTimeout(timeoutId)
     }
+  }
+
+  /**
+   * Stream a chat response via SSE from the backend.
+   *
+   * Routes through the MAIN PROCESS fetch (Node.js HTTP) instead of the
+   * renderer's Chromium network stack, which avoids CORS issues in
+   * cloud/remote mode.
+   *
+   * IMPORTANT: Overrides LOCAL_ONLY_PREFIXES — even though the endpoint
+   * path is /voice/chat/stream, this is NOT a voice-pipeline endpoint that
+   * needs local mic/speakers.  In cloud mode it hits the remote backend
+   * so the cloud LLM handles the request.
+   *
+   * Has a built-in 60-second inactivity timeout — if no data arrives for
+   * 60s, the controller aborts and onError is called.
+   *
+   * Returns an AbortController that can be used to cancel the stream.
+   */
+  streamChat(
+    message: string,
+    callbacks: {
+      onToken: (token: string) => void
+      onAudio: (audioBase64: string) => void
+      onDone: () => void
+      onError: (error: string) => void
+    }
+  ): AbortController {
+    const controller = new AbortController()
+    const INACTIVITY_TIMEOUT_MS = 60_000
+
+    const run = async (): Promise<void> => {
+      try {
+        // Override LOCAL_ONLY_PREFIXES — chat/stream is NOT a voice-pipeline endpoint
+        const baseUrl = (this.remoteMode && this._remoteUrl) ? this._remoteUrl : SIDECAR_URL
+        const url = `${baseUrl}/voice/chat/stream`
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, language: 'en' }),
+          signal: controller.signal,
+        })
+
+        if (!response.ok || !response.body) {
+          callbacks.onError(`HTTP ${response.status}`)
+          return
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let lastActivity = Date.now()
+
+        while (true) {
+          // Inactivity timeout
+          if (Date.now() - lastActivity > INACTIVITY_TIMEOUT_MS) {
+            callbacks.onError('Stream timed out (60s inactivity)')
+            controller.abort()
+            return
+          }
+
+          const { done, value } = await reader.read()
+          if (done) break
+
+          lastActivity = Date.now()
+          buffer += decoder.decode(value, { stream: true })
+
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            // Strip Windows \r line endings before parsing
+            const clean = line.replace(/\r$/, '')
+            if (clean.startsWith('data: ')) {
+              const data = clean.slice(6)
+              if (data === '[DONE]') {
+                callbacks.onDone()
+                return
+              }
+              try {
+                const parsed = JSON.parse(data)
+                if (parsed.type === 'token') {
+                  callbacks.onToken(parsed.text || '')
+                } else if (parsed.type === 'audio') {
+                  callbacks.onAudio(parsed.audio_base64 || '')
+                } else if (parsed.type === 'error') {
+                  callbacks.onError(parsed.message || 'Stream error')
+                  return
+                }
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+        }
+
+        // Stream ended without [DONE] — still call onDone to signal completion
+        callbacks.onDone()
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return
+        callbacks.onError((err as Error).message || 'Stream error')
+      }
+    }
+
+    // Fire-and-forget — callbacks handle results.
+    // Catch any unhandled errors to prevent unhandled promise rejections.
+    run().catch((err) => {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('[PythonSidecar] streamChat unhandled error:', err)
+      }
+    })
+    return controller
   }
 
   private getPythonPath(): string {

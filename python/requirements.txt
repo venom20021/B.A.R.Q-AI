@@ -4,13 +4,8 @@ uvicorn[standard]
 websockets>=0.30.0
 
 # Voice Control
-vosk>=0.3.44
-faster-whisper>=1.1.0
-edge-tts>=6.1.15
-piper-tts>=1.4.0
-pyaudio>=0.2.14
-sounddevice>=0.5.1
-webrtcvad>=2.0.10
+vosk>=0.3.44          # Wake word detection (local)
+sounddevice>=0.5.1    # Audio capture and playback
 
 # Local LLM
 ollama>=0.4.0

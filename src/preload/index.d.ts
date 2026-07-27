@@ -17,7 +17,9 @@ interface BarqAPI {
     actionLog: {
       recent: (limit?: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
     }
-    chatStream: (message: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    chatStreamStart: (message: string) => Promise<{ success: boolean; data?: { streamId: string }; error?: string }>
+    chatStreamCancel: (streamId: string) => Promise<{ success: boolean; error?: string }>
+    onStreamEvent: (callback: (event: { streamId: string; type: string; text?: string; audio_base64?: string; message?: string }) => void) => () => void
   }
   jobs: {
     scan: () => Promise<{ success: boolean; data?: unknown; error?: string }>

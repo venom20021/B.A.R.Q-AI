@@ -10,20 +10,14 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 
 ## Features
 
-### 🎤 Voice Control
+### 🎤 Voice Control (Deepgram Voice Agent)
 - **Wake word detection** — Always-listening (Vosk), hands-free wake word activation
-- **Conversation mode** — Natural back-and-forth like Alexa/Gemini; no need to say the wake word for every turn
-- **VAD endpointing** — Automatically detects when you stop speaking (250ms aggressive silence)
+- **Deepgram Voice Agent** — Managed STT → Gemini LLM → TTS pipeline in a single WebSocket connection
+- **Conversation mode** — Natural back-and-forth after wake word; no need to repeat the wake word
 - **Barge-in** — Interrupt BARQ mid-response by speaking over it
-- **Auto-language detection** — Detects English or Hindi from speech automatically and switches TTS voice (Jenny ↔ Swara) in real-time
-- **Echo-cancelling TTS** — `threading.Event()` mutex + audio buffer flush prevents feedback spiral
-- **TTS error recovery** — `try/except/finally` guarantees state is always reset on audio device failure
-- **Language indicators** — 🇬🇧/🇮🇳 badges in both the Navbar and mic toggle area show the current language at a glance
-- **Manual language switch** — Dropdown in Settings to lock recognition to English or Hindi
-- **Auto-detection status** — Settings page shows which language was last auto-detected with a live timestamp
-- **Hindi Vosk model** — Wake word detection works in both English and Hindi
-- **Small talk handler** — Canned responses for greetings, thanks, goodbyes — no LLM latency for common phrases
+- **Language indicators** — 🇬🇧/🇮🇳 badges in both the Navbar and mic toggle area show the current language
 - **Configurable wake word** — Change it anytime via API
+- **No local models needed** — Only a Deepgram API key is required (no Whisper, Edge TTS, or Piper models)
 
 ### 🧠 AI-Powered Conversation
 - **Local LLM** — Runs on Ollama (llama3.1, llama3.2, phi4, or any model)
@@ -33,7 +27,7 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Agent system** — Multi-step planner/executor with skill registry, error recovery, and replanning
 - **Deep Research Agent** — Multi-round iterative research with web search, fact extraction, and report generation
 - **Recruitment Agents** — Extract, match, and write ATS-optimized documents from job descriptions
-- **Natural speech** — Edge TTS for high-quality text-to-speech with offline Piper TTS fallback
+- **Natural speech** — Deepgram Aura-2 TTS for high-quality, low-latency text-to-speech
 
 ### 🧠 Multi-Brain Knowledge Graphs
 - **Domain-specific brains** — Isolated NetworkX graphs per domain (Apple Notes, Google Docs, AI Chats, Career)
@@ -98,9 +92,9 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 |---|---|---|
 | Python | 3.10+ | [python.org](https://python.org) |
 | Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Ollama | Latest | [ollama.ai](https://ollama.ai) — for local LLM |
-| ffmpeg | Latest | Required for audio playback ([download](https://ffmpeg.org/download.html)) |
-| Vosk model | ~50 MB | Auto-detected from `models/vosk/` |
+| Deepgram API key | — | [console.deepgram.com](https://console.deepgram.com) — required for Voice Agent STT + LLM + TTS |
+| Ollama | Latest | [ollama.ai](https://ollama.ai) — for local LLM (optional, Voice Agent uses Gemini) |
+| Vosk model | ~50 MB | Auto-detected from `models/vosk/` — for wake word detection |
 
 ### 1. Clone & Install
 
@@ -251,7 +245,7 @@ curl http://127.0.0.1:8956/voice/status
 |---|---|---|
 | **Frontend** | Electron + React + Vite | Desktop UI, tray icon, wake receiver |
 | **Backend** | Python FastAPI (uvicorn) | REST API, business logic, AI integration |
-| **Voice** | Vosk (wake word) + Whisper (STT) + Edge TTS | Speech recognition & synthesis |
+| **Voice** | Vosk (wake word) + Deepgram Voice Agent | Managed STT + LLM + TTS pipeline |
 | **LLM** | Ollama (llama3.2:3b) | Natural language understanding & generation |
 | **Database** | SQLite + aiosqlite | Persistent storage for jobs, settings, analytics |
 | **Browser** | Playwright | ATS form filling, web scraping |
@@ -335,7 +329,7 @@ Configuration is managed through environment variables or a `.env` file in the p
 | `CLOUD_LLM_ENABLED` | `true` | Enable cloud LLM fallback when Ollama is offline |
 | `CLOUD_LLM_MODEL` | `gpt-4o-mini` | Cloud LLM model (OpenAI-compatible) |
 | `CLOUD_LLM_BASE_URL` | `https://api.openai.com/v1` | Base URL for cloud LLM API |
-| `WHISPER_MODEL` | `base` | Whisper model size |
+| `DEEPGRAM_API_KEY` | — | Deepgram API key for Voice Agent (required, get at [console.deepgram.com](https://console.deepgram.com)) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///barq.db` | Database connection |
 | `CAREER_OPS_PATH` | `~/career-ops` | Path for resume/job files |
 
@@ -513,7 +507,7 @@ BARQ is designed to run on both **macOS** and **Windows**.
 
 ### macOS (Tested)
 - Vosk wake word detection ✓
-- Edge TTS audio playback ✓
+- Deepgram Voice Agent ✓
 - Ollama LLM ✓
 - Desktop automation ✓
 - System tray ✓
@@ -633,8 +627,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - [Vosk](https://alphacephei.com/vosk/) — Offline speech recognition
-- [OpenAI Whisper](https://github.com/openai/whisper) — Speech-to-text
-- [Edge TTS](https://github.com/rany2/edge-tts) — Text-to-speech
+- [Deepgram](https://deepgram.com) — Voice Agent, STT, and TTS
 - [Ollama](https://ollama.ai) — Local LLM inference
 - [FastAPI](https://fastapi.tiangolo.com) — Python web framework
 - [Electron](https://www.electronjs.org) — Desktop app framework

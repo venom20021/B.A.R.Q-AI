@@ -144,22 +144,51 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let httpPollTimer: ReturnType<typeof setTimeout> | null = null
+    let syncPollTimer: ReturnType<typeof setTimeout> | null = null
     let wsFailedAt: number | null = null
+    let wsRetryCount = 0
     let mounted = true
+
+    /** Exponential backoff: 1s, 2s, 4s, 8s… capped at 30s */
+    const getReconnectDelay = (): number => {
+      const delay = Math.min(1000 * Math.pow(2, wsRetryCount), 30_000)
+      wsRetryCount++
+      return delay
+    }
+
+    /** Fetch /voice/status and apply to local state (syncs detectorRunning, etc.) */
+    const fetchStatus = async (): Promise<void> => {
+      if (!mounted) return
+      try {
+        const d = await api('/voice/status')
+        if (d && typeof d === 'object' && mounted) {
+          applyStatus(d as Record<string, unknown>)
+        }
+      } catch {
+        // silent
+      }
+    }
 
     const startHttpPoll = () => {
       if (httpPollTimer) return
       const poll = async () => {
         if (!mounted) return
-        try {
-          const d = await api('/voice/status')
-          if (d && typeof d === 'object' && mounted) {
-            applyStatus(d as Record<string, unknown>)
-          }
-        } catch {
-          // silent
-        }
+        await fetchStatus()
         if (mounted) httpPollTimer = setTimeout(poll, 2000)
+      }
+      poll()
+    }
+
+    /** Periodic status sync poll (every 5s, even when WS is connected).
+     * Catches state desyncs where the backend detector starts/stops
+     * but the WebSocket misses the state_change message.
+     */
+    const startSyncPoll = () => {
+      if (syncPollTimer) clearTimeout(syncPollTimer)
+      const poll = async () => {
+        if (!mounted) return
+        await fetchStatus()
+        if (mounted) syncPollTimer = setTimeout(poll, 5000)
       }
       poll()
     }
@@ -172,17 +201,23 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
       } catch {
         if (!wsFailedAt) wsFailedAt = Date.now()
         if (wsFailedAt && Date.now() - wsFailedAt > 5000) startHttpPoll()
-        reconnectTimer = setTimeout(() => void connect(), 2000)
+        const delay = getReconnectDelay()
+        console.debug(`[Voice WS] Connect failed, retrying in ${delay}ms (attempt ${wsRetryCount})`)
+        reconnectTimer = setTimeout(() => void connect(), delay)
         return
       }
 
       ws.onopen = () => {
         setWsConnected(true)
         wsFailedAt = null
+        wsRetryCount = 0
         if (httpPollTimer) {
           clearTimeout(httpPollTimer)
           httpPollTimer = null
         }
+        // On reconnect, sync state from backend immediately
+        void fetchStatus()
+        startSyncPoll()
       }
 
       ws.onmessage = (event) => {
@@ -208,6 +243,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
               } else if (data.status === 'idle') {
                 setAiState('idle')
                 setVoiceListening(false)
+                setDetectorRunning(false)
               }
               break
 
@@ -243,10 +279,16 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
 
       ws.onclose = () => {
         setWsConnected(false)
+        if (syncPollTimer) {
+          clearTimeout(syncPollTimer)
+          syncPollTimer = null
+        }
         if (!mounted) return
         if (!wsFailedAt) wsFailedAt = Date.now()
         if (Date.now() - wsFailedAt > 5000) startHttpPoll()
-        reconnectTimer = setTimeout(connect, 2000)
+        const delay = getReconnectDelay()
+        console.debug(`[Voice WS] Disconnected, retrying in ${delay}ms (attempt ${wsRetryCount})`)
+        reconnectTimer = setTimeout(connect, delay)
       }
 
       ws.onerror = () => {
@@ -257,17 +299,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     connect()
 
     // ── Initial HTTP fetch to avoid false "disabled" flash ──────────
-    ;(async () => {
-      if (!mounted) return
-      try {
-        const initial = await api('/voice/status')
-        if (initial && typeof initial === 'object' && mounted) {
-          applyStatus(initial as Record<string, unknown>)
-        }
-      } catch {
-        // backend unreachable — WS will retry
-      }
-    })()
+    void fetchStatus()
 
     return () => {
       mounted = false
@@ -277,6 +309,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
       }
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (httpPollTimer) clearTimeout(httpPollTimer)
+      if (syncPollTimer) clearTimeout(syncPollTimer)
     }
   }, [applyStatus])
 

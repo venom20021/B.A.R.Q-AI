@@ -7,7 +7,6 @@ multi-turn conversation state, sensitivity control, and command history.
 import asyncio
 import re
 import time
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -36,7 +35,7 @@ from . import (
 )
 from .action_log import DANGER as ACTION_DANGER
 from .action_log import INFO, WARNING, get_recent_actions, log_action
-from .conversation_listener import ConversationListener
+from .conversation_listener import ConversationListener, get_voice_agent_instance
 from .evolution_logger import get_evolution_logger
 from .websocket_manager import VoiceWSManager
 
@@ -72,72 +71,6 @@ def get_wake_word_detector() -> WakeWordDetector:
             on_conversation_trigger=_on_conversation_trigger,
         )
     return wake_word_detector
-
-
-def _play_mp3_via_sounddevice(mp3_path: str):
-    """Play an MP3 file through sounddevice with the configured output device.
-
-    Uses the ffmpeg binary bundled with imageio-ffmpeg (moviepy dependency)
-    to convert MP3 to WAV, then plays through sounddevice. This ensures audio
-    goes through the BARQ-selected output device instead of the OS default.
-    """
-    import os
-    import subprocess
-    import tempfile
-    import wave
-
-    import numpy as np
-
-    # Find ffmpeg via imageio-ffmpeg (bundled with moviepy)
-    ffmpeg_path = None
-    try:
-        import imageio_ffmpeg
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        pass
-
-    if not ffmpeg_path or not os.path.isfile(ffmpeg_path):
-        print("[Audio] ffmpeg not available \u2014 cannot play greeting audio")
-        return
-
-    # Convert MP3 to WAV using ffmpeg
-    wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
-    os.close(wav_fd)
-    try:
-        result = subprocess.run(
-            [ffmpeg_path, "-y", "-i", mp3_path,
-             "-acodec", "pcm_s16le", "-ar", "24000", "-ac", "1", wav_path],
-            capture_output=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            err = result.stderr.decode(errors="replace")[:200]
-            print(f"[Audio] ffmpeg conversion failed: {err}")
-            return
-
-        # Read WAV and play through sounddevice with configured output device
-        import sounddevice as sd
-
-        from config import get_settings as _cfg
-
-        from .audio_device import resolve_output_device
-
-        output_device = resolve_output_device(_cfg().audio_output_device)
-
-        with wave.open(wav_path, "rb") as wf:
-            data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-            rate = wf.getframerate()
-
-        sd.play(data, rate, device=output_device)
-        sd.wait()
-        print("[Audio] Wake greeting played through sounddevice")
-    except Exception as e:
-        print(f"[Audio] TTS playback error: {e}")
-    finally:
-        try:
-            os.unlink(wav_path)
-        except Exception:
-            pass
 
 
 async def _gather_background_info() -> str:
@@ -383,40 +316,8 @@ def _on_conversation_stopped():
 # Wire up the callback now that the function is defined
 conversation_listener.on_stop = _on_conversation_stopped
 
-# ── Auto-language detection callback ──────────────────────────────────
-# Called by SpeechProcessor when faster-whisper auto-detects a different
-# language (e.g., English → Hindi).  Must be defined BEFORE wiring below.
-
-
-def _on_detected_language_change(language: str):
-    """Callback fired when SpeechProcessor auto-detects a language change.
-
-    Updates the global language state, TTS voice, and responder voice
-    so the entire voice pipeline switches seamlessly.
-    Also records the auto-detection timestamp for the Settings UI.
-    """
-    global _language, _last_detected_language, _last_detected_at
-    if language not in ("en", "hi"):
-        return
-    if language == _language:
-        return  # already set, no-op
-
-    _language = language
-    _last_detected_language = language
-    _last_detected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    speech_processor.stt_language = language
-
-    # Map detected language to matching TTS voice
-    if language == "hi":
-        _set_tts_voice_internal("hi-IN-SwaraNeural")
-    else:
-        _set_tts_voice_internal("en-US-JennyNeural")
-
-    print(f"[Voice] Auto-detected language change: {language} → TTS: {_tts_voice}")
-
-
-# Wire up auto-language detection from speech
-speech_processor.on_language_detected = _on_detected_language_change
+# Auto-language detection is handled by the Deepgram Voice Agent.
+# (The old SpeechProcessor auto-detection callback has been removed.)
 
 
 def _on_wake_word_callback(utterance: str = ""):
@@ -445,11 +346,18 @@ def _on_wake_word_callback(utterance: str = ""):
     # ── Step 1: Pause detector to free mic ──
     if wake_word_detector is not None:
         wake_word_detector.pause()
-        print("[Voice] Wake word detector paused — microphone released")
-        # ── Let the audio device settle between Vosk release and STT open ──
-        # Without this delay, sounddevice can fail to open a new InputStream
-        # because the OS still holds the device from the wake word detector's
-        # now-closed stream.  50ms is enough for Windows WASAPI to release.
+        print("[Voice] Wake word detector paused — waiting for mic release...")
+        # Wait for the wake word thread to fully release the stream.
+        # Uses a public method with proper try/finally guarantees.
+        released = wake_word_detector.wait_for_stream_released(timeout=3.0)
+        if not released:
+            print("[Voice] Warning: Mic release timed out — proceeding anyway")
+            try:
+                import sounddevice as sd
+                sd.stop()  # Force-release any PortAudio streams
+            except Exception:
+                pass
+        # Small extra settle time for the OS audio stack
         import time as _time
         _time.sleep(0.05)
     else:
@@ -505,38 +413,8 @@ def _on_conversation_trigger():
 
 
 async def _preload_whisper_model():
-    """Preload the faster-whisper model at server startup.
-
-    This removes the multi-second loading delay from the first transcription.
-    The model stays resident in RAM for the lifetime of the server process.
-
-    Uses ``run_in_executor`` so that the synchronous model download from
-    HuggingFace Hub (``requests``-based in ``huggingface_hub``) does **not**
-    block the asyncio event loop.  Without this, the health-check endpoint
-    becomes unresponsive during a first-time model download and the Electron
-    sidecar manager will trigger a restart loop.
-    """
-    try:
-        from faster_whisper import WhisperModel
-        model_size = get_settings().whisper_model
-        print(f"[Voice] Preloading faster-whisper model '{model_size}'...")
-
-        def _load():
-            return WhisperModel(
-                model_size,
-                device="cpu",
-                compute_type="int8",
-            )
-
-        # Run the blocking model load/download in a thread pool so it does
-        # NOT block the asyncio event loop
-        loop = asyncio.get_running_loop()
-        speech_processor._whisper_model = await loop.run_in_executor(None, _load)
-
-        print("[Voice] faster-whisper model preloaded at startup")
-    except Exception as e:
-        print(f"[Voice] Failed to preload faster-whisper model: {e}")
-        print("[Voice] Will load model lazily on first use instead")
+    """Stub — no longer needed. Deepgram Voice Agent handles STT."""
+    pass
 
 
 def _extract_command_after_wake_word(utterance: str) -> str:
@@ -664,43 +542,31 @@ async def _lightweight_wake_greeting(command_text: str = ""):
         if not conversation_listener.is_active:
             try:
                 responder.conversation.start_session("voice_conversation")
-                speech_processor.start_mic_monitor()
                 conversation_listener._conversation_active = True
                 conversation_listener._loop_task = asyncio.create_task(
-                    conversation_listener._conversation_loop_pipeline()
+                    conversation_listener._conversation_loop()
                 )
                 print("[Voice] Conversation started via fallback path")
             except Exception as e2:
                 print(f"[Voice] Fallback conversation start also failed: {e2}")
 
-    # ═══ Step 4: Process command text (if any — own try/except) ═══
+    # ═══ Step 4: Process command text via Deepgram Voice Agent ═══
     try:
         if command_text:
-            print(f"[Voice] Processing wake command: '{command_text}' — streaming response")
+            print(f"[Voice] Processing wake command: '{command_text}' via Voice Agent")
             try:
                 responder.is_speaking_event.set()
-                async for chunk in responder.stream_respond(command_text):
-                    if not conversation_listener.is_active:
-                        break
-                    audio_pcm = chunk.get("audio_pcm")
-                    if audio_pcm is not None:
-                        pcm_array, sr = audio_pcm
-                        try:
-                            responder.is_speaking = True
-                            await conversation_listener.interrupt_handler.play_pcm_with_interrupt(
-                                pcm_array, sr, listen_for_interrupt=True,
-                            )
-                        finally:
-                            responder.is_speaking = False
+                responder.is_speaking = True
+                # Use the responder's respond method (which uses BARQ's LLM)
+                # for immediate wake-command responses.
+                result = await responder.respond(command_text)
+                responder.is_speaking = False
+                if result:
+                    print(f"[Voice] Command result: {str(result)[:100]}")
             except Exception as e:
-                print(f"[Voice] Stream respond error (continuing): {e}")
+                print(f"[Voice] Command respond error (continuing): {e}")
             finally:
                 responder.is_speaking_event.clear()
-                # Flush stale audio captured during wake-command TTS playback
-                try:
-                    await speech_processor.flush_audio_buffer()
-                except Exception:
-                    pass
         else:
             print("[Voice] No command — entering conversation mode directly")
     except Exception as e:
@@ -748,30 +614,10 @@ async def load_sound_settings():
             pass
     else:
         print(f"[Voice] No saved VAD timeout in DB, using default: {_vad_silence_timeout}s")
-    # Propagate to the conversation listener
-    conversation_listener.vad_silence_timeout = _vad_silence_timeout
-
-    # Load energy threshold from DB
-    energy_val = await settings_dao.get_setting("vad_energy_threshold")
-    if energy_val is not None:
-        try:
-            global _energy_threshold
-            _energy_threshold = float(energy_val)
-            if _energy_threshold < 50 or _energy_threshold > 2000:
-                _energy_threshold = 300.0
-            print(f"[Voice] VAD energy threshold loaded from DB: {_energy_threshold}")
-        except (ValueError, TypeError):
-            pass
-    else:
-        print(f"[Voice] No saved energy threshold in DB, using default: {_energy_threshold}")
-    # Propagate to the conversation listener
-    conversation_listener.energy_threshold = _energy_threshold
-
     # Load saved sensitivity level from DB
     sens_val = await settings_dao.get_setting("wake_word_sensitivity")
     if sens_val is not None and sens_val.lower() in ("low", "medium", "high"):
         _sensitivity = sens_val.lower()
-        # Apply to existing detector (if it was already created for mic polling etc.)
         if wake_word_detector is not None:
             wake_word_detector.set_sensitivity(_sensitivity)
         print(f"[Voice] Sensitivity loaded from DB: {_sensitivity}")
@@ -792,22 +638,9 @@ async def load_sound_settings():
         _wake_greeting_enabled = wg_val.lower() == "true"
         print(f"[Voice] Wake greeting enabled loaded from DB: {_wake_greeting_enabled}")
 
-    # Load TTS backend setting and apply to speech processor
-    tts_backend = await settings_dao.get_setting("tts_backend")
-    if tts_backend is not None and tts_backend in ("edge", "piper"):
-        # Validate Piper is still available if it was the saved backend
-        if tts_backend == "piper":
-            piper_engine = speech_processor.get_piper_engine()
-            if piper_engine.is_available:
-                speech_processor.tts_backend = "piper"
-                print(f"[Voice] TTS backend loaded from DB: piper (offline)")
-        else:
-            speech_processor.tts_backend = "edge"
-            print(f"[Voice] TTS backend loaded from DB: edge")
-
 # ─── Multi-turn conversation state ─────────────────────────────────────────
 
-_tts_voice: str = "en-US-JennyNeural"
+_tts_voice: str = "aura-2-odysseus-en"
 _sensitivity: str = "medium"
 _language: str = "en"  # "en" or "hi"
 _last_detected_language: str = ""  # set by auto-detection callback (not manual switch)
@@ -1026,11 +859,11 @@ async def set_language(request: LanguageRequest):
     if not success:
         raise HTTPException(status_code=400, detail="Hindi model not available. Download vosk-model-small-hi-0.22")
 
-    # Auto-switch TTS voice to match the language
+    # Update TTS voice to match the language
     if request.language == "hi":
-        _set_tts_voice_internal("hi-IN-SwaraNeural")
+        _tts_voice = "hi-IN-SwaraNeural"
     else:
-        _set_tts_voice_internal("en-US-JennyNeural")
+        _tts_voice = "aura-2-odysseus-en"
 
     await settings_dao.set_setting("voice_language", request.language, "voice")
     await analytics_dao.log_activity("voice", "language", f"Switched to {request.language}, TTS: {_tts_voice}")
@@ -1108,112 +941,138 @@ async def set_tts_voice(request: TTSVoiceRequest):
 
 @router.get("/tts-voices")
 async def list_tts_voices():
-    """List available TTS voices.
-
-    Returns both Edge TTS voices and Piper TTS voice models.
-    """
-    # Edge TTS voices
-    edge_voices = [
-        # English
-        {"id": "en-US-JennyNeural", "name": "Jenny", "gender": "Female", "locale": "en-US"},
-        {"id": "en-US-GuyNeural", "name": "Guy", "gender": "Male", "locale": "en-US"},
-        {"id": "en-GB-SoniaNeural", "name": "Sonia", "gender": "Female", "locale": "en-GB"},
-        {"id": "en-GB-RyanNeural", "name": "Ryan", "gender": "Male", "locale": "en-GB"},
-        {"id": "en-AU-NatashaNeural", "name": "Natasha", "gender": "Female", "locale": "en-AU"},
-        {"id": "en-IN-NeerjaNeural", "name": "Neerja", "gender": "Female", "locale": "en-IN"},
-        # Hindi (India)
-        {"id": "hi-IN-SwaraNeural", "name": "Swara", "gender": "Female", "locale": "hi-IN"},
-        {"id": "hi-IN-MadhurNeural", "name": "Madhur", "gender": "Male", "locale": "hi-IN"},
+    """List available TTS voices (Deepgram Voice Agent models)."""
+    voices = [
+        {"id": "aura-2-odysseus-en", "name": "Odysseus", "locale": "en-US"},
+        {"id": "aura-2-hera-en", "name": "Hera", "locale": "en-US"},
+        {"id": "aura-2-athena-en", "name": "Athena", "locale": "en-US"},
+        {"id": "aura-2-persephone-en", "name": "Persephone", "locale": "en-US"},
+        {"id": "aura-2-ares-en", "name": "Ares", "locale": "en-US"},
+        {"id": "aura-2-orion-en", "name": "Orion", "locale": "en-US"},
+        {"id": "aura-2-helios-en", "name": "Helios", "locale": "en-US"},
+        {"id": "aura-2-arcas-en", "name": "Arcas", "locale": "en-US"},
+        {"id": "aura-2-stella-en", "name": "Stella", "locale": "en-US"},
+        {"id": "aura-2-luna-en", "name": "Luna", "locale": "en-US"},
+        {"id": "aura-2-nova-en", "name": "Nova", "locale": "en-US"},
+        {"id": "aura-2-iris-en", "name": "Iris", "locale": "en-US"},
+        {"id": "aura-2-asteria-en", "name": "Asteria", "locale": "en-US"},
+        {"id": "aura-2-selene-en", "name": "Selene", "locale": "en-US"},
+        {"id": "aura-2-aphrodite-en", "name": "Aphrodite", "locale": "en-US"},
+        {"id": "aura-2-hades-en", "name": "Hades", "locale": "en-US"},
+        {"id": "aura-2-poseidon-en", "name": "Poseidon", "locale": "en-US"},
+        {"id": "aura-2-zeus-en", "name": "Zeus", "locale": "en-US"},
+        {"id": "aura-2-demetra-en", "name": "Demetra", "locale": "en-US"},
     ]
 
-    # Check if Piper models are available
-    piper_models = []
-    try:
-        piper_engine = speech_processor.get_piper_engine()
-        piper_models = piper_engine.list_available_models()
-    except Exception:
-        pass
-
     return {
-        "voices": edge_voices,
+        "voices": voices,
         "current": _tts_voice,
-        "piper_models": piper_models,
+        "note": "Deepgram Aura-2 voices (managed by Voice Agent)",
     }
 
 
 @router.get("/tts-backend")
 async def get_tts_backend():
-    """Get the current TTS backend and available options."""
-    backend = speech_processor.tts_backend
-
-    piper_available = False
-    piper_models = []
-    try:
-        piper_engine = speech_processor.get_piper_engine()
-        piper_available = piper_engine.is_available
-        piper_models = piper_engine.list_available_models()
-    except Exception:
-        pass
-
+    """Get the current TTS backend (always deepgram_agent)."""
     return {
-        "backend": backend,
-        "available_backends": ["edge", "piper"],
-        "piper_available": piper_available,
-        "piper_models": piper_models,
-        "current_piper_model": speech_processor.get_piper_engine().model_name if piper_available else "",
+        "backend": speech_processor.tts_backend,
+        "available_backends": ["deepgram_agent"],
+        "note": "Deepgram Voice Agent handles all TTS",
     }
 
 
 class TTSBackendRequest(BaseModel):
-    backend: str  # "edge" or "piper"
-    piper_model: Optional[str] = None  # optional Piper model name to switch to
+    backend: str
+    piper_model: Optional[str] = None
 
 
 @router.post("/tts-backend")
 async def set_tts_backend(request: TTSBackendRequest):
-    """Switch the TTS backend between Edge TTS and Piper TTS.
+    """TTS backend selection — only deepgram_agent is available."""
+    if request.backend != "deepgram_agent":
+        raise HTTPException(status_code=400, detail="Only 'deepgram_agent' backend is available")
 
-    Args:
-        backend: "edge" or "piper"
-        piper_model: Optional — switch to a specific Piper voice model
+    speech_processor.tts_backend = "deepgram_agent"
+    await settings_dao.set_setting("tts_backend", "deepgram_agent", "voice")
+    await analytics_dao.log_activity("voice", "tts_backend", "TTS backend set to deepgram_agent")
+
+    return {"status": "set", "backend": "deepgram_agent"}
+
+
+class STTBackendRequest(BaseModel):
+    backend: str
+
+
+@router.get("/stt-backend")
+async def get_stt_backend():
+    """Get the current STT backend."""
+    return {
+        "backend": speech_processor.stt_backend,
+        "available_backends": ["deepgram_agent"],
+        "deepgram_configured": bool(get_settings().deepgram_api_key),
+        "note": "Deepgram Voice Agent handles all STT",
+    }
+
+
+@router.post("/stt-backend")
+async def set_stt_backend(request: STTBackendRequest):
+    """STT backend selection — only deepgram_agent is available."""
+    if request.backend != "deepgram_agent":
+        raise HTTPException(status_code=400, detail="Only 'deepgram_agent' backend is available")
+
+    speech_processor.stt_backend = "deepgram_agent"
+    await settings_dao.set_setting("stt_backend", "deepgram_agent", "voice")
+    await analytics_dao.log_activity("voice", "stt_backend", "STT backend set to deepgram_agent")
+
+    return {"status": "set", "backend": "deepgram_agent"}
+
+
+class VoiceAgentModeRequest(BaseModel):
+    enabled: bool  # enable or disable Deepgram Voice Agent mode
+
+
+@router.get("/agent")
+async def get_agent_mode():
+    """Get the current Voice Agent mode status."""
+    return {
+        "voice_agent_enabled": True,
+        "deepgram_api_key_configured": bool(get_settings().deepgram_api_key),
+        "note": "Deepgram Voice Agent is the default pipeline",
+    }
+
+
+@router.post("/agent")
+async def set_agent_mode(request: VoiceAgentModeRequest):
+    """Enable or disable Deepgram Voice Agent mode.
+
+    When enabled, the wake word triggers a Deepgram Voice Agent connection
+    which handles STT + LLM + TTS entirely in the cloud.
+    When disabled (default), BARQ uses its local pipeline.
     """
-    if request.backend not in ("edge", "piper"):
-        raise HTTPException(status_code=400, detail="Backend must be 'edge' or 'piper'")
+    if request.enabled and not get_settings().deepgram_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Deepgram API key not configured. Set DEEPGRAM_API_KEY in .env",
+        )
 
-    if request.backend == "piper":
-        # Validate Piper is available
-        piper_engine = speech_processor.get_piper_engine()
-        if not piper_engine.is_available:
-            raise HTTPException(
-                status_code=400,
-                detail="Piper TTS not available. No voice models found in models/piper/. "
-                       "Download one with: python -m piper.download_voices en_US-lessac-medium "
-                       "--download-dir models/piper",
-            )
-        # Switch to a specific Piper model if provided
-        if request.piper_model:
-            piper_engine.model_name = request.piper_model
-            if not piper_engine.is_available:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Piper model '{request.piper_model}' not found in models/piper/",
-                )
+    # If conversation is active, stop and restart
+    if conversation_listener.is_active:
+        await conversation_listener.stop_conversation()
+        reset_voice_agent_instance()
 
-    speech_processor.tts_backend = request.backend
-    print(f"[Voice] TTS backend switched to: {request.backend}")
+    print(f"[Voice] Voice Agent mode: {'ENABLED' if request.enabled else 'DISABLED'}")
 
-    # Persist to database so the setting survives restarts
-    await settings_dao.set_setting("tts_backend", request.backend, "voice")
-
+    await settings_dao.set_setting(
+        "voice_agent_enabled", "true" if request.enabled else "false", "voice"
+    )
     await analytics_dao.log_activity(
-        "voice", "tts_backend",
-        f"TTS backend set to {request.backend}",
+        "voice", "voice_agent",
+        f"Voice Agent mode {'enabled' if request.enabled else 'disabled'}",
     )
 
     return {
         "status": "set",
-        "backend": request.backend,
-        "piper_model": request.piper_model or "",
+        "voice_agent_enabled": request.enabled,
     }
 
 
@@ -1437,21 +1296,14 @@ async def voice_execute_approved_command(request: CommandRequest):
 
 @router.get("/settings")
 async def get_voice_settings():
-    """Get all current voice processing settings.
-
-    Returns the live runtime values for VAD endpointing, energy threshold,
-    language lock, and whisper model.  Values can be changed at runtime
-    via POST /voice/settings.
-    """
+    """Get all current voice processing settings."""
     return {
         "vad_silence_timeout": _vad_silence_timeout,
-        "vad_silence_timeout_range": [0.1, 3.0],
         "energy_threshold": _energy_threshold,
-        "energy_threshold_range": [50, 2000],
         "language": _language,
         "languages_available": ["en", "hi"],
-        "whisper_model": get_settings().whisper_model,
-        "ollama_model": get_settings().ollama_model,
+        "voice_agent": True,
+        "note": "Deepgram Voice Agent handles STT/VAD/TTS — local settings are stored for reference",
     }
 
 
@@ -1473,40 +1325,36 @@ async def set_voice_settings(request: VoiceSettingsRequest):
 
     changes = []
 
-    # ── Update VAD silence timeout ─────────────────────────────────
+    # ── Update VAD silence timeout (stored but not used by Voice Agent) ──
     if request.vad_silence_timeout is not None:
         if request.vad_silence_timeout < 0.1 or request.vad_silence_timeout > 3.0:
             raise HTTPException(status_code=400, detail="vad_silence_timeout must be between 0.1 and 3.0")
         _vad_silence_timeout = request.vad_silence_timeout
-        conversation_listener.vad_silence_timeout = _vad_silence_timeout
         await settings_dao.set_setting("vad_silence_timeout", str(_vad_silence_timeout), "voice")
         changes.append(f"vad_silence_timeout={_vad_silence_timeout}s")
-        print(f"[Voice] VAD silence timeout updated: {_vad_silence_timeout}s")
+        print(f"[Voice] VAD silence timeout stored: {_vad_silence_timeout}s (Voice Agent handles VAD)")
 
-    # ── Update energy threshold ────────────────────────────────────
+    # ── Update energy threshold (stored but not used by Voice Agent) ──
     if request.energy_threshold is not None:
         if request.energy_threshold < 50 or request.energy_threshold > 2000:
             raise HTTPException(status_code=400, detail="energy_threshold must be between 50 and 2000")
         _energy_threshold = request.energy_threshold
-        conversation_listener.energy_threshold = _energy_threshold
         await settings_dao.set_setting("vad_energy_threshold", str(_energy_threshold), "voice")
         changes.append(f"energy_threshold={_energy_threshold}")
-        print(f"[Voice] VAD energy threshold updated: {_energy_threshold}")
+        print(f"[Voice] VAD energy threshold stored: {_energy_threshold} (Voice Agent handles VAD)")
 
-    # ── Update language lock ───────────────────────────────────────
+    # ── Update language ────────────────────────────────────────────────
     if request.language is not None:
         if request.language not in ("en", "hi"):
             raise HTTPException(status_code=400, detail="Language must be 'en' or 'hi'")
         _language = request.language
         speech_processor.stt_language = request.language
-        # Also update wake word detector language
         detector = get_wake_word_detector()
         detector.set_language(request.language)
-        # Auto-switch TTS voice to match
         if request.language == "hi":
-            _set_tts_voice_internal("hi-IN-SwaraNeural")
+            _tts_voice = "hi-IN-SwaraNeural"
         else:
-            _set_tts_voice_internal("en-US-JennyNeural")
+            _tts_voice = "aura-2-odysseus-en"
         await settings_dao.set_setting("voice_language", request.language, "voice")
         changes.append(f"language={request.language}")
         print(f"[Voice] Language updated: {request.language}")
@@ -1517,7 +1365,6 @@ async def set_voice_settings(request: VoiceSettingsRequest):
             f"Voice settings updated: {', '.join(changes)}",
         )
 
-        # ── Broadcast settings change to all connected WebSocket clients ──
         _voice_ws.fire(_voice_ws.broadcast({
             "type": "settings_changed",
             "vad_silence_timeout": _vad_silence_timeout,

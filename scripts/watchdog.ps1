@@ -112,10 +112,18 @@ function Get-BackendProcess {
     .SYNOPSIS
         Find any running Python processes related to the backend (uvicorn).
         Returns a list of process objects.
+
+    .NOTES
+        Get-Process doesn't expose CommandLine in PS 5.1 without
+        Get-CimInstance.  We use WMI (Win32_Process) to get the
+        full command line and match on 'uvicorn' or 'main:app'.
     #>
-    $processes = Get-Process -Name "python*" -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -match "uvicorn" -or $_.CommandLine -match "main:app"
-    }
+    $processes = Get-CimInstance -ClassName Win32_Process -Filter "Name like 'python%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'uvicorn|main:app' } |
+        ForEach-Object {
+            # Return a PSObject with Id and ProcessName to match the original interface
+            [PSCustomObject]@{ Id = $_.ProcessId; ProcessName = $_.Name }
+        }
     return $processes
 }
 
@@ -134,9 +142,11 @@ function Restart-Backend {
 
     # 2. Also kill any pythonw.exe processes that might be orphaned
     # Scope to only BARQ-related pythonw processes (by command line matching project root)
-    $orphans = Get-Process -Name "pythonw" -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -match [regex]::Escape($projectRoot)
-    }
+    $orphans = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match [regex]::Escape($projectRoot) } |
+        ForEach-Object {
+            [PSCustomObject]@{ Id = $_.ProcessId; ProcessName = $_.Name }
+        }
     foreach ($proc in $orphans) {
         Write-Log "Killing orphaned pythonw PID $($proc.Id)..." "WARN"
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
@@ -148,6 +158,17 @@ function Restart-Backend {
     # NOTE: Not using start_backend.vbs because WScript COM doesn't work
     # reliably from within PowerShell background jobs.
     Write-Log "Starting backend via direct uvicorn launch..." "INFO"
+
+    # Kill any process still listening on port 8956 (hung orphan)
+    $portOwner = Get-CimInstance -ClassName Win32_Process -Filter "Name like 'python%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match '8956' } |
+        Select-Object -First 1
+    if ($portOwner) {
+        Write-Log "Killing previous backend on port 8956 (PID $($portOwner.ProcessId))..." "WARN"
+        Stop-Process -Id $portOwner.ProcessId -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = "python.exe"
     $startInfo.Arguments = "-m uvicorn main:app --host 127.0.0.1 --port 8956 --log-level warning"

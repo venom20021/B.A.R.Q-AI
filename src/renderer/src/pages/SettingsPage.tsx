@@ -37,12 +37,25 @@ interface VoiceStatus {
 }
 
 const TTS_VOICES = [
-  { value: 'en-US-JennyNeural', label: 'Jenny (Female - US)' },
-  { value: 'en-US-GuyNeural', label: 'Guy (Male - US)' },
-  { value: 'en-GB-SoniaNeural', label: 'Sonia (Female - UK)' },
-  { value: 'en-GB-RyanNeural', label: 'Ryan (Male - UK)' },
-  { value: 'en-AU-NatashaNeural', label: 'Natasha (Female - AU)' },
-  { value: 'en-IN-NeerjaNeural', label: 'Neerja (Female - IN)' },
+  { value: 'aura-2-odysseus-en', label: 'Odysseus (Male — Deepgram)' },
+  { value: 'aura-2-hera-en', label: 'Hera (Female — Deepgram)' },
+  { value: 'aura-2-athena-en', label: 'Athena (Female — Deepgram)' },
+  { value: 'aura-2-persephone-en', label: 'Persephone (Female — Deepgram)' },
+  { value: 'aura-2-ares-en', label: 'Ares (Male — Deepgram)' },
+  { value: 'aura-2-orion-en', label: 'Orion (Male — Deepgram)' },
+  { value: 'aura-2-helios-en', label: 'Helios (Male — Deepgram)' },
+  { value: 'aura-2-arcas-en', label: 'Arcas (Male — Deepgram)' },
+  { value: 'aura-2-stella-en', label: 'Stella (Female — Deepgram)' },
+  { value: 'aura-2-luna-en', label: 'Luna (Female — Deepgram)' },
+  { value: 'aura-2-nova-en', label: 'Nova (Female — Deepgram)' },
+  { value: 'aura-2-iris-en', label: 'Iris (Female — Deepgram)' },
+  { value: 'aura-2-asteria-en', label: 'Asteria (Female — Deepgram)' },
+  { value: 'aura-2-selene-en', label: 'Selene (Female — Deepgram)' },
+  { value: 'aura-2-aphrodite-en', label: 'Aphrodite (Female — Deepgram)' },
+  { value: 'aura-2-hades-en', label: 'Hades (Male — Deepgram)' },
+  { value: 'aura-2-poseidon-en', label: 'Poseidon (Male — Deepgram)' },
+  { value: 'aura-2-zeus-en', label: 'Zeus (Male — Deepgram)' },
+  { value: 'aura-2-demetra-en', label: 'Demetra (Female — Deepgram)' },
 ]
 
 const SENSITIVITY_LEVELS = ['low', 'medium', 'high']
@@ -193,10 +206,7 @@ export function SettingsPage(): JSX.Element {
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsLanguage, setVoiceSettingsLanguage] = useState('en')
   const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
-  // TTS backend selection
-  const [ttsBackend, setTtsBackend] = useState('edge')
-  const [ttsBackendUpdating, setTtsBackendUpdating] = useState(false)
-  const [piperAvailable, setPiperAvailable] = useState(false)
+  // Deepgram Voice Agent handles all STT + TTS
   // Wake word editing
   const [wakeWord, setWakeWord] = useState('')
   const [wakeWordInput, setWakeWordInput] = useState('')
@@ -400,9 +410,7 @@ export function SettingsPage(): JSX.Element {
           setLastDetectedAt(data.last_detected_at)
         }
         // TTS backend
-        if (data.tts_backend) {
-          setTtsBackend(data.tts_backend)
-        }
+        // TTS backend is always deepgram_agent now
         // Wake word
         if (data.wake_word) {
           setWakeWord(data.wake_word)
@@ -413,27 +421,7 @@ export function SettingsPage(): JSX.Element {
     setVoiceLoading(false)
   }, [])
 
-  const fetchTtsBackend = useCallback(async () => {
-    try {
-      const resp = await api('/voice/tts-backend')
-      if (resp && typeof resp === 'object') {
-        const data = resp as Record<string, unknown>
-        if (typeof data.backend === 'string') setTtsBackend(data.backend)
-        if (typeof data.piper_available === 'boolean') setPiperAvailable(data.piper_available)
-      }
-    } catch { /* ignore */ }
-  }, [])
-
-  const handleTtsBackendChange = useCallback(async (backend: string) => {
-    setTtsBackend(backend)
-    setTtsBackendUpdating(true)
-    try {
-      await api('/voice/tts-backend', { backend })
-    } catch (err) {
-      console.error('[Settings] TTS backend switch failed:', err)
-    }
-    setTtsBackendUpdating(false)
-  }, [])
+  // TTS backend is always Deepgram Agent — no manual switching needed
 
   const handleWakeWordChange = useCallback(async () => {
     const newWord = wakeWordInput.trim().toLowerCase()
@@ -767,7 +755,6 @@ export function SettingsPage(): JSX.Element {
       void fetchSoundSettings()
       void fetchWhitelistRules()
       void fetchVoiceSettings()
-      void fetchTtsBackend()
       void fetchTelegramCredentials()
       void fetchCloudLLM()
       void fetchCloudConfig()
@@ -873,9 +860,9 @@ export function SettingsPage(): JSX.Element {
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Speech Engine</p>
-                    <p className="text-xs font-exo text-dim-400">{voiceStatus?.stt_model || 'whisper'} (local)</p>
+                    <p className="text-xs font-exo text-dim-400">Deepgram Voice Agent — managed STT + LLM + TTS</p>
                   </div>
-                  <span className="badge-cyan">Local</span>
+                  <span className="badge-cyan">Cloud</span>
                 </div>
 
                 {/* Auto-detection status indicator */}
@@ -930,44 +917,9 @@ export function SettingsPage(): JSX.Element {
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">TTS Engine</p>
-                    <p className="text-xs font-exo text-dim-400">
-                      {ttsBackend === 'piper'
-                        ? 'Piper TTS — Fully offline, local ONNX voice model'
-                        : 'Edge TTS — High-quality cloud voices (requires internet)'}
-                    </p>
+                    <p className="text-xs font-exo text-dim-400">Deepgram Aura-2 — managed cloud voices</p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center">
-                      <button
-                        onClick={() => handleTtsBackendChange('edge')}
-                        className={`px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-l-lg border transition-all ${
-                          ttsBackend === 'edge'
-                            ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
-                            : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:text-ghost'
-                        }`}
-                      >
-                        Edge
-                      </button>
-                      <button
-                        onClick={() => handleTtsBackendChange('piper')}
-                        disabled={!piperAvailable}
-                        className={`px-2.5 py-1.5 text-xs font-rajdhani font-semibold rounded-r-lg border border-l-0 transition-all ${
-                          ttsBackend === 'piper'
-                            ? 'bg-green-500/15 text-green-300 border-green-500/30'
-                            : 'bg-void-800/40 text-dim-400 border-cyan-500/10 hover:text-ghost'
-                        } disabled:opacity-40 disabled:cursor-not-allowed`}
-                        title={!piperAvailable ? 'Piper model not found in models/piper/' : 'Switch to offline Piper TTS'}
-                      >
-                        Piper 🎧
-                      </button>
-                    </div>
-                    {ttsBackendUpdating && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
-                    {ttsBackend === 'piper' && (
-                      <span className="text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-green-500/10 text-green-300 border border-green-500/15">
-                        OFFLINE
-                      </span>
-                    )}
-                  </div>
+                  <span className="badge-cyan">Deepgram</span>
                 </div>
 
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">

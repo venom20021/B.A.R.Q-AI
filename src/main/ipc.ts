@@ -847,15 +847,50 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  // ─── Streaming Chat ───────────────────────────────────────────────
+  // ─── Streaming Chat (via IPC bridge — no CORS issues in cloud mode) ──
 
-  ipcMain.handle('voice:chat:stream', async (_event, message: string) => {
+  // Track active streaming sessions so they can be cancelled
+  const activeChatStreams = new Map<string, AbortController>()
+
+  ipcMain.handle('voice:chat:stream-start', async (event, message: string) => {
     try {
-      const result = await pythonBridge.request('/voice/chat/stream', { message, language: 'en' })
-      return { success: true, data: result }
+      const win = BrowserWindow.getAllWindows()[0]
+      if (!win) return { success: false, error: 'No window available' }
+
+      const streamId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+      const controller = pythonBridge.streamChat(message, {
+        onToken: (token: string) => {
+          win.webContents.send('voice:chat:stream-event', { streamId, type: 'token', text: token })
+        },
+        onAudio: (audioBase64: string) => {
+          win.webContents.send('voice:chat:stream-event', { streamId, type: 'audio', audio_base64: audioBase64 })
+        },
+        onDone: () => {
+          win.webContents.send('voice:chat:stream-event', { streamId, type: 'done' })
+          activeChatStreams.delete(streamId)
+        },
+        onError: (error: string) => {
+          win.webContents.send('voice:chat:stream-event', { streamId, type: 'error', message: error })
+          activeChatStreams.delete(streamId)
+        },
+      })
+
+      activeChatStreams.set(streamId, controller)
+
+      return { success: true, data: { streamId } }
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  })
+
+  ipcMain.handle('voice:chat:stream-cancel', async (_event, streamId: string) => {
+    const controller = activeChatStreams.get(streamId)
+    if (controller) {
+      controller.abort()
+      activeChatStreams.delete(streamId)
+    }
+    return { success: true }
   })
 
   // ─── Debug Settings ────────────────────────────────────────────

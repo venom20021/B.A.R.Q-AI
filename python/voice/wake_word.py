@@ -251,6 +251,9 @@ class WakeWordDetector:
 
         # Pause/resume — used to release the mic stream before STT opens its own
         self._paused = False
+        # Threading.Event for clean mic handoff: set when stream is fully released.
+        # Conversation start should wait for this before opening its own stream.
+        self._stream_released = threading.Event()
 
         # Last full utterance captured during wake word detection
         # Contains the complete Vosk recognition text (wake word + command)
@@ -496,10 +499,35 @@ class WakeWordDetector:
         Call ``resume()`` to reopen the stream and continue detection.
 
         This is used by the wake word callback to free the microphone so the
-        STT engine (Whisper) can open its own stream without resource contention.
+        Deepgram Voice Agent can open its own stream without resource contention.
+
+        After this returns, callers should use ``wait_for_stream_released()``
+        (with timeout) before opening their own microphone stream.
         """
         self._paused = True
+        self._stream_released.clear()  # reset before release
         print("[WakeWord] Pause requested — stream will be released on next loop iteration")
+
+    def wait_for_stream_released(self, timeout: float = 3.0) -> bool:
+        """Block until the microphone stream is fully released.
+
+        After ``pause()`` is called, the background thread asynchronously
+        closes the sounddevice stream and sets ``_stream_released``.
+        Call this method to wait for that handoff to complete before
+        opening your own microphone stream.
+
+        Args:
+            timeout: Maximum seconds to wait (default 3.0).
+
+        Returns:
+            True if stream was released, False if timed out.
+        """
+        released = self._stream_released.wait(timeout=timeout)
+        if released:
+            print("[WakeWord] Microphone stream released cleanly")
+        else:
+            print(f"[WakeWord] Warning: Mic release timed out after {timeout}s")
+        return released
 
     def resume(self):
         """Resume wake word detection and reopen the microphone stream.
@@ -508,6 +536,7 @@ class WakeWordDetector:
         The recognizer is rebuilt to ensure a clean state.
         """
         self._paused = False
+        self._stream_released.set()
         print("[WakeWord] Resume requested — stream will be reopened on next loop iteration")
 
     def stop(self):
@@ -547,15 +576,22 @@ class WakeWordDetector:
                     try:
                         stream.stop()
                         stream.close()
-                    except Exception:
-                        pass
-                    stream = None
-                    rec = None
-                    print("[WakeWord] Paused — microphone released")
+                    except sd.PortAudioError as e:
+                        print(f"[WakeWord] PortAudio error releasing stream: {e}")
+                    except Exception as e:
+                        print(f"[WakeWord] Unexpected error releasing stream: {e}")
+                    finally:
+                        stream = None
+                        rec = None
+                        self._stream_released.set()  # signal: mic is free
+                        print("[WakeWord] Paused — microphone released")
+                else:
+                    self._stream_released.set()  # already released
                 while self._paused and self._running:
                     _time.sleep(0.1)
                 if not self._running:
                     break
+                self._stream_released.clear()  # reset for next pause cycle
                 print("[WakeWord] Resuming — will reopen stream")
                 continue
 
@@ -608,7 +644,7 @@ class WakeWordDetector:
                     else:
                         self._last_vosk_confidence = 0.0
 
-                    if text:
+                    if text and not self._paused:
                         print(f"[WakeWord] Heard: '{text}'")
 
                         # Check active language wake phrases
