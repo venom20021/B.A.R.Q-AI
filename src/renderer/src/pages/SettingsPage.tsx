@@ -1,189 +1,19 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { api } from '../utils/api'
-import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, Cloud, Wifi, WifiOff, AlertTriangle, ShieldOff, ShieldCheck, Trash2, Plus, X, Save, Eye, Send } from 'lucide-react'
-import { useTheme, type AccentColor } from '../contexts/ThemeContext'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, Cloud, WifiOff, Trash2, Plus, X, Save, Eye, Send, ShieldCheck, ShieldOff, AlertTriangle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import type { SettingsSection } from './settings/types'
+import { sections, TTS_VOICES, SENSITIVITY_LEVELS, type VoiceStatus } from './settings/types'
+import { AccentColorPicker } from './settings/AccentColorPicker'
+import { VoskDebugToggle } from './settings/VoskDebugToggle'
+import { WhisperDebugToggle } from './settings/WhisperDebugToggle'
+import { renderToggle, renderSelect } from './settings/renderHelpers'
 
-interface SettingsSection {
-  id: string
-  label: string
-  icon: typeof Settings
-  description: string
-}
+// ── Sub-components imported from ./settings/ ─────────────────────────
 
-const sections: SettingsSection[] = [
-  { id: 'voice', label: 'Voice', icon: Mic, description: 'Wake word, language, speech settings' },
-  { id: 'sounds', label: 'Sounds', icon: Volume2, description: 'Preview and toggle audio profiles' },
-  { id: 'api', label: 'API Keys', icon: Key, description: 'Connect your accounts and services' },
-  { id: 'cloud-llm', label: 'Cloud LLM', icon: Cpu, description: 'Ollama fallback and cloud AI settings' },
-  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alerts and digest preferences' },
-  { id: 'jobs', label: 'Job Search', icon: Briefcase, description: 'Job search preferences and filters' },
-  { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },
-  { id: 'security', label: 'Security', icon: Shield, description: 'Command whitelist and approvals' },
-  { id: 'debug', label: 'Debug', icon: Terminal, description: 'Debug logging and diagnostics' },
-  { id: 'profile', label: 'Profile', icon: User, description: 'Your name and personal details' },
-  { id: 'connection', label: 'Connection', icon: Cloud, description: 'Local or cloud backend mode' },
-  { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and display settings' },
-]
 
-interface VoiceStatus {
-  is_listening: boolean
-  wake_word: string
-  stt_model: string
-  tts_model: string
-  recent_commands: { transcript: string; created_at: string }[]
-  wake_greeting_enabled?: boolean
-  weather_city?: string
-}
 
-const TTS_VOICES = [
-  { value: 'aura-2-odysseus-en', label: 'Odysseus (Male — Deepgram)' },
-  { value: 'aura-2-hera-en', label: 'Hera (Female — Deepgram)' },
-  { value: 'aura-2-athena-en', label: 'Athena (Female — Deepgram)' },
-  { value: 'aura-2-persephone-en', label: 'Persephone (Female — Deepgram)' },
-  { value: 'aura-2-ares-en', label: 'Ares (Male — Deepgram)' },
-  { value: 'aura-2-orion-en', label: 'Orion (Male — Deepgram)' },
-  { value: 'aura-2-helios-en', label: 'Helios (Male — Deepgram)' },
-  { value: 'aura-2-arcas-en', label: 'Arcas (Male — Deepgram)' },
-  { value: 'aura-2-stella-en', label: 'Stella (Female — Deepgram)' },
-  { value: 'aura-2-luna-en', label: 'Luna (Female — Deepgram)' },
-  { value: 'aura-2-nova-en', label: 'Nova (Female — Deepgram)' },
-  { value: 'aura-2-iris-en', label: 'Iris (Female — Deepgram)' },
-  { value: 'aura-2-asteria-en', label: 'Asteria (Female — Deepgram)' },
-  { value: 'aura-2-selene-en', label: 'Selene (Female — Deepgram)' },
-  { value: 'aura-2-aphrodite-en', label: 'Aphrodite (Female — Deepgram)' },
-  { value: 'aura-2-hades-en', label: 'Hades (Male — Deepgram)' },
-  { value: 'aura-2-poseidon-en', label: 'Poseidon (Male — Deepgram)' },
-  { value: 'aura-2-zeus-en', label: 'Zeus (Male — Deepgram)' },
-  { value: 'aura-2-demetra-en', label: 'Demetra (Female — Deepgram)' },
-]
 
-const SENSITIVITY_LEVELS = ['low', 'medium', 'high']
-
-// ── Accent Color Picker (module-level component, not created during render) ──
-
-function AccentColorPicker(): JSX.Element {
-  const { accent, setAccent } = useTheme()
-
-  const colorMap: Record<AccentColor, { hex: string; label: string }> = {
-    cyan: { hex: '#06b6d4', label: 'Cyan' },
-    purple: { hex: '#a855f7', label: 'Purple' },
-    amber: { hex: '#f59e0b', label: 'Amber' },
-    red: { hex: '#ef4444', label: 'Red' },
-  }
-
-  return (
-    <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
-      <div>
-        <p className="text-sm font-rajdhani font-semibold text-ghost">Accent Color</p>
-        <p className="text-xs font-exo text-dim-400">Primary highlight color</p>
-      </div>
-      <div className="flex gap-2">
-        {(Object.entries(colorMap) as [AccentColor, { hex: string; label: string }][]).map(([color, meta]) => (
-          <button
-            key={color}
-            onClick={() => setAccent(color)}
-            title={meta.label}
-            className={`w-5 h-5 rounded-full border-2 transition-all ${
-              accent === color ? 'border-white scale-110 shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'border-transparent hover:border-white/40'
-            }`}
-            style={{ backgroundColor: meta.hex }}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ── Vosk Debug Logs Toggle (module-level component) ────────────────────
-
-function VoskDebugToggle(): JSX.Element {
-  const [enabled, setEnabled] = useState(false)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const resp = await window.barq?.debug.getVoskLogs()
-        if (resp?.success && resp.data) {
-          const data = resp.data as { enabled: boolean }
-          setEnabled(data.enabled)
-        }
-      } catch {
-        /* ignore */
-      }
-      setLoading(false)
-    })()
-  }, [])
-
-  const handleToggle = useCallback(async () => {
-    const newVal = !enabled
-    setEnabled(newVal)
-    try {
-      await window.barq?.debug.setVoskLogs(newVal)
-    } catch {
-      setEnabled(!newVal) // revert on error
-    }
-  }, [enabled])
-
-  if (loading) {
-    return <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
-  }
-
-  return (
-    <button
-      onClick={handleToggle}
-      className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-dim-500/30'}`}
-    >
-      <span className={`absolute top-[2px] w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
-    </button>
-  )
-}
-
-// ── Whisper/STT Debug Logs Toggle (module-level component) ──────────────
-
-function WhisperDebugToggle(): JSX.Element {
-  const [enabled, setEnabled] = useState(false)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const resp = await window.barq?.debug.getWhisperLogs()
-        if (resp?.success && resp.data) {
-          const data = resp.data as { enabled: boolean }
-          setEnabled(data.enabled)
-        }
-      } catch {
-        /* ignore */
-      }
-      setLoading(false)
-    })()
-  }, [])
-
-  const handleToggle = useCallback(async () => {
-    const newVal = !enabled
-    setEnabled(newVal)
-    try {
-      await window.barq?.debug.setWhisperLogs(newVal)
-    } catch {
-      setEnabled(!newVal) // revert on error
-    }
-  }, [enabled])
-
-  if (loading) {
-    return <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
-  }
-
-  return (
-    <button
-      onClick={handleToggle}
-      className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-dim-500/30'}`}
-    >
-      <span className={`absolute top-[2px] w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
-    </button>
-  )
-}
 
 // ── Main Settings Page Component ──────────────────────────────────────────
 
@@ -759,29 +589,8 @@ export function SettingsPage(): JSX.Element {
       void fetchCloudLLM()
       void fetchCloudConfig()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTtsBackend, fetchTelegramCredentials, fetchCloudLLM, fetchCloudConfig])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTelegramCredentials, fetchCloudLLM, fetchCloudConfig])
 
-  const renderToggle = (enabled: boolean, onToggle: () => void, disabled = false) => (
-    <button
-      onClick={onToggle}
-      disabled={disabled}
-      className={`relative w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-dim-500/30'} ${disabled ? 'opacity-50' : ''}`}
-    >
-      <span className={`absolute top-[2px] w-4 h-4 bg-white rounded-full transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
-    </button>
-  )
-
-  const renderSelect = (value: string, options: { value: string; label: string }[], onChange: (v: string) => void) => (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="bg-void-800/80 text-ghost/80 text-xs font-exo px-2 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 cursor-pointer"
-    >
-      {options.map(opt => (
-        <option key={opt.value} value={opt.value} className="bg-void-900 text-ghost">{opt.label}</option>
-      ))}
-    </select>
-  )
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -925,7 +734,7 @@ export function SettingsPage(): JSX.Element {
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">TTS Voice</p>
-                    <p className="text-xs font-exo text-dim-400">Select voice for spoken responses {ttsBackend === 'piper' && <span className="text-dim-500">(not used in Piper mode)</span>}</p>
+                    <p className="text-xs font-exo text-dim-400">Select voice for spoken responses (Deepgram Aura-2)</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {renderSelect(selectedVoice, TTS_VOICES, handleVoiceChange)}

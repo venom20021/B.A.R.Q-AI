@@ -20,14 +20,18 @@ BARQ only handles:
 """
 
 import asyncio
+import collections
+import copy
 import json
 import queue
-import threading
+import time
 from typing import Optional
 
 import numpy as np
 
 from config import get_settings
+
+from .function_executor import get_function_schemas
 
 
 # ── Voice Agent Settings (from user's config) ──────────────────────────
@@ -60,27 +64,24 @@ AGENT_SETTINGS = {
             },
             "prompt": (
                 "#Role\n"
-                "You are a general-purpose virtual assistant speaking to users over the phone. "
-                "Your task is to help them find accurate, helpful information across a wide range "
-                "of everyday topics.\n\n"
+                "You are BARQ, an advanced, real-time AI desktop assistant integrated "
+                "into the user's local operating system.\n\n"
                 "#General Guidelines\n"
-                "-Be warm, friendly, and professional.\n"
-                "-Speak clearly and naturally in plain language.\n"
-                "-Keep most responses to 1–2 sentences and under 120 characters unless "
-                "the caller asks for more detail (max: 300 characters).\n"
-                "-Do not use markdown formatting.\n"
-                "-Use line breaks in lists.\n"
-                "-If unclear, ask for clarification.\n"
-                "-If asked about your well-being, respond briefly and kindly.\n"
-                "-Use active listening cues.\n"
-                "-Be warm and understanding, but concise.\n"
-                "\n"
-                "#Greeting\n"
-                "Start with: \"Hi there, I'm your virtual assistant—how can I help today?\"\n"
-                "\n"
-                "#Closing\n"
-                "Always ask: \"Is there anything else I can help you with today?\"\n"
-                "Then say: \"Thanks for calling. Take care and have a great day!\""
+                "-Be highly responsive, sharp, and capable.\n"
+                "-Keep most responses to 1–2 sentences. You are speaking aloud, "
+                "so do not use markdown, code blocks, or special formatting.\n"
+                "-Speak in a natural, conversational, and fast-paced tone.\n"
+                "-Do not waste time with pleasantries unless greeted.\n\n"
+                "#Call Flow Objective\n"
+                "-When activated, provide quick, accurate answers regarding software "
+                "development, desktop automation, or general queries.\n"
+                "-If the request involves complex backend systems or data pipelines, "
+                "summarize the technical concepts clearly without reading out literal code.\n"
+                "-If the request is unclear, ask a quick clarifying question.\n\n"
+                "#Barge-In Context\n"
+                "-Expect the user to interrupt you frequently. If they do, immediately "
+                "stop your current thought, accept the new context, and pivot gracefully "
+                "without apologizing."
             ),
         },
         "speak": {
@@ -89,7 +90,7 @@ AGENT_SETTINGS = {
                 "model": "aura-2-odysseus-en",
             },
         },
-        "greeting": "Hello! How may I help you?",
+        "greeting": "BARQ system online. What do you need?",
     },
 }
 
@@ -129,15 +130,15 @@ class DeepgramVoiceAgent:
         self._can_send_audio = asyncio.Event()
         self._input_stream: Optional[any] = None  # sd.InputStream
         self._send_task: Optional[asyncio.Task] = None
-        self._output_thread: Optional[threading.Thread] = None
+        self._output_stream: Optional[any] = None  # sd.OutputStream (callback-based)
         self._captured_text: list[str] = []
 
-        # Thread-safe queues for audio bridge
-        # Callback-based InputStream puts data into _audio_queue (background thread)
-        # Async task gets from _audio_queue and sends via WebSocket
-        self._audio_queue: queue.Queue = queue.Queue(maxsize=100)
-        # Output queue: received audio chunks are played sequentially
-        self._audio_output_queue: queue.Queue = queue.Queue(maxsize=100)
+        # Thread-safe audio queues
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=500)
+
+        # Ring buffer for output audio playback
+        # _handle_audio_bytes appends float32 samples, _output_stream_callback reads them
+        self._output_ring_buffer: collections.deque = collections.deque(maxlen=72000)  # 3s at 24kHz
 
         # Callbacks — wired by the conversation listener
         self.on_interim_transcript = None  # callback(text)
@@ -146,8 +147,14 @@ class DeepgramVoiceAgent:
         self.on_agent_done_speaking = None # callback()
         self.on_audio_chunk = None         # callback(pcm_array, sample_rate)
 
-        # Sentinel for output thread shutdown
-    _STOP_SENTINEL = (None, None)
+        # Function call tracking (dedup)
+        self._pending_function_calls: set[str] = set()
+
+        # UserStartedSpeaking debounce — prevents echo-induced false triggers
+        self._last_user_spoke_at: float = 0.0
+
+        # Rate-limit timer for ring buffer full log messages
+        self._output_log_timer: float = 0.0
 
     @property
     def is_running(self) -> bool:
@@ -190,8 +197,16 @@ class DeepgramVoiceAgent:
                 print("[DeepgramAgent] Expected text Welcome, got binary")
                 return False
 
-            # ── Step 2: Send Settings configuration ─────────────────
-            settings_json = json.dumps(AGENT_SETTINGS)
+            # ── Step 2: Inject function schemas into settings ──────
+            settings_payload = copy.deepcopy(AGENT_SETTINGS)
+            function_schemas = get_function_schemas()
+            if function_schemas:
+                think_cfg = settings_payload.setdefault("agent", {}).setdefault("think", {})
+                think_cfg["functions"] = function_schemas
+                print(f"[DeepgramAgent] Injected {len(function_schemas)} function schemas into settings")
+
+            # ── Step 3: Send Settings configuration ─────────────────
+            settings_json = json.dumps(settings_payload)
             await self._ws.send(settings_json)
             print("[DeepgramAgent] Settings sent — waiting for confirmation...")
 
@@ -258,11 +273,17 @@ class DeepgramVoiceAgent:
                 pass
             self._input_stream = None
 
-        # Stop output thread by sending sentinel
-        try:
-            self._audio_output_queue.put_nowait(self._STOP_SENTINEL)
-        except queue.Full:
-            pass
+        # Close output stream
+        if self._output_stream:
+            try:
+                self._output_stream.stop()
+                self._output_stream.close()
+            except Exception:
+                pass
+            self._output_stream = None
+
+        # Clear ring buffer
+        self._output_ring_buffer.clear()
 
         # Close WebSocket
         if self._ws:
@@ -274,6 +295,7 @@ class DeepgramVoiceAgent:
 
         self._settings_applied.clear()
         self._can_send_audio.clear()
+        self._pending_function_calls.clear()
         print("[DeepgramAgent] Disconnected")
 
     # ── Audio Send Loop (mic → agent) ──────────────────────────────
@@ -297,37 +319,39 @@ class DeepgramVoiceAgent:
         except queue.Full:
             print("[DeepgramAgent] Audio queue full — dropping chunk")
 
-    def _output_loop(self):
-        """Playback thread — runs sd.play() + sd.wait() sequentially.
+    def _output_stream_callback(self, outdata, frames, time_info, status):
+        """sounddevice OutputStream callback — reads from ring buffer.
 
-        The Voice Agent sends audio in small chunks (~20ms each). These
-        must be played sequentially without overlap. This thread reads
-        from _audio_output_queue and plays one chunk at a time.
+        Runs on a background PortAudio thread. Reads float32 samples
+        from the ring buffer (deque). If the buffer is empty, fills
+        with silence (zeros) to prevent underflow clicks.
+
+        Args:
+            outdata: numpy array to fill with audio data (float32, shape=(frames, channels))
+            frames: number of frames requested
+            time_info: timing info (unused)
+            status: PortAudio status flags
         """
-        try:
-            import sounddevice as sd
-            from .audio_device import resolve_output_device
+        if status:
+            print(f"[DeepgramAgent] Output callback status: {status}")
 
-            output_device = resolve_output_device(
-                self.settings.audio_output_device
-            )
+        available = len(self._output_ring_buffer)
+        outdata.fill(0.0)  # Pre-fill with silence
 
-            while self._running:
+        if available >= frames:
+            # Enough samples — fill directly from ring buffer
+            for i in range(frames):
                 try:
-                    item = self._audio_output_queue.get(timeout=0.5)
-                    if item is self._STOP_SENTINEL:
-                        break
-                    pcm_array, sample_rate = item
-                    sd.play(
-                        pcm_array,
-                        samplerate=sample_rate,
-                        device=output_device,
-                    )
-                    sd.wait()
-                except queue.Empty:
-                    continue
-        except Exception as e:
-            print(f"[DeepgramAgent] Output thread error: {e}")
+                    outdata[i, 0] = self._output_ring_buffer.popleft()
+                except IndexError:
+                    break
+        elif available > 0:
+            # Partial fill — use what's available, rest is silence
+            for i in range(available):
+                try:
+                    outdata[i, 0] = self._output_ring_buffer.popleft()
+                except IndexError:
+                    break
 
     async def _audio_send_loop(self, device: Optional[int] = None):
         """Capture microphone audio via callback-based InputStream and send as raw PCM.
@@ -360,11 +384,19 @@ class DeepgramVoiceAgent:
         if device is None:
             device = resolve_input_device(self.settings.audio_input_device)
 
-        # Start output playback thread
-        self._output_thread = threading.Thread(
-            target=self._output_loop, daemon=True
+        # Start output playback stream (callback-based, gapless)
+        from .audio_device import resolve_output_device
+        output_device = resolve_output_device(self.settings.audio_output_device)
+        self._output_stream = sd.OutputStream(
+            device=output_device,
+            samplerate=AGENT_OUTPUT_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            callback=self._output_stream_callback,
+            blocksize=480,  # 20ms at 24kHz
         )
-        self._output_thread.start()
+        self._output_stream.start()
+        print("[DeepgramAgent] Output stream started — gapless playback")
 
         try:
             # Open callback-based InputStream (non-blocking, runs on background thread)
@@ -455,8 +487,9 @@ class DeepgramVoiceAgent:
     async def _handle_audio_bytes(self, audio_bytes: bytes):
         """Process raw PCM audio from the agent.
 
-        Queues the audio for sequential playback via _output_thread.
-        Also dispatches to on_audio_chunk callback for state updates.
+        Appends samples to the ring buffer for gapless playback via
+        the OutputStream callback. Dispatches on_audio_chunk callback
+        for UI state updates.
 
         Args:
             audio_bytes: Raw linear16 PCM audio at 24kHz (container=none).
@@ -466,13 +499,16 @@ class DeepgramVoiceAgent:
             np.float32
         ) / 32768.0
 
-        # Queue for sequential playback (thread-safe)
-        try:
-            self._audio_output_queue.put_nowait(
-                (pcm_array, AGENT_OUTPUT_SAMPLE_RATE)
-            )
-        except queue.Full:
-            print("[DeepgramAgent] Output queue full — dropping audio chunk")
+        # Append to ring buffer (thread-safe deque.extend)
+        self._output_ring_buffer.extend(pcm_array)
+
+        # Rate-limited log if ring buffer is near capacity
+        ring_usage = len(self._output_ring_buffer) / self._output_ring_buffer.maxlen
+        if ring_usage > 0.9:
+            now = time.time()
+            if now - self._output_log_timer > 1.0:
+                self._output_log_timer = now
+                print(f"[DeepgramAgent] Output ring buffer at {ring_usage:.0%} capacity")
 
         # Dispatch to callback (conversation listener for state updates)
         if self.on_audio_chunk:
@@ -492,22 +528,18 @@ class DeepgramVoiceAgent:
         elif msg_type == "UserStartedSpeaking":
             print("[DeepgramAgent] User started speaking — barge-in")
             self._captured_text = []
-            # ── Barge-in: immediately stop TTS playback ──────────────
-            # The user interrupted the agent's response. Stop audio output
-            # immediately, flush buffered chunks, and tell the frontend
-            # that the agent is no longer speaking.
-            try:
-                import sounddevice as _sd
-                _sd.stop()  # Interrupts sd.play() — sd.wait() returns immediately
-                # Flush the output queue so stale chunks aren't played
-                while not self._audio_output_queue.empty():
-                    try:
-                        self._audio_output_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                print("[DeepgramAgent] Barge-in: TTS stopped, output queue flushed")
-            except Exception as e:
-                print(f"[DeepgramAgent] Barge-in stop error: {e}")
+
+            # ── Debounce: ignore rapid duplicate events (echo guard) ──
+            now = time.time()
+            if now - self._last_user_spoke_at < 0.2:
+                print("[DeepgramAgent] UserStartedSpeaking debounced (echo guard)")
+                return
+            self._last_user_spoke_at = now
+
+            # ── Barge-in: clear ring buffer immediately ─────────────
+            self._output_ring_buffer.clear()
+            print("[DeepgramAgent] Barge-in: ring buffer cleared")
+
             # Notify frontend that agent stopped speaking
             if self.on_agent_done_speaking:
                 self.on_agent_done_speaking()
@@ -551,7 +583,8 @@ class DeepgramVoiceAgent:
                 print("[DeepgramAgent] Greeting text received — mic audio can start now")
 
         elif msg_type == "FunctionCallRequest":
-            print(f"[DeepgramAgent] Function call: {data}")
+            print(f"[DeepgramAgent] Function call: {data.get('function_name', 'unknown')}")
+            await self._handle_function_call(data)
 
         elif msg_type == "KeepAlive":
             # Server keepalive — do NOT respond. The Voice Agent API
@@ -567,6 +600,65 @@ class DeepgramVoiceAgent:
         elif msg_type == "Error":
             error_msg = data.get("description", data.get("message", "Unknown"))
             print(f"[DeepgramAgent] Error: {error_msg}")
+
+    async def _handle_function_call(self, data: dict):
+        """Handle a FunctionCallRequest from Deepgram.
+
+        Executes the requested function locally and sends a
+        FunctionCallResponse back to Deepgram so Gemini can
+        speak the result to the user.
+
+        Args:
+            data: The FunctionCallRequest JSON dict from Deepgram.
+                  Contains: function_name, function_call_id, input/arguments
+        """
+        function_name = data.get("function_name", "")
+        function_call_id = data.get("function_call_id", "")
+        arguments = data.get("input", data.get("arguments", {}))
+
+        if not function_name or not function_call_id:
+            print(f"[DeepgramAgent] Invalid FunctionCallRequest: {data}")
+            return
+
+        # Dedup: ignore if we've already processed this call ID
+        if function_call_id in self._pending_function_calls:
+            print(f"[DeepgramAgent] Duplicate FunctionCallRequest ignored: {function_call_id}")
+            return
+        self._pending_function_calls.add(function_call_id)
+
+        print(f"[DeepgramAgent] Executing function '{function_name}' with args: {arguments}")
+
+        try:
+            from .function_executor import execute_function
+
+            # Execute with timeout (15s) so the audio loop isn't blocked forever
+            result = await asyncio.wait_for(
+                execute_function(function_name, arguments),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            result = {"status": "error", "detail": "Function execution timed out (15s limit)"}
+        except Exception as e:
+            result = {"status": "error", "detail": str(e)}
+        finally:
+            # Always clean up the call ID, even if cancelled or timed out
+            self._pending_function_calls.discard(function_call_id)
+
+        # Send FunctionCallResponse back to Deepgram
+        response = {
+            "type": "FunctionCallResponse",
+            "function_call_id": function_call_id,
+            "output": result,
+        }
+
+        if self._ws:
+            try:
+                await self._ws.send(json.dumps(response))
+                print(f"[DeepgramAgent] FunctionCallResponse sent for '{function_name}'")
+            except Exception as e:
+                print(f"[DeepgramAgent] Failed to send FunctionCallResponse: {e}")
+        else:
+            print("[DeepgramAgent] WebSocket closed — cannot send FunctionCallResponse")
 
     @property
     def full_transcript(self) -> str:
