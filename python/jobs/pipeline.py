@@ -344,7 +344,7 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                                 pdf_bytes_dict["resume"] = f.read()
                             print(f"[Pipeline] Markdown→PDF fallback SUCCEEDED for {job_title} ({len(pdf_bytes_dict['resume'])} bytes)")
                         else:
-                            print(f"[Pipeline] ⚠️ Markdown→PDF fallback ALSO FAILED for {job_title}: {resume_pdf_result.get('error', 'unknown error')}")
+                            print(f"[Pipeline] ⚠️ Markdown→PDF fallback ALSO FAILED for {job_title}: {resume_pdf_result.get('message', 'unknown error')}")
 
                     # ── Cover Letter PDF ───────────────────────────────
                     if cover_letter:
