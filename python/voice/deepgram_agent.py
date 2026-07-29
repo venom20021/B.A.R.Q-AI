@@ -233,7 +233,7 @@ class DeepgramVoiceAgent:
         """
         if not self.api_key:
             print("[DeepgramAgent] " + "=" * 70)
-            print("[DeepgramAgent] ❌ NO DEEPGRAM API KEY CONFIGURED")
+            print("[DeepgramAgent] [FAIL] NO DEEPGRAM API KEY CONFIGURED")
             print("[DeepgramAgent] " + "=" * 70)
             print("[DeepgramAgent] Set DEEPGRAM_API_KEY in your .env file.")
             print("[DeepgramAgent] Get a key at: https://console.deepgram.com/")
@@ -243,7 +243,7 @@ class DeepgramVoiceAgent:
         try:
             import httpx
         except ImportError:
-            print("[DeepgramAgent] ⚠️ httpx not available — cannot validate API key, will try WebSocket")
+            print("[DeepgramAgent] httpx not available — cannot validate API key, will try WebSocket")
             return True
 
         try:
@@ -253,11 +253,11 @@ class DeepgramVoiceAgent:
                     headers={"Authorization": f"Token {self.api_key}"},
                 )
                 if resp.status_code == 200:
-                    print("[DeepgramAgent] ✅ Deepgram API key validated")
+                    print("[DeepgramAgent] [OK] Deepgram API key validated")
                     return True
                 elif resp.status_code == 401:
                     print("[DeepgramAgent] " + "=" * 70)
-                    print("[DeepgramAgent] ❌ DEEPGRAM API KEY REJECTED (401 Unauthorized)")
+                    print("[DeepgramAgent] [FAIL] DEEPGRAM API KEY REJECTED (401 Unauthorized)")
                     print("[DeepgramAgent] " + "=" * 70)
                     print("[DeepgramAgent] The API key in your .env file is invalid or revoked.")
                     print("[DeepgramAgent] Update DEEPGRAM_API_KEY in .env or get a new key at:")
@@ -265,13 +265,13 @@ class DeepgramVoiceAgent:
                     self._auth_failure = True
                     return False
                 else:
-                    print(f"[DeepgramAgent] ⚠️ Deepgram API check returned {resp.status_code} — will try WebSocket anyway")
+                    print(f"[DeepgramAgent] Deepgram API check returned {resp.status_code}, will try WebSocket anyway")
                     return True  # Non-auth errors might be transient
         except httpx.TimeoutException:
-            print("[DeepgramAgent] ⚠️ Deepgram REST API unreachable — will try WebSocket connection directly")
+            print("[DeepgramAgent] Deepgram REST API unreachable — will try WebSocket connection directly")
             return True
         except Exception as e:
-            print(f"[DeepgramAgent] ⚠️ Deepgram API check failed ({e}) — will try WebSocket anyway")
+            print(f"[DeepgramAgent] Deepgram API check failed ({e}) — will try WebSocket anyway")
             return True
 
     async def connect(self) -> bool:
@@ -404,12 +404,12 @@ class DeepgramVoiceAgent:
 
         except asyncio.TimeoutError:
             print("[DeepgramAgent] " + "=" * 70)
-            print("[DeepgramAgent] ❌ TIMEOUT during WebSocket handshake with Deepgram")
+            print("[DeepgramAgent] [FAIL] TIMEOUT during WebSocket handshake with Deepgram")
             print("[DeepgramAgent] " + "=" * 70)
             print("[DeepgramAgent] The WebSocket connection to agent.deepgram.com succeeded,")
             print("[DeepgramAgent] but no Welcome message was received within 10 seconds.")
             print("[DeepgramAgent] This typically means:")
-            print("[DeepgramAgent]   1. The API key was rejected (despite the REST check — check console.deepgram.com)")
+            print("[DeepgramAgent]   1. The API key was rejected (despite the REST check)")
             print("[DeepgramAgent]   2. Deepgram Voice Agent API is temporarily unavailable")
             print("[DeepgramAgent]   3. A firewall or proxy is interfering with the WebSocket protocol")
             return False
