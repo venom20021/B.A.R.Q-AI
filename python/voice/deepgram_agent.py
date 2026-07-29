@@ -181,6 +181,9 @@ class DeepgramVoiceAgent:
         # Agent speaking state: when True, mic audio is NOT sent to Deepgram
         self._agent_is_speaking: bool = False
 
+        # Auth failure flag — fast-fail subsequent connect() attempts
+        self._auth_failure: bool = False
+
         # Audio energy gate threshold (int16 RMS)
         self._energy_threshold: int = 250
 
@@ -209,19 +212,90 @@ class DeepgramVoiceAgent:
     def is_running(self) -> bool:
         return self._running
 
+    async def _validate_api_key(self) -> bool:
+        """Validate the Deepgram API key via REST API before WebSocket connection.
+
+        Deepgram's Voice Agent WebSocket endpoint doesn't send an explicit
+        auth error — it just silently drops the connection or never sends
+        a Welcome message if the key is invalid. This leads to misleading
+        "Timeout during connect handshake" logs that look like network issues.
+
+        This method checks the key against the REST API first so we can
+        print a clear diagnostic message before attempting the WebSocket.
+
+        Once an auth failure is detected, sets ``self._auth_failure = True``
+        so subsequent calls to ``connect()`` return ``False`` immediately
+        without re-validating or retrying.
+
+        Returns:
+            True if the key appears valid.
+            False if the key is empty or rejected by the API.
+        """
+        if not self.api_key:
+            print("[DeepgramAgent] " + "=" * 70)
+            print("[DeepgramAgent] ❌ NO DEEPGRAM API KEY CONFIGURED")
+            print("[DeepgramAgent] " + "=" * 70)
+            print("[DeepgramAgent] Set DEEPGRAM_API_KEY in your .env file.")
+            print("[DeepgramAgent] Get a key at: https://console.deepgram.com/")
+            self._auth_failure = True
+            return False
+
+        try:
+            import httpx
+        except ImportError:
+            print("[DeepgramAgent] ⚠️ httpx not available — cannot validate API key, will try WebSocket")
+            return True
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://api.deepgram.com/v1/projects",
+                    headers={"Authorization": f"Token {self.api_key}"},
+                )
+                if resp.status_code == 200:
+                    print("[DeepgramAgent] ✅ Deepgram API key validated")
+                    return True
+                elif resp.status_code == 401:
+                    print("[DeepgramAgent] " + "=" * 70)
+                    print("[DeepgramAgent] ❌ DEEPGRAM API KEY REJECTED (401 Unauthorized)")
+                    print("[DeepgramAgent] " + "=" * 70)
+                    print("[DeepgramAgent] The API key in your .env file is invalid or revoked.")
+                    print("[DeepgramAgent] Update DEEPGRAM_API_KEY in .env or get a new key at:")
+                    print("[DeepgramAgent]   https://console.deepgram.com/")
+                    self._auth_failure = True
+                    return False
+                else:
+                    print(f"[DeepgramAgent] ⚠️ Deepgram API check returned {resp.status_code} — will try WebSocket anyway")
+                    return True  # Non-auth errors might be transient
+        except httpx.TimeoutException:
+            print("[DeepgramAgent] ⚠️ Deepgram REST API unreachable — will try WebSocket connection directly")
+            return True
+        except Exception as e:
+            print(f"[DeepgramAgent] ⚠️ Deepgram API check failed ({e}) — will try WebSocket anyway")
+            return True
+
     async def connect(self) -> bool:
         """Connect to the Deepgram Voice Agent WebSocket.
 
         Protocol:
-        1. Open WebSocket connection with auth subprotocol
-        2. Receive "Welcome" message from server
-        3. Send Settings configuration
-        4. Receive "SettingsApplied" confirmation
+        1. Validate API key via REST (clear error if invalid)
+        2. Open WebSocket connection with auth subprotocol
+        3. Receive "Welcome" message from server
+        4. Send Settings configuration
+        5. Receive "SettingsApplied" confirmation
 
         Returns:
             True if connected and configured successfully.
             False on any protocol or connection error.
         """
+        # ── Step 0a: Fast-fail on known auth failure ────────────────
+        # If a previous connect() attempt already detected an invalid key,
+        # return immediately without re-validating. This prevents the
+        # conversation listener from wasting 5 retries with exponential
+        # backoff (1s + 3s + 9s + 27s + 81s = 121s).
+        if self._auth_failure:
+            return False
+
         # Ensure the benign error suppressor is installed (in case __init__
         # was called before the event loop existed)
         if not DeepgramVoiceAgent._loop_ex_handler_installed:
@@ -233,12 +307,52 @@ class DeepgramVoiceAgent:
                 print("[DeepgramAgent] Installed benign AssertionError suppressor (on connect)")
             except RuntimeError:
                 pass
+
+        # ── Step 0b: Validate API key before WebSocket attempt ──────
+        if not await self._validate_api_key():
+            return False
+
         try:
             import websockets as ws_module
-            self._ws = await ws_module.connect(
-                AGENT_WS_URL,
-                subprotocols=["token", self.api_key],
-            )
+
+            # ── Step 0c: Pre-resolve DNS to IPv4 ─────────────────────
+            # Windows sometimes resolves agent.deepgram.com to an IPv6
+            # NAT64 address that is unreachable, causing the WebSocket
+            # handshake to time out after 20+ seconds.  We force IPv4
+            # by creating a pre-connected TCP socket and passing it to
+            # websockets.connect().
+            import socket
+            try:
+                addrs = socket.getaddrinfo(
+                    "agent.deepgram.com", 443,
+                    socket.AF_INET, socket.SOCK_STREAM,
+                )
+                host_ip = addrs[0][4][0]
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect((host_ip, 443))
+                sock.settimeout(None)
+                print(f"[DeepgramAgent] IPv4 TCP connected ({host_ip})")
+                self._ws = await ws_module.connect(
+                    AGENT_WS_URL,
+                    subprotocols=["token", self.api_key],
+                    sock=sock,
+                    server_hostname="agent.deepgram.com",
+                )
+            except Exception as dns_err:
+                # Close the pre-connected socket if it was created
+                # (prevents socket leak on Windows when websockets
+                # connect raises after TCP connect succeeds)
+                try:
+                    sock.close()  # type: ignore[name-defined]
+                except NameError:
+                    pass
+                # Fallback — let websockets handle DNS
+                print(f"[DeepgramAgent] IPv4 pre-connect failed ({dns_err}), falling back to default DNS")
+                self._ws = await ws_module.connect(
+                    AGENT_WS_URL,
+                    subprotocols=["token", self.api_key],
+                )
             print("[DeepgramAgent] WebSocket connected")
 
             # ── Step 1: Receive Welcome message ─────────────────────
@@ -270,7 +384,7 @@ class DeepgramVoiceAgent:
             await self._ws.send(settings_json)
             print("[DeepgramAgent] Settings sent — waiting for confirmation...")
 
-            # ── Step 3: Wait for SettingsApplied confirmation ───────
+            # ── Step 4: Wait for SettingsApplied confirmation ───────
             response = await asyncio.wait_for(
                 self._ws.recv(), timeout=15.0
             )
@@ -289,7 +403,15 @@ class DeepgramVoiceAgent:
                 return False
 
         except asyncio.TimeoutError:
-            print("[DeepgramAgent] Timeout during connect handshake")
+            print("[DeepgramAgent] " + "=" * 70)
+            print("[DeepgramAgent] ❌ TIMEOUT during WebSocket handshake with Deepgram")
+            print("[DeepgramAgent] " + "=" * 70)
+            print("[DeepgramAgent] The WebSocket connection to agent.deepgram.com succeeded,")
+            print("[DeepgramAgent] but no Welcome message was received within 10 seconds.")
+            print("[DeepgramAgent] This typically means:")
+            print("[DeepgramAgent]   1. The API key was rejected (despite the REST check — check console.deepgram.com)")
+            print("[DeepgramAgent]   2. Deepgram Voice Agent API is temporarily unavailable")
+            print("[DeepgramAgent]   3. A firewall or proxy is interfering with the WebSocket protocol")
             return False
         except Exception as e:
             print(f"[DeepgramAgent] Connection failed: {e}")
