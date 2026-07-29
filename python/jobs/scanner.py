@@ -1731,22 +1731,52 @@ class JobScanner:
             for card in soup.select('[class*="job"], [class*="card"], [class*="listing"]'):
                 title_el = card.select_one('h2, h3, [class*="title"]')
                 company_el = card.select_one('[class*="company"], [class*="org"]')
-                if title_el:
-                    title = title_el.text.strip()
-                    title_lower = title.lower()
-                    if not any(k.lower() in title_lower for k in keywords):
-                        continue
-                    jobs.append({
-                        "title": title,
-                        "company": company_el.text.strip() if company_el else "",
-                        "location": "",
-                        "url": "",
-                        "source_board": "relocateme",
-                        "posted_date": "",
-                        "salary_min": 0, "salary_max": 0,
-                        "description": "",
-                        "employment_type": "full_time",
-                    })
+                if not title_el:
+                    continue
+                title = title_el.text.strip()
+                title_lower = title.lower()
+                if not any(k.lower() in title_lower for k in keywords):
+                    continue
+
+                # ── URL extraction ────────────────────────────────────
+                # Try: title wrapped in <a>, title itself is <a>, or any detail link in the card
+                link_el = None
+                if title_el.name == 'a' and title_el.get('href'):
+                    link_el = title_el
+                elif title_el.find_parent('a') and title_el.find_parent('a').get('href'):
+                    link_el = title_el.find_parent('a')
+                else:
+                    link_el = (card.select_one('a[href*="relocate.me/"]') or
+                               card.select_one('a[href*="/"]') or
+                               card.select_one('a[href]'))
+                href = link_el.get('href', '').strip() if link_el else ''
+                if href and not href.startswith('http'):
+                    href = 'https://relocate.me' + href if href.startswith('/') else 'https://relocate.me/' + href
+
+                # ── Location extraction ───────────────────────────────
+                location_el = (card.select_one('[class*="location"]') or
+                               card.select_one('[class*="city"]') or
+                               card.select_one('[class*="place"]'))
+                location = location_el.text.strip() if location_el else ''
+
+                # ── Description / snippet extraction ──────────────────
+                desc_el = (card.select_one('[class*="description"]') or
+                           card.select_one('[class*="snippet"]') or
+                           card.select_one('[class*="summary"]') or
+                           card.select_one('p'))
+                description = (desc_el.text.strip()[:2000] if desc_el else '')
+
+                jobs.append({
+                    "title": title,
+                    "company": company_el.text.strip() if company_el else "",
+                    "location": location,
+                    "url": href,
+                    "source_board": "relocateme",
+                    "posted_date": "",
+                    "salary_min": 0, "salary_max": 0,
+                    "description": description,
+                    "employment_type": "full_time",
+                })
             print(f"[Scanner] Found {len(jobs)} jobs on Relocate.me")
             return jobs
         except Exception as e:
@@ -1927,7 +1957,7 @@ class JobScanner:
                 company = await company_el.inner_text() if company_el else ""
                 location_text = await location_el.inner_text() if location_el else ""
                 if title:
-                    jobs.append({"title": title.strip(), "company": company.strip(), "location": location_text.strip(), "url": link or ""})
+                    jobs.append({"title": title.strip(), "company": company.strip(), "location": location_text.strip(), "url": link or "", "source_board": "linkedin"})
         except Exception as e:
             print(f"[Scanner] LinkedIn Playwright parse error: {e}")
         return jobs
@@ -1946,7 +1976,7 @@ class JobScanner:
                 company = await company_el.inner_text() if company_el else ""
                 location_text = await location_el.inner_text() if location_el else ""
                 if title:
-                    jobs.append({"title": title.strip(), "company": company.strip(), "location": location_text.strip(), "url": f"https://www.indeed.com{href}" if href else ""})
+                    jobs.append({"title": title.strip(), "company": company.strip(), "location": location_text.strip(), "url": f"https://www.indeed.com{href}" if href else "", "source_board": "indeed"})
         except Exception as e:
             print(f"[Scanner] Indeed Playwright parse error: {e}")
         return jobs
@@ -1966,7 +1996,7 @@ class JobScanner:
             soup = BeautifulSoup(response.text, "lxml")
             jobs = self._parse_listings(board, soup)
             for job in jobs:
-                job["source"] = board
+                job["source_board"] = board
                 job["scanned_at"] = datetime.now(timezone.utc).isoformat()
             return jobs
         except Exception as e:
@@ -1990,7 +2020,7 @@ class JobScanner:
 
         # Normalize
         for job in jobs:
-            job["source"] = board
+            job["source_board"] = board
             job["scanned_at"] = datetime.now(timezone.utc).isoformat()
 
         return jobs
@@ -2116,6 +2146,7 @@ class JobScanner:
                                 "company": company,
                                 "location": item.get("jobLocation", {}).get("address", {}).get("addressLocality", "") if isinstance(item.get("jobLocation"), dict) else "",
                                 "url": item.get("url", ""),
+                                "source_board": "",
                             })
             except Exception:
                 pass

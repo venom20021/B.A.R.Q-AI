@@ -264,7 +264,14 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 llm_json_data: dict | None = None
                 optimized_md: str = resume_md
 
-                json_result = await optimizer.optimize_latex(resume_md, job, match_analysis)
+                try:
+                    json_result = await asyncio.wait_for(
+                        optimizer.optimize_latex(resume_md, job, match_analysis),
+                        timeout=35.0,
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[Pipeline] ⏱️ JSON optimization timed out for {job_title} — falling back to markdown")
+                    json_result = {"_mode": "latex_json_fallback", "json_data": None}
                 if json_result.get("_mode") == "latex_json" and json_result.get("json_data"):
                     llm_json_data = json_result["json_data"]
                     optimized_md = resume_md  # Keep original markdown for DB/compat
@@ -272,7 +279,14 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 else:
                     # Fall back to markdown optimization
                     print(f"[Pipeline] JSON optimization unavailable, falling back to markdown for {job_title}")
-                    markdown_result = await optimizer.optimize(resume_md, job, match_analysis)
+                    try:
+                        markdown_result = await asyncio.wait_for(
+                            optimizer.optimize(resume_md, job, match_analysis),
+                            timeout=35.0,
+                        )
+                    except asyncio.TimeoutError:
+                        print(f"[Pipeline] ⏱️ Markdown optimization timed out for {job_title} — using original resume")
+                        markdown_result = {"optimized_md": resume_md}
                     optimized_md = markdown_result.get("optimized_md", resume_md)
 
                 app_result["optimized_resume"] = optimized_md
@@ -284,7 +298,14 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 _pipeline_state["progress_pct"] = round(pct_base + 15, 1)
                 _pipeline_state["message"] = f"Writing cover letter for {job_title}..."
 
-                cover_letter = await cover_gen.generate(job, resume, optimized_md)
+                try:
+                    cover_letter = await asyncio.wait_for(
+                        cover_gen.generate(job, resume, optimized_md),
+                        timeout=35.0,
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[Pipeline] ⏱️ Cover letter generation timed out for {job_title} — skipping")
+                    cover_letter = ""
                 app_result["cover_letter"] = cover_letter
 
                 # ── Phase 5: Generate PDFs (LaTeX when available) ─────
@@ -675,6 +696,16 @@ async def _send_telegram_notification(
                 f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\">"
                 f"<b>⬅️ OPEN APPLICATION ➡️</b></a>"
             )
+        else:
+            # Fallback: generate a Google search link for the job
+            search_query = html_mod.escape(f"{job_title} {company} job application")
+            fallback_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+            summary += (
+                f"\n\n🔗 <a href=\"{fallback_url}\">"
+                f"<b>🔍 SEARCH FOR JOB ➡️</b></a>"
+                f"\n  <i>No direct application URL available — Google search</i>"
+            )
+            print(f"[Pipeline] ⚠️ No job URL for {job_title} @ {company} — added search fallback link")
 
         if pros:
             summary += "\n\n✅ <b>Strengths</b>"

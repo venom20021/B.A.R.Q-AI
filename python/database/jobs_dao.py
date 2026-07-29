@@ -10,15 +10,34 @@ from .connection import db_connection
 
 
 def _sanitize_url(url: str) -> str:
-    """Ensure a URL is a valid HTTP/HTTPS URL, not a filesystem path or garbage.
+    """Sanitize a URL for safe database storage.
 
-    Returns the URL as-is if it starts with http:// or https://,
-    otherwise returns an empty string (safe fallback).
+    Returns the URL as-is if it starts with http:// or https://.
+    If the URL looks like a bare domain (e.g. "example.com/jobs/123")
+    or starts with a slash (relative path), prepends https://
+    and the domain context.
+    Returns empty string for filesystem paths, garbage, or empty input.
     """
     url = (url or "").strip()
+    if not url:
+        return ""
     if url.startswith(("http://", "https://")):
         return url
-    # Reject everything else: Windows paths (B:/), bare domains, etc.
+
+    # Reject Windows paths (B:/, C:\\, etc.) or pure numbers/symbols
+    import re as _re
+    if _re.match(r'^[A-Za-z]:\\', url) or _re.match(r'^[A-Za-z]:/', url):
+        return ""
+    if not _re.match(r'^[\w\-./:?#\[\]@!$&\'()*+,;=~%]+$', url):
+        return ""
+
+    # Bare domain or path: prepend https://
+    if url.startswith("/"):  # Relative path — can't resolve to full URL
+        return ""
+    if "." in url and not url.startswith((".", "..")):
+        # Looks like a domain — prepend https://
+        return f"https://{url}"
+
     return ""
 
 

@@ -385,30 +385,57 @@ def _build_fpdf_pdf_structured(pdf: Any, resume_data: dict[str, Any]) -> None:
 
 
 def _build_fpdf_pdf_from_md(pdf: Any, resume_data: dict[str, Any], raw_md: str) -> None:
-    """Render optimized markdown resume content into an fpdf document."""
+    """Render optimized markdown resume content into an fpdf document.
+
+    Parses markdown line by line and renders with professional formatting:
+    - ## headings → colored section headers with divider line
+    - * / - bullets → nicely indented with bullet character
+    - **bold** → bold font weight
+    - Regular text → clean paragraph rendering
+    """
     primary = (26, 54, 93)
+    accent = (43, 108, 192)
+    muted = (113, 128, 150)
+    body_color = (40, 40, 40)
 
     def _md_section(title: str):
-        pdf.set_font("Helvetica", "B", 13)
+        """Render a section heading with colored divider line."""
+        # Section title
+        pdf.set_font("Helvetica", "B", 12)
         pdf.set_text_color(*primary)
-        pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
-        pdf.set_draw_color(*primary)
-        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-        pdf.ln(2)
+        pdf.cell(0, 8, _sanitize_fpdf_text(title.upper()), new_x="LMARGIN", new_y="NEXT")
+        # Divider line
+        pdf.set_draw_color(*accent)
+        pdf.set_line_width(0.4)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + 40, pdf.get_y())
+        pdf.ln(3)
 
     def _md_text(text: str, size: int = 10, bold: bool = False):
+        """Render a paragraph of text."""
         style = "B" if bold else ""
         pdf.set_font("Helvetica", style, size)
-        pdf.set_text_color(30, 30, 30)
-        pdf.multi_cell(0, 5, _sanitize_fpdf_text(text))
+        pdf.set_text_color(*body_color)
+        pdf.multi_cell(0, 5.5, _sanitize_fpdf_text(text))
         pdf.ln(0.5)
 
     def _md_bullet(text: str):
-        pdf.set_font("Helvetica", "", 9)
-        pdf.set_text_color(60, 60, 60)
-        pdf.l_margin += 4
-        pdf.cell(0, 4.5, f"  -  {_sanitize_fpdf_text(text[:400])}", new_x="LMARGIN", new_y="NEXT")
-        pdf.l_margin -= 4
+        """Render a bullet point with proper indentation."""
+        pdf.set_font("Helvetica", "", 9.5)
+        pdf.set_text_color(*body_color)
+        original_margin = pdf.l_margin
+        pdf.l_margin += 3  # Indent bullet from left margin
+        # Use simple ASCII hyphen for bullet (Unicode bullets get mangled by latin-1 encoding)
+        pdf.cell(5, 4.5, " - ", new_x="LMARGIN", new_y="TOP")
+        pdf.multi_cell(0, 4.5, _sanitize_fpdf_text(text[:400]))
+        pdf.l_margin = original_margin
+        pdf.ln(0.5)
+
+    def _render_bold_line(line: str):
+        """Render a line with **bold** markers handled gracefully.
+        Removes ** markers and renders the whole line as bold.
+        """
+        clean = line.replace("**", "").strip()
+        _md_text(clean, 10, bold=True)
 
     # Parse markdown line by line
     lines = raw_md.split("\n")
@@ -421,37 +448,49 @@ def _build_fpdf_pdf_from_md(pdf: Any, resume_data: dict[str, Any], raw_md: str) 
             continue
 
         # Section headings (## or ###)
-        if line.startswith("## "):
-            section_name = line.replace("## ", "").replace("### ", "").strip()
-            _md_section(section_name)
+        if line.startswith("#"):
+            section_name = line.lstrip("#").strip()
+            if section_name:
+                _md_section(section_name)
             i += 1
             continue
 
-        # Bullet points
-        if line.startswith("* ") or line.startswith("- "):
+        # Horizontal rule (--- or ***)
+        if line in ("---", "***", "___"):
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_line_width(0.2)
+            pdf.line(pdf.l_margin, pdf.get_y() + 2, pdf.w - pdf.r_margin, pdf.get_y() + 2)
+            pdf.ln(4)
+            i += 1
+            continue
+
+        # Bullet points (*, -, +)
+        if line.startswith(("* ", "- ", "+ ")):
             bullet_text = line[2:].strip()
             # Bold prefix before colon/dash
             if ":" in bullet_text:
                 parts = bullet_text.split(":", 1)
                 _md_bullet(f"{parts[0].strip()}: {parts[1].strip()}")
-            elif " — " in bullet_text:
-                parts = bullet_text.split(" — ", 1)
-                _md_bullet(f"{parts[0].strip()} — {parts[1].strip()}")
+            elif " \u2014 " in bullet_text or " -- " in bullet_text:
+                sep = " \u2014 " if " \u2014 " in bullet_text else " -- "
+                parts = bullet_text.split(sep, 1)
+                _md_bullet(f"{parts[0].strip()} -- {parts[1].strip()}")
             else:
                 _md_bullet(bullet_text)
             i += 1
             continue
 
-        # Bold text (**) — likely a project name or role
+        # Bold text (**) — likely a project name, role, or sub-heading
         if "**" in line:
-            clean = line.replace("**", "").strip()
-            _md_text(clean, 10, bold=True)
+            _render_bold_line(line)
             i += 1
             continue
 
         # Regular text — Professional Summary, context lines, links
         if "#" not in line:
-            _md_text(line, 10)
+            # Handle inline bold (**text**) by stripping markers
+            clean_line = line.replace("**", "").strip()
+            _md_text(clean_line, 10)
         i += 1
 
 
