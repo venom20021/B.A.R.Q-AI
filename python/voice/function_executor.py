@@ -10,7 +10,6 @@ import asyncio
 import os
 import platform
 import shlex
-import shutil
 import subprocess
 import tempfile
 import time
@@ -189,7 +188,12 @@ def _run_shell_command(command: str) -> dict[str, Any]:
     """Run a shell command and return output. SAFE: uses shlex.split, no shell=True."""
     try:
         args = shlex.split(command)
-        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        # Use errors='replace' to handle non-ASCII characters (weather symbols,
+        # emoji, etc.) that can't be decoded with the system's cp1252 codec
+        result = subprocess.run(
+            args, capture_output=True, text=True,
+            errors='replace', timeout=30
+        )
         return {
             "status": "success",
             "stdout": result.stdout[:2000],
@@ -365,7 +369,7 @@ def _set_app_volume(app_name: str = "", level: int = 50) -> dict[str, Any]:
 
             if app_name:
                 # Get all audio sessions and find the matching app
-                sessions = pycaw.AudioUtilities.GetAllSessions()
+                sessions = AudioUtilities.GetAllSessions()
                 for session in sessions:
                     if session.Process and session.Process.name().lower() == app_name.lower():
                         session.SimpleAudioVolume.SetMasterVolume(level / 100.0, None)
@@ -382,12 +386,11 @@ def _set_app_volume(app_name: str = "", level: int = 50) -> dict[str, Any]:
                 # Per-app volume via powershell requires more complex handling
                 return {"status": "error", "detail": "Per-app volume control requires pycaw. Install: pip install pycaw"}
             else:
-                volume_level = level / 100.0
                 subprocess.run([
                     "powershell", "-c",
-                    f"(New-Object -ComObject WScript.Shell).SendKeys([char]174)"
+                    "(New-Object -ComObject WScript.Shell).SendKeys([char]174)"
                 ], capture_output=True, timeout=5)
-                return {"status": "success", "detail": f"Master volume set approximately"}
+                return {"status": "success", "detail": "Master volume set approximately"}
         except Exception as e:
             return {"status": "error", "detail": f"Volume control failed: {e}"}
 
@@ -419,9 +422,243 @@ def _set_app_volume(app_name: str = "", level: int = 50) -> dict[str, Any]:
             return {"status": "error", "detail": f"Volume control failed: {e}"}
 
 
+def _mute_volume(mute: bool = True) -> dict[str, Any]:
+    """Mute or unmute the system volume.
+
+    Args:
+        mute: True to mute, False to unmute.
+
+    Returns:
+        Dict with mute result.
+    """
+    if IS_WINDOWS:
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(
+                IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+
+            volume.SetMute(1 if mute else 0, None)
+            state = "muted" if mute else "unmuted"
+            return {"status": "success", "detail": f"System volume {state}"}
+
+        except ImportError:
+            # Fallback: VK_VOLUME_MUTE virtual key
+            import ctypes
+            user32 = ctypes.windll.user32
+            # Simulate mute key press
+            VK_VOLUME_MUTE = 0xAD
+            user32.keybd_event(VK_VOLUME_MUTE, 0, 0, 0)  # Key down
+            user32.keybd_event(VK_VOLUME_MUTE, 0, 2, 0)  # Key up
+            return {"status": "success", "detail": "Volume toggled mute"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Mute failed: {e}"}
+    elif IS_MACOS:
+        try:
+            muted_str = "true" if mute else "false"
+            subprocess.run(["osascript", "-e",
+                f'set volume output muted {muted_str}'],
+                capture_output=True, timeout=5)
+            state = "muted" if mute else "unmuted"
+            return {"status": "success", "detail": f"System volume {state}"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Mute failed: {e}"}
+    else:
+        # Linux — use amixer
+        try:
+            if mute:
+                subprocess.run(["amixer", "sset", "Master", "mute"],
+                               capture_output=True, timeout=5)
+            else:
+                subprocess.run(["amixer", "sset", "Master", "unmute"],
+                               capture_output=True, timeout=5)
+            state = "muted" if mute else "unmuted"
+            return {"status": "success", "detail": f"System volume {state}"}
+        except FileNotFoundError:
+            try:
+                if mute:
+                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"],
+                                   capture_output=True, timeout=5)
+                else:
+                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"],
+                                   capture_output=True, timeout=5)
+                state = "muted" if mute else "unmuted"
+                return {"status": "success", "detail": f"System volume {state}"}
+            except Exception as e2:
+                return {"status": "error", "detail": f"Mute failed: {e2}"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Mute failed: {e}"}
+
+
+def _media_control(action: str = "play_pause") -> dict[str, Any]:
+    """Control media playback (play/pause, next, previous).
+
+    Args:
+        action: One of "play_pause", "next", "previous".
+
+    Returns:
+        Dict with media control result.
+    """
+    valid_actions = {"play_pause", "next", "previous"}
+    if action not in valid_actions:
+        return {"status": "error", "detail": f"Invalid action '{action}'. Must be one of: {', '.join(sorted(valid_actions))}"}
+
+    if IS_WINDOWS:
+        import ctypes
+        user32 = ctypes.windll.user32
+
+        # Virtual key codes for media controls
+        VK_MEDIA_PLAY_PAUSE = 0xB3
+        VK_MEDIA_NEXT_TRACK = 0xB0
+        VK_MEDIA_PREV_TRACK = 0xB1
+
+        key_map = {
+            "play_pause": VK_MEDIA_PLAY_PAUSE,
+            "next": VK_MEDIA_NEXT_TRACK,
+            "previous": VK_MEDIA_PREV_TRACK,
+        }
+
+        vk_code = key_map[action]
+        user32.keybd_event(vk_code, 0, 0, 0)  # Key down
+        user32.keybd_event(vk_code, 0, 2, 0)  # Key up
+
+        action_labels = {
+            "play_pause": "Play/Pause toggled",
+            "next": "Next track",
+            "previous": "Previous track",
+        }
+        return {"status": "success", "detail": action_labels[action]}
+
+    elif IS_MACOS:
+        # AppleScript keystroke uses key names, not numeric codes
+        key_map = {
+            "play_pause": ("space",),
+            "next": ("right", "command"),
+            "previous": ("left", "command"),
+        }
+        key, *mods = key_map[action]
+        mods_clause = f" using {{{', '.join(mods)} down}}" if mods else ""
+        subprocess.run(["osascript", "-e",
+            f'tell application "System Events" to keystroke "{key}"{mods_clause}'],
+            capture_output=True, timeout=5)
+        return {"status": "success", "detail": f"Media: {action}"}
+
+    else:
+        # Linux — use playerctl (most media players support it)
+        try:
+            cmd_map = {
+                "play_pause": "play-pause",
+                "next": "next",
+                "previous": "previous",
+            }
+            subprocess.run(["playerctl", cmd_map[action]],
+                           capture_output=True, timeout=5)
+            return {"status": "success", "detail": f"Media: {action}"}
+        except FileNotFoundError:
+            return {"status": "error", "detail": "playerctl not installed. Install with: apt install playerctl"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Media control failed: {e}"}
+
+
+def _empty_trash() -> dict[str, Any]:
+    """Empty the system trash / recycle bin.
+
+    Returns:
+        Dict with trash result.
+    """
+    if IS_WINDOWS:
+        try:
+            # Use SHEmptyRecycleBinW via ctypes
+            import ctypes
+            shell32 = ctypes.windll.shell32
+            # SHERB_NOCONFIRMATION = 0x1, SHERB_NOPROGRESSUI = 0x2, SHERB_NOSOUND = 0x4
+            flags = 0x1 | 0x2 | 0x4  # No confirmation, no progress UI, no sound
+            result = shell32.SHEmptyRecycleBinW(None, None, flags)
+            if result == 0:  # S_OK
+                return {"status": "success", "detail": "Recycle bin emptied"}
+            else:
+                return {"status": "error", "detail": f"Failed to empty recycle bin (code: {result})"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Empty trash failed: {e}"}
+    elif IS_MACOS:
+        try:
+            subprocess.run(["osascript", "-e",
+                'tell application "Finder" to empty trash'],
+                capture_output=True, timeout=30)
+            return {"status": "success", "detail": "Trash emptied"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Empty trash failed: {e}"}
+    else:
+        # Linux — trash-cli
+        try:
+            subprocess.run(["trash-empty"], capture_output=True, timeout=30)
+            return {"status": "success", "detail": "Trash emptied"}
+        except FileNotFoundError:
+            return {"status": "error", "detail": "trash-cli not installed. Install with: apt install trash-cli"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Empty trash failed: {e}"}
+
+
+def _lock_screen() -> dict[str, Any]:
+    """Lock the computer screen.
+
+    Returns:
+        Dict with lock screen result.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # LockWorkStation locks the screen
+            result = user32.LockWorkStation()
+            if result:
+                return {"status": "success", "detail": "Screen locked"}
+            else:
+                return {"status": "error", "detail": "Failed to lock screen"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Lock screen failed: {e}"}
+    elif IS_MACOS:
+        try:
+            # Use the login window to lock the screen
+            subprocess.run(["osascript", "-e",
+                'tell application "System Events" to keystroke "q" using {command down, control down}'],
+                capture_output=True, timeout=5)
+            return {"status": "success", "detail": "Screen locked"}
+        except Exception as e:
+            return {"status": "error", "detail": f"Lock screen failed: {e}"}
+    else:
+        # Linux — use gnome-screensaver-command, xscreensaver, or loginctl
+        try:
+            # Try loginctl (systemd) first
+            result = subprocess.run(["loginctl", "lock-session"],
+                                    capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return {"status": "success", "detail": "Screen locked"}
+        except FileNotFoundError:
+            pass
+
+        try:
+            subprocess.run(["gnome-screensaver-command", "-l"],
+                           capture_output=True, timeout=5)
+            return {"status": "success", "detail": "Screen locked"}
+        except FileNotFoundError:
+            pass
+
+        try:
+            subprocess.run(["xdg-screensaver", "lock"],
+                           capture_output=True, timeout=5)
+            return {"status": "success", "detail": "Screen locked"}
+        except Exception:
+            return {"status": "error", "detail": "Screen lock tools not found. Install: gnome-screensaver, xscreensaver, or xdg-utils"}
+
+
 # ─── Function Registry ─────────────────────────────────────────────────
 
-FUNCTION_REGISTRY: dict[str, callable] = {
+FUNCTION_REGISTRY: dict[str, Any] = {
     "minimize_window": _minimize_window,
     "maximize_window": _maximize_window,
     "open_file": _open_file,
@@ -434,6 +671,10 @@ FUNCTION_REGISTRY: dict[str, callable] = {
     "clipboard": _clipboard_op,
     "focus_window": _focus_window,
     "set_app_volume": _set_app_volume,
+    "mute_volume": _mute_volume,
+    "media_control": _media_control,
+    "empty_trash": _empty_trash,
+    "lock_screen": _lock_screen,
 }
 
 
@@ -612,6 +853,49 @@ def get_function_schemas() -> list[dict]:
                         "description": "Volume level from 0 (mute) to 100 (max). Default 50.",
                     },
                 },
+            },
+        },
+        {
+            "name": "mute_volume",
+            "description": "Mutes or unmutes the system volume. Set mute=true to mute, mute=false to unmute.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mute": {
+                        "type": "boolean",
+                        "description": "True to mute, False to unmute. Default is True.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "media_control",
+            "description": "Controls media playback: play/pause, next track, or previous track.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["play_pause", "next", "previous"],
+                        "description": "Action to perform: 'play_pause', 'next', or 'previous'.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "empty_trash",
+            "description": "Empties the system trash/recycle bin.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "lock_screen",
+            "description": "Locks the computer screen immediately.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
             },
         },
     ]

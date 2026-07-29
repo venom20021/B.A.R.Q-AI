@@ -8,7 +8,7 @@ successful video posts.
 
 import html
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -257,6 +257,94 @@ class TelegramChannel(NotificationChannel):
                     channel=Channel.TELEGRAM,
                     error=f"Document send failed: {e}",
                 )
+        except Exception as e:
+            return NotificationResult(
+                success=False,
+                channel=Channel.TELEGRAM,
+                error=f"Document send failed: {e}",
+            )
+
+    async def send_document_from_bytes(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        caption: str = "",
+        parse_mode: str = "HTML",
+    ) -> NotificationResult:
+        """Send a document (PDF, image, etc.) from an in-memory bytes buffer.
+
+        Uses Telegram's sendDocument API via multipart/form-data upload.
+        Unlike send_document(), this does NOT require a file on disk — the
+        bytes are uploaded directly from memory.
+
+        Args:
+            file_bytes: Raw bytes of the file to send.
+            filename: Display filename visible in the chat (e.g.
+                      "Resume_SWE_at_AcmeCorp.pdf").
+            caption: Optional HTML caption for the document (max 1024 chars).
+            parse_mode: "HTML" or "Markdown" for the caption.
+
+        Returns:
+            NotificationResult indicating success/failure.
+        """
+        if not await self.is_enabled():
+            return NotificationResult(
+                success=False,
+                channel=Channel.TELEGRAM,
+                error="Telegram not configured",
+            )
+
+        if not file_bytes:
+            return NotificationResult(
+                success=False,
+                channel=Channel.TELEGRAM,
+                error="Empty file bytes — nothing to send",
+            )
+
+        try:
+            url = self.BASE_URL.format(
+                token=self.settings.telegram_bot_token,
+                method="sendDocument",
+            )
+
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                files = {
+                    "document": (
+                        filename,
+                        file_bytes,
+                        "application/pdf" if filename.endswith(".pdf") else "application/octet-stream",
+                    )
+                }
+                data: dict[str, Any] = {
+                    "chat_id": self.settings.telegram_chat_id,
+                    "caption": caption[:1000] if caption else "",
+                }
+                if parse_mode:
+                    data["parse_mode"] = parse_mode
+
+                response = await client.post(url, data=data, files=files)
+
+            result = response.json()
+            if result.get("ok"):
+                return NotificationResult(
+                    success=True,
+                    channel=Channel.TELEGRAM,
+                    message=f"Document sent from bytes (id: {result['result']['message_id']})",
+                )
+            else:
+                return NotificationResult(
+                    success=False,
+                    channel=Channel.TELEGRAM,
+                    error=result.get("description", "Unknown Telegram error"),
+                )
+
+        except httpx.HTTPError as e:
+            return NotificationResult(
+                success=False,
+                channel=Channel.TELEGRAM,
+                error=f"HTTP error: {e}",
+            )
         except Exception as e:
             return NotificationResult(
                 success=False,

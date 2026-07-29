@@ -280,7 +280,6 @@ async def _process_job(chat_id: int, job_text: str, context: ContextTypes.DEFAUL
         matcher = JobMatcher()
         match_result = await matcher.match(job_dict, resume)
         match_pct = match_result.get("overall_score", 0)
-        reasoning = match_result.get("fit_summary", "")
         pros = match_result.get("matching_skills", []) or []
         cons = match_result.get("missing_skills", []) or []
 
@@ -318,31 +317,8 @@ async def _process_job(chat_id: int, job_text: str, context: ContextTypes.DEFAUL
         )
         pdf_path = pdf_result.get("pdf_path", "")
 
-        # ── Send Match Summary ────────────────────────────────────────
-        summary = (
-            f"🎯 <b>Match Analysis Complete</b>\n\n"
-            f"<b>Position:</b> {safe_title}\n"
-            f"<b>Company:</b> {safe_company}\n"
-            f"<b>Match Score:</b> {match_pct:.0f}%\n"
-        )
-        if reasoning:
-            summary += f"\n💡 <b>Why this match?</b>\n{html.escape(reasoning[:300])}\n"
-        if pros:
-            summary += "\n✅ <b>Strengths:</b>\n"
-            for p in pros[:4]:
-                summary += f"  • {html.escape(str(p)[:150])}\n"
-        if cons:
-            summary += "\n⚠️ <b>Considerations:</b>\n"
-            for c in cons[:4]:
-                summary += f"  • {html.escape(str(c)[:150])}\n"
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=summary,
-            parse_mode="HTML",
-        )
-
-        # ── Send PDF ──────────────────────────────────────────────────
+        # ── Send PDF first ────────────────────────────────────────────
+        pdf_sent = False
         if pdf_path and os.path.isfile(pdf_path):
             with open(pdf_path, "rb") as f:
                 await context.bot.send_document(
@@ -350,11 +326,36 @@ async def _process_job(chat_id: int, job_text: str, context: ContextTypes.DEFAUL
                     document=f,
                     filename=os.path.basename(pdf_path),
                     caption=(
-                        f"📄 <b>Tailored Resume</b>: {safe_title} @ {safe_company}\n"
-                        f"📊 Match: {match_pct:.0f}%"
+                        f"📄 <b>Tailored Resume</b>: {safe_title} @ {safe_company}"
                     ),
                     parse_mode="HTML",
                 )
+            pdf_sent = True
+
+        # ── Send concise match summary ────────────────────────────────
+        summary = (
+            f"🎯 <b>Job Match: {safe_title}</b>\n"
+            f"<b>{safe_company}</b>\n"
+            f"📊 <b>Match Score:</b> {match_pct:.0f}%"
+        )
+        if pros:
+            summary += "\n\n✅ <b>Strengths</b>"
+            for p in pros[:3]:
+                summary += f"\n  • {html.escape(str(p)[:120])}"
+        if cons:
+            summary += "\n\n⚠️ <b>Considerations</b>"
+            for c in cons[:3]:
+                summary += f"\n  • {html.escape(str(c)[:120])}"
+        if pdf_sent:
+            summary += "\n\n📎 <i>Tailored resume PDF attached above</i>"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=summary,
+            parse_mode="HTML",
+        )
+
+        if pdf_sent:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="✅ <b>Done!</b> Send another job description or URL anytime.",

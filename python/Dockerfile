@@ -11,6 +11,11 @@ WORKDIR /app
 # NOTE: Voice/vision packages (portaudio, libgl) stay local — not needed on server.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    texlive-latex-base \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-latex-recommended \
+    latex-xcolor \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Stage 2: Install Python dependencies ─────────────────────────────

@@ -120,6 +120,26 @@ class DeepgramVoiceAgent:
         await agent.stop()
     """
 
+    _loop_ex_handler_installed: bool = False
+
+    @classmethod
+    def _suppress_proactor_assertion_error(cls, loop, context):
+        """Suppress the benign _ProactorBaseWritePipeTransport AssertionError.
+
+        This is a known Windows asyncio issue: when a WebSocket transport is
+        closed while a write is still pending, the completion callback fires
+        with a mismatched future, causing:
+            AssertionError in _ProactorBaseWritePipeTransport._loop_writing()
+
+        The error is harmless but spams stderr. We suppress it here.
+        """
+        exc = context.get("exception")
+        if isinstance(exc, AssertionError):
+            msg = context.get("message", "")
+            if "_loop_writing" in msg or "_ProactorBaseWritePipeTransport" in msg:
+                return  # Suppress — known benign Windows asyncio behavior
+        loop.default_exception_handler(context)
+
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.settings = get_settings()
@@ -137,7 +157,6 @@ class DeepgramVoiceAgent:
         self._audio_queue: queue.Queue = queue.Queue(maxsize=500)
 
         # Ring buffer for output audio playback
-        # _handle_audio_bytes appends float32 samples, _output_stream_callback reads them
         self._output_ring_buffer: collections.deque = collections.deque(maxlen=72000)  # 3s at 24kHz
 
         # Callbacks — wired by the conversation listener
@@ -150,11 +169,41 @@ class DeepgramVoiceAgent:
         # Function call tracking (dedup)
         self._pending_function_calls: set[str] = set()
 
-        # UserStartedSpeaking debounce — prevents echo-induced false triggers
+        # UserStartedSpeaking debounce
         self._last_user_spoke_at: float = 0.0
+
+        # Post-speech lockout
+        self._last_agent_done_speaking_at: float = 0.0
 
         # Rate-limit timer for ring buffer full log messages
         self._output_log_timer: float = 0.0
+
+        # Agent speaking state: when True, mic audio is NOT sent to Deepgram
+        self._agent_is_speaking: bool = False
+
+        # Audio energy gate threshold (int16 RMS)
+        self._energy_threshold: int = 250
+
+        # Rate-limit timer for low-energy drop log messages
+        self._energy_log_timer: float = 0.0
+
+        # Rate-limit timer for sample rate mismatch diagnostic logs
+        self._sample_rate_log_timer: float = 0.0
+
+        # Mic cooldown task
+        self._mic_cooldown_task: Optional[asyncio.Task] = None
+
+        # Install the benign error suppressor once (class-level guard)
+        if not DeepgramVoiceAgent._loop_ex_handler_installed:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.set_exception_handler(
+                    DeepgramVoiceAgent._suppress_proactor_assertion_error
+                )
+                DeepgramVoiceAgent._loop_ex_handler_installed = True
+                print("[DeepgramAgent] Installed benign AssertionError suppressor")
+            except RuntimeError:
+                pass  # No event loop in this thread yet — installed in connect()
 
     @property
     def is_running(self) -> bool:
@@ -173,6 +222,17 @@ class DeepgramVoiceAgent:
             True if connected and configured successfully.
             False on any protocol or connection error.
         """
+        # Ensure the benign error suppressor is installed (in case __init__
+        # was called before the event loop existed)
+        if not DeepgramVoiceAgent._loop_ex_handler_installed:
+            try:
+                asyncio.get_event_loop().set_exception_handler(
+                    DeepgramVoiceAgent._suppress_proactor_assertion_error
+                )
+                DeepgramVoiceAgent._loop_ex_handler_installed = True
+                print("[DeepgramAgent] Installed benign AssertionError suppressor (on connect)")
+            except RuntimeError:
+                pass
         try:
             import websockets as ws_module
             self._ws = await ws_module.connect(
@@ -221,7 +281,8 @@ class DeepgramVoiceAgent:
                     self._settings_applied.set()
                     return True
                 else:
-                    print(f"[DeepgramAgent] Expected SettingsApplied, got: {data.get('type', 'unknown')}")
+                    err_desc = data.get("description", data.get("message", "No details"))
+                    print(f"[DeepgramAgent] Settings rejected: {data.get('type', 'unknown')} — {err_desc}")
                     return False
             else:
                 print("[DeepgramAgent] Expected text SettingsApplied, got binary")
@@ -296,15 +357,46 @@ class DeepgramVoiceAgent:
         self._settings_applied.clear()
         self._can_send_audio.clear()
         self._pending_function_calls.clear()
+        self._flush_audio_queue("stop")
+        self._agent_is_speaking = False
+        # Cancel any pending mic cooldown resume
+        if self._mic_cooldown_task and not self._mic_cooldown_task.done():
+            self._mic_cooldown_task.cancel()
+            self._mic_cooldown_task = None
         print("[DeepgramAgent] Disconnected")
+
+    # ── Queue Management ────────────────────────────────────────────
+
+    def _flush_audio_queue(self, reason: str = ""):
+        """Discard all queued mic audio chunks.
+
+        When the agent starts speaking, any chunks already in the queue
+        contain echo from the agent's speech. If sent later (after cooldown),
+        they'll trigger a false UserStartedSpeaking on Deepgram's end,
+        causing the echo loop.
+
+        Args:
+            reason: Optional description for the log message.
+        """
+        flushed = 0
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+                flushed += 1
+            except queue.Empty:
+                break
+        if flushed:
+            tag = f" ({reason})" if reason else ""
+            print(f"[DeepgramAgent] Flushed {flushed} stale chunks{tag}")
 
     # ── Audio Send Loop (mic → agent) ──────────────────────────────
 
     def _audio_capture_callback(self, indata, frames, time_info, status):
         """sounddevice InputStream callback — runs on a background thread.
 
-        Puts audio data into a thread-safe queue. The async task reads
-        from this queue and sends via WebSocket.
+        Computes RMS energy of the audio chunk. If below the energy
+        threshold, drops the chunk (low-level echo / silence suppression).
+        Only puts audio into the queue if it exceeds the threshold.
 
         Args:
             indata: numpy array of captured audio (int16)
@@ -314,6 +406,25 @@ class DeepgramVoiceAgent:
         """
         if status:
             print(f"[DeepgramAgent] Audio callback status: {status}")
+
+        # ── Guard 1: Agent is speaking — drop ALL audio ─────────────
+        # This is the PRIMARY echo defense. While the agent is speaking,
+        # no mic audio is sent to Deepgram, so echo can't reach the VAD.
+        if self._agent_is_speaking:
+            return
+
+        # ── Guard 2: Energy gate — drop quiet chunks ────────────────
+        # SECONDARY defense: suppress low-level residual echo that might
+        # still be in the room after the agent stops speaking.
+        # Uses float32 to avoid int16 overflow during squaring.
+        rms = int(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+        if rms < self._energy_threshold:
+            now = time.time()
+            if now - self._energy_log_timer > 2.0:
+                self._energy_log_timer = now
+                print(f"[DeepgramAgent] Low-energy chunk dropped (RMS={rms}, threshold={self._energy_threshold})")
+            return
+
         try:
             self._audio_queue.put_nowait(indata.copy())
         except queue.Full:
@@ -414,7 +525,14 @@ class DeepgramVoiceAgent:
             # Async loop: read from thread-safe queue and send via WebSocket
             while self._running:
                 try:
-                    # Get audio data from the callback thread via thread pool
+                    # Check BEFORE consuming from queue — prevents stale
+                    # cross-boundary chunks from reaching Deepgram while
+                    # the agent is speaking or in cooldown.
+                    if self._agent_is_speaking:
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    # Consume one chunk from the callback thread
                     data = await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: self._audio_queue.get(timeout=0.1),
@@ -491,13 +609,66 @@ class DeepgramVoiceAgent:
         the OutputStream callback. Dispatches on_audio_chunk callback
         for UI state updates.
 
+        IMPORTANT: ANY incoming audio means the agent is speaking.
+        We set `_agent_is_speaking = True` here on every chunk because
+        `AgentStartedSpeaking` control messages may not fire reliably
+        for every response segment. The binary audio is the ONLY reliable
+        signal that the agent is producing sound.
+
         Args:
             audio_bytes: Raw linear16 PCM audio at 24kHz (container=none).
         """
+        # ── Guard: audio data arriving = agent is speaking ──────────
+        # This is set on EVERY audio chunk, not just AgentStartedSpeaking.
+        # The control message might not fire for subtler response segments,
+        # but the audio always arrives.
+        self._agent_is_speaking = True
+        # Flush stale mic chunks — audio from the agent means any queued
+        # mic data is stale echo that should not be sent to Deepgram.
+        self._flush_audio_queue("audio arriving")
+
         # Convert bytes to float32 numpy array
-        pcm_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(
-            np.float32
-        ) / 32768.0
+        raw_samples = np.frombuffer(audio_bytes, dtype=np.int16)
+        actual_samples = len(raw_samples)
+
+        # ── Detect & correct sample rate mismatch ──────────────────
+        # Expected: 480 int16 samples per 20ms chunk at 24kHz (960 bytes)
+        # If chunks are consistently a different size, Deepgram may be
+        # sending audio at a different rate (e.g., 240 samples = 12kHz,
+        # which played at 24kHz = 2x speed).
+        #
+        # Only resample if the chunk size is close to a known alternative
+        # rate (within 10%). Random partial chunks at end-of-speech are
+        # left as-is to avoid stretching artifacts.
+        # Known alternative chunk sizes (240=12kHz, 120=6kHz, 960=48kHz)
+        # These are the most common alternative sample rates for audio TTS.
+        needs_resample = any(
+            abs(actual_samples - alt) / alt < 0.10
+            for alt in (240, 120, 960)
+        ) if actual_samples != 480 else False
+
+        if needs_resample:
+            # Rate-limited diagnostic log (max once per 5 seconds)
+            now = time.time()
+            if now - self._sample_rate_log_timer > 5.0:
+                self._sample_rate_log_timer = now
+                print(f"[DeepgramAgent] Sample rate mismatch: got {actual_samples} samples (expected 480) — resampling")
+
+            # Nearest-neighbor resample to 480 samples
+            ratio = 480.0 / actual_samples
+            indices = np.round(np.arange(480) / ratio).astype(np.int32)
+            indices = np.clip(indices, 0, actual_samples - 1)
+            raw_samples = raw_samples[indices]
+        elif actual_samples != 480:
+            # Partial tail chunk — leave as-is, don't stretch
+            # Rate-limited log (max once per 5 seconds)
+            now = time.time()
+            if now - self._sample_rate_log_timer > 5.0:
+                self._sample_rate_log_timer = now
+                print(f"[DeepgramAgent] Partial chunk: {actual_samples} samples (left as-is)")
+
+        # Cast to float32 for output stream
+        pcm_array = raw_samples.astype(np.float32) / 32768.0
 
         # Append to ring buffer (thread-safe deque.extend)
         self._output_ring_buffer.extend(pcm_array)
@@ -526,19 +697,41 @@ class DeepgramVoiceAgent:
             self._settings_applied.set()
 
         elif msg_type == "UserStartedSpeaking":
-            print("[DeepgramAgent] User started speaking — barge-in")
-            self._captured_text = []
+            now = time.time()
+
+            # ── Post-speech lockout: ignore for 1.5s after agent finished ──
+            # Prevents residual speaker audio from triggering false barge-in
+            seconds_since_agent_done = now - self._last_agent_done_speaking_at
+            if seconds_since_agent_done < 1.5:
+                print(f"[DeepgramAgent] UserStartedSpeaking post-speech lockout ({seconds_since_agent_done:.1f}s since agent done)")
+                return
 
             # ── Debounce: ignore rapid duplicate events (echo guard) ──
-            now = time.time()
-            if now - self._last_user_spoke_at < 0.2:
-                print("[DeepgramAgent] UserStartedSpeaking debounced (echo guard)")
+            # 3-second cooldown prevents the acoustic echo loop where
+            # speaker output is picked up by the mic and re-detected
+            if now - self._last_user_spoke_at < 3.0:
+                print("[DeepgramAgent] UserStartedSpeaking debounced (echo guard, 3s cooldown)")
                 return
             self._last_user_spoke_at = now
 
-            # ── Barge-in: clear ring buffer immediately ─────────────
-            self._output_ring_buffer.clear()
-            print("[DeepgramAgent] Barge-in: ring buffer cleared")
+            print("[DeepgramAgent] User started speaking — barge-in")
+            self._captured_text = []
+
+            # ── Ring buffer management ─────────────────────────────
+            # Only clear the ring buffer if the agent was actively speaking
+            # (true barge-in from a real interruption). If the agent already
+            # finished speaking (cooldown period), the ring buffer still has
+            # remaining audio that should finish playing naturally.
+            # The 3s ring buffer holds audio that outlasts AgentAudioDone.
+            seconds_since_done = now - self._last_agent_done_speaking_at
+            if seconds_since_done > 5.0:
+                # Agent wasn't recently speaking — this is a real barge-in
+                self._output_ring_buffer.clear()
+                print("[DeepgramAgent] Barge-in: ring buffer cleared")
+            else:
+                # Agent finished recently — keep ring buffer intact so the
+                # remaining ~1-3s of audio finishes playing naturally
+                print(f"[DeepgramAgent] Barge-in suppressed: agent finished {seconds_since_done:.1f}s ago, keeping ring buffer intact")
 
             # Notify frontend that agent stopped speaking
             if self.on_agent_done_speaking:
@@ -563,27 +756,52 @@ class DeepgramVoiceAgent:
             print("[DeepgramAgent] Agent is thinking...")
 
         elif msg_type == "AgentStartedSpeaking":
-            print("[DeepgramAgent] Agent is speaking")
+            print("[DeepgramAgent] Agent started speaking — pausing mic audio")
+            # Flush stale chunks that may have accumulated before the flag
+            # was set (cross-boundary echo). These would trigger a false
+            # UserStartedSpeaking if sent later after cooldown.
+            self._flush_audio_queue("agent started")
+            self._agent_is_speaking = True
+            if self._mic_cooldown_task and not self._mic_cooldown_task.done():
+                self._mic_cooldown_task.cancel()
+                self._mic_cooldown_task = None
             if self.on_agent_speaking:
                 self.on_agent_speaking()
 
         elif msg_type == "AgentAudioDone":
-            print("[DeepgramAgent] Agent finished speaking")
+            print("[DeepgramAgent] Agent finished speaking — mic cooldown started (6s)")
+            self._last_agent_done_speaking_at = time.time()
             if not self._can_send_audio.is_set():
                 self._can_send_audio.set()
-                print("[DeepgramAgent] Agent greeting done — ready to receive mic audio")
             if self.on_agent_done_speaking:
                 self.on_agent_done_speaking()
+            # Keep mic paused for 6s after agent finishes to let speaker
+            # audio fully decay before reopening. This prevents residual
+            # room echo from triggering a false barge-in loop.
+            self._mic_cooldown_task = asyncio.create_task(
+                self._delayed_mic_resume(6.0)
+            )
 
         elif msg_type == "ConversationText":
-            # Greeting or agent response text — signal that mic audio can start
-            # The server sends this after the greeting audio finishes.
+            # Greeting or agent response text.
+            # Only pause mic for the INITIAL greeting (when _can_send_audio is
+            # still False). AgentStartedSpeaking doesn't fire for the greeting,
+            # so we use ConversationText to know audio is about to play.
+            # For subsequent responses, AgentStartedSpeaking handles the pause.
             if not self._can_send_audio.is_set():
+                self._agent_is_speaking = True
+                self._flush_audio_queue("greeting")
                 self._can_send_audio.set()
-                print("[DeepgramAgent] Greeting text received — mic audio can start now")
+                print("[DeepgramAgent] Greeting text received — pausing mic during greeting audio")
 
         elif msg_type == "FunctionCallRequest":
-            print(f"[DeepgramAgent] Function call: {data.get('function_name', 'unknown')}")
+            functions = data.get("functions", [])
+            if functions:
+                fn = functions[0]
+                fn_name = fn.get("name", "unknown")
+                print(f"[DeepgramAgent] Function call: {fn_name} (client_side={fn.get('client_side', False)})")
+            else:
+                print("[DeepgramAgent] Function call: unknown (empty functions array)")
             await self._handle_function_call(data)
 
         elif msg_type == "KeepAlive":
@@ -610,14 +828,42 @@ class DeepgramVoiceAgent:
 
         Args:
             data: The FunctionCallRequest JSON dict from Deepgram.
-                  Contains: function_name, function_call_id, input/arguments
+                  Deepgram wraps functions in a list under the "functions" key.
+                  Structure:
+                    {
+                      "type": "FunctionCallRequest",
+                      "functions": [
+                        {
+                          "id": "<call_id>",
+                          "name": "<function_name>",
+                          "arguments": "<JSON string>",
+                          "client_side": true|false,
+                          "thought_signature": "<optional>"
+                        }
+                      ]
+                    }
         """
-        function_name = data.get("function_name", "")
-        function_call_id = data.get("function_call_id", "")
-        arguments = data.get("input", data.get("arguments", {}))
+        functions = data.get("functions", [])
+        if not functions:
+            print(f"[DeepgramAgent] Invalid FunctionCallRequest (empty functions array): {data}")
+            return
+
+        fn = functions[0]
+        function_name = fn.get("name", "")
+        function_call_id = fn.get("id", "")
+
+        # Deepgram sends arguments as a JSON string — parse it
+        raw_args = fn.get("arguments", "{}")
+        if isinstance(raw_args, str):
+            try:
+                arguments = json.loads(raw_args)
+            except json.JSONDecodeError:
+                arguments = {}
+        else:
+            arguments = raw_args
 
         if not function_name or not function_call_id:
-            print(f"[DeepgramAgent] Invalid FunctionCallRequest: {data}")
+            print(f"[DeepgramAgent] Invalid FunctionCallRequest (missing name/id): {data}")
             return
 
         # Dedup: ignore if we've already processed this call ID
@@ -659,6 +905,28 @@ class DeepgramVoiceAgent:
                 print(f"[DeepgramAgent] Failed to send FunctionCallResponse: {e}")
         else:
             print("[DeepgramAgent] WebSocket closed — cannot send FunctionCallResponse")
+
+    async def _delayed_mic_resume(self, delay: float):
+        """Wait for `delay` seconds, then resume mic audio.
+
+        This is the mic cooldown: after the agent finishes speaking, we keep
+        `_agent_is_speaking = True` for `delay` seconds to let residual speaker
+        audio in the room decay naturally. Once the timer expires, the mic
+        reopens and the user's voice can be heard again.
+
+        Args:
+            delay: Seconds to wait before resuming mic (typically 2-3s).
+        """
+        try:
+            await asyncio.sleep(delay)
+            self._agent_is_speaking = False
+            print("[DeepgramAgent] Mic cooldown complete — mic audio resumed")
+            # Set the barge-in debounce so the first echo after cooldown
+            # doesn't immediately trigger a new cycle
+            self._last_user_spoke_at = time.time()
+        except asyncio.CancelledError:
+            # Cooldown was cancelled (stop() called, new speech started)
+            pass
 
     @property
     def full_transcript(self) -> str:

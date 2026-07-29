@@ -264,6 +264,7 @@ curl https://barq.yourdomain.com/health
 | `Connection refused` | Service not running | `sudo systemctl status barq.service` |
 | `ModuleNotFoundError` | Missing dependency | `source ~/venv/bin/activate && pip install -r requirements.txt` |
 | Playwright fails | Missing system libs | `sudo apt-get install -y $(playwright install-deps chromium)` |
+| LaTeX/PDF generation fails | TeX Live not installed | `sudo apt-get install -y texlive-latex-base texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra` |
 | `413 Request Entity Too Large` | Caddy limit | Add `request_body { max_size 50MB }` to Caddy config |
 | Port 80/443 not reachable | Oracle firewall | Check Security Lists in OCI Console |
 | SSL cert not provisioning | DNS not propagated | Wait 5 minutes, check A record |

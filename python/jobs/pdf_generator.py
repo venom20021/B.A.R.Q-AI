@@ -703,6 +703,503 @@ class ResumePDFGenerator:
         }
 
 
+# ─── Cover Letter LaTeX Wrapper ────────────────────────────────────────────────
+
+
+def _escape_latex_text(text: str) -> str:
+    """Escape special LaTeX characters in arbitrary text.
+
+    This is a public-safe alias for _escape_latex that can be used
+    from other modules without importing _escape_latex directly.
+    """
+    return _escape_latex(text)
+
+
+def _cover_letter_to_latex(
+    cover_letter_text: str,
+    job_title: str = "",
+    company: str = "",
+) -> str:
+    """Wrap cover letter text in a minimal LaTeX document suitable for pdflatex.
+
+    Uses a simple article layout with 1in margins, hyperref for potential
+    links, and the cover letter content rendered as paragraphs.
+
+    Args:
+        cover_letter_text: The plain text cover letter content.
+        job_title: Job title for the document title (optional).
+        company: Company name for the document title (optional).
+
+    Returns:
+        Complete LaTeX document source string.
+    """
+    escaped = _escape_latex(cover_letter_text)
+    title_parts = [p for p in [job_title, company] if p]
+    doc_title = "Cover Letter"
+    if title_parts:
+        doc_title += " — " + " @ ".join(title_parts)
+
+    return (
+        r"\documentclass[11pt]{article}" + "\n"
+        r"\usepackage[utf8]{inputenc}" + "\n"
+        r"\usepackage[T1]{fontenc}" + "\n"
+        r"\usepackage{geometry}" + "\n"
+        r"\usepackage[hidelinks]{hyperref}" + "\n"
+        r"\geometry{margin=1in, top=0.75in}" + "\n"
+        r"\pagestyle{empty}" + "\n"
+        r"\begin{document}" + "\n"
+        r"\begin{center}" + "\n"
+        r"{\Large\bfseries " + _escape_latex(doc_title) + r"}" + "\n"
+        r"\end{center}" + "\n"
+        r"\vspace{1em}" + "\n"
+        + escaped.replace("\n", "\n\n").replace("\n\n\n\n", "\n\n") + "\n"
+        r"\end{document}" + "\n"
+    )
+
+
+async def generate_cover_letter_pdf(
+    cover_letter_text: str,
+    output_path: str,
+    job_title: str = "",
+    company: str = "",
+) -> dict[str, Any]:
+    """Generate a PDF for a cover letter from plain text.
+
+    Wraps the text in a minimal LaTeX document, compiles with pdflatex,
+    and saves to the given output path.
+
+    Args:
+        cover_letter_text: Plain text cover letter content.
+        output_path: Full path for the output .pdf file.
+        job_title: Job title (used in document title).
+        company: Company name (used in document title).
+
+    Returns:
+        Dict with status, pdf_path, file_size_bytes, and generated_at.
+        On failure, falls back to saving a .txt file and returning that.
+    """
+    try:
+        latex = _cover_letter_to_latex(cover_letter_text, job_title, company)
+        pdf_bytes = await compile_latex_string(latex, os.path.basename(output_path))
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        with open(output_path, "wb") as f:
+            f.write(pdf_bytes)
+
+        file_size = os.path.getsize(output_path)
+        return {
+            "status": "completed",
+            "pdf_path": output_path,
+            "backend": "latex",
+            "file_size_bytes": file_size,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        print(f"[PDFGenerator] Cover letter PDF failed: {e}, falling back to .txt")
+        # Fall back to .txt file
+        txt_path = output_path.rsplit(".", 1)[0] + ".txt"
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(cover_letter_text)
+        return {
+            "status": "completed",
+            "pdf_path": txt_path,
+            "backend": "txt_fallback",
+            "file_size_bytes": len(cover_letter_text.encode("utf-8")),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+# ─── Hardcoded LLM LaTeX Template ──────────────────────────────────────────────
+#
+# The LLM does NOT write LaTeX. It outputs a JSON object with fields that
+# get injected into this pre-verified template via .replace() and string
+# formatting. This prevents malformed LaTeX, leaked markdown tags, stray
+# characters, and broken compilation.
+
+LATEX_LLM_RESUME_TEMPLATE = r"""
+\documentclass[11pt]{article}
+
+% ── Packages ────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{parskip}
+
+% ── Page Layout ─────────────────────────────────────────────────────────────
+\geometry{
+    margin=0.6in,
+    top=0.5in,
+    bottom=0.5in,
+}
+
+% ── Colors ──────────────────────────────────────────────────────────────────
+\definecolor{primary}{HTML}{1a365d}
+\definecolor{accent}{HTML}{2b6cb0}
+\definecolor{muted}{HTML}{718096}
+
+% ── Section Formatting ──────────────────────────────────────────────────────
+\titleformat{\section}
+    {\Large\bfseries\color{primary}}
+    {}{0em}{}[\vspace{-0.3em}\rule{\textwidth}{0.5pt}]
+\titlespacing{\section}{0em}{0.8em}{0.4em}
+
+% ── List Formatting ─────────────────────────────────────────────────────────
+\setlist[itemize]{
+    leftmargin=1.2em,
+    itemsep=0.1em,
+    parsep=0em,
+    topsep=0.2em,
+}
+
+% ── Hyperlinks ──────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    urlcolor=accent,
+    linkcolor=primary,
+}
+
+% ── Custom Commands ─────────────────────────────────────────────────────────
+\newcommand{\name}[1]{{\Huge\bfseries\color{primary}#1}}
+\newcommand{\contact}[1]{{\small\color{muted}#1}}
+\newcommand{\role}[1]{{\bfseries\color{accent}#1}}
+
+\begin{document}
+\begin{center}
+    \name{{{{NAME}}}} \\\[0.3em]
+    \contact{{{{CONTACT}}}}
+\end{center}
+
+% ── Professional Summary ────────────────────────────────────────────────────
+\section*{Professional Summary}
+{{SUMMARY}}
+
+% ── Skills ──────────────────────────────────────────────────────────────────
+\section*{Skills}
+{{SKILLS}}
+
+% ── Experience ──────────────────────────────────────────────────────────────
+\section*{Experience}
+{{EXPERIENCE}}
+
+% ── Education ──────────────────────────────────────────────────────────────
+\section*{Education}
+{{EDUCATION}}
+
+% ── Projects ────────────────────────────────────────────────────────────────
+\section*{Projects}
+{{PROJECTS}}
+
+\end{document}
+"""
+
+# ── Experience Entry Sub-template (repeated for each role) ──────────────────
+
+LATEX_EXPERIENCE_ENTRY = r"""
+\noindent\role{{{JOB_TITLE}}} \hfill \textit{{{COMPANY}}}
+\\ \small\color{muted}{{{DATES}}}
+
+\begin{itemize}[nosep]
+{{ACHIEVEMENT_BULLETS}}
+\end{itemize}
+"""
+
+# ── Education Entry Sub-template ─────────────────────────────────────────────
+
+LATEX_EDUCATION_ENTRY = r"""
+\noindent{{DEGREE}} \\\
+\small\color{muted}{{{INSTITUTION}} \hfill {{EDUCATION_DATES}}}
+"""
+
+# ── Project Entry Sub-template ───────────────────────────────────────────────
+
+LATEX_PROJECT_ENTRY = r"""
+\noindent\role{{{PROJECT_NAME}}} --- {{PROJECT_DESCRIPTION}}
+"""
+
+
+def _build_latex_from_llm_json(llm_json: dict) -> str:
+    """Build a complete LaTeX resume from LLM JSON data.
+
+    The LLM outputs a JSON object with structured resume data.
+    This function:
+    1. Escapes all LaTeX special characters from string values
+    2. Builds section content by looping over repeated entries
+    3. Injects everything into the hardcoded template via .replace()
+
+    Args:
+        llm_json: JSON dict with keys:
+            - name (str): Candidate full name
+            - contact (dict): email, phone, linkedin, github
+            - summary (str): Professional summary (2-3 sentences)
+            - skills (list[str]): Skill keywords
+            - experience (list[dict]): Each with job_title, company, start_date,
+              end_date, bullets (list[str])
+            - education (list[dict]): Each with degree, institution, start_date,
+              end_date
+            - projects (list[dict]): Each with name, description
+
+    Returns:
+        Complete LaTeX document source string (pre-verified to compile).
+    """
+    # ── Name ────────────────────────────────────────────────────────────
+    name = _escape_latex(llm_json.get("name", "Your Name"))
+
+    # ── Contact ─────────────────────────────────────────────────────────
+    contact_info = llm_json.get("contact", {})
+    email = _escape_latex(contact_info.get("email", ""))
+    phone = _escape_latex(contact_info.get("phone", ""))
+    linkedin = contact_info.get("linkedin", "")
+    github = contact_info.get("github", "")
+
+    contact_parts = [p for p in [email, phone] if p]
+    contact = " $|$ ".join(contact_parts) if contact_parts else ""
+    links = []
+    if linkedin:
+        display = linkedin.replace("https://", "").replace("http://", "").rstrip("/")
+        links.append(f"\\href{{{linkedin}}}{{{_escape_latex(display)}}}")
+    if github:
+        display = github.replace("https://", "").replace("http://", "").rstrip("/")
+        links.append(f"\\href{{{github}}}{{{_escape_latex(display)}}}")
+    if links:
+        if contact:
+            contact += " \\\\ "
+        contact += " $|$ ".join(links)
+
+    # ── Summary ─────────────────────────────────────────────────────────
+    summary = _escape_latex(llm_json.get("summary", ""))
+    if not summary:
+        summary = "\\textit{Professional summary not available}"
+
+    # ── Skills ──────────────────────────────────────────────────────────
+    skills = llm_json.get("skills", [])
+    if skills and isinstance(skills, list):
+        skill_text = " $\\bullet$ ".join(_escape_latex(s) for s in skills[:25])
+        if len(skills) > 25:
+            skill_text += " $\\bullet$ \\textit{and more}"
+        skills_block = "\\begin{center}" + skill_text + "\\end{center}"
+    else:
+        skills_block = "\\textit{Skills not specified}"
+
+    # ── Experience ──────────────────────────────────────────────────────
+    experience = llm_json.get("experience", [])
+    exp_blocks = []
+    for exp in experience:
+        role = _escape_latex(exp.get("job_title", ""))
+        company = _escape_latex(exp.get("company", ""))
+        start = _escape_latex(exp.get("start_date", ""))
+        end = _escape_latex(exp.get("end_date", ""))
+        dates = f"{start} -- {end}" if start or end else ""
+        bullets_raw = exp.get("bullets", [])
+
+        # Build bullet items
+        bullet_items = "\n".join(
+            f"    \\item {_escape_latex(b)}"
+            for b in bullets_raw[:8]
+        )
+
+        block = LATEX_EXPERIENCE_ENTRY
+        block = block.replace("{{JOB_TITLE}}", role)
+        block = block.replace("{{COMPANY}}", company)
+        block = block.replace("{{DATES}}", dates)
+        block = block.replace("{{ACHIEVEMENT_BULLETS}}", bullet_items)
+        exp_blocks.append(block)
+    experience_block = "\n".join(exp_blocks) if exp_blocks else "\\textit{No experience listed}"
+
+    # ── Education ───────────────────────────────────────────────────────
+    education = llm_json.get("education", [])
+    edu_blocks = []
+    for edu in education:
+        degree = _escape_latex(edu.get("degree", ""))
+        institution = _escape_latex(edu.get("institution", ""))
+        start = _escape_latex(edu.get("start_date", ""))
+        end = _escape_latex(edu.get("end_date", ""))
+        dates = f"{start} -- {end}" if start or end else ""
+
+        block = LATEX_EDUCATION_ENTRY
+        block = block.replace("{{DEGREE}}", degree)
+        block = block.replace("{{INSTITUTION}}", institution)
+        block = block.replace("{{EDUCATION_DATES}}", dates)
+        edu_blocks.append(block)
+    education_block = "\n".join(edu_blocks) if edu_blocks else "\\textit{No education listed}"
+
+    # ── Projects ────────────────────────────────────────────────────────
+    projects = llm_json.get("projects", [])
+    proj_blocks = []
+    for proj in projects:
+        name = _escape_latex(proj.get("name", ""))
+        desc = _escape_latex(proj.get("description", ""))
+
+        block = LATEX_PROJECT_ENTRY
+        block = block.replace("{{PROJECT_NAME}}", name)
+        block = block.replace("{{PROJECT_DESCRIPTION}}", desc)
+        proj_blocks.append(block)
+    projects_block = "\n".join(proj_blocks) if proj_blocks else "\\textit{No projects listed}"
+
+    # ── Assemble ────────────────────────────────────────────────────────
+    latex = LATEX_LLM_RESUME_TEMPLATE
+    latex = latex.replace("{{NAME}}", name)
+    latex = latex.replace("{{CONTACT}}", contact or "\\textit{No contact info}")
+    latex = latex.replace("{{SUMMARY}}", summary)
+    latex = latex.replace("{{SKILLS}}", skills_block)
+    latex = latex.replace("{{EXPERIENCE}}", experience_block)
+    latex = latex.replace("{{EDUCATION}}", education_block)
+    latex = latex.replace("{{PROJECTS}}", projects_block)
+
+    return latex
+
+
+async def compile_resume_pdf_from_json(
+    llm_json: dict,
+    output_filename: str = "resume.pdf",
+) -> bytes:
+    """Build LaTeX from LLM JSON data, compile to PDF, return bytes.
+
+    This is the primary entry point for the pipeline's LaTeX PDF generation.
+    It:
+    1. Takes the LLM's JSON output (no LaTeX from the LLM)
+    2. Injects the data into the hardcoded, pre-verified template
+    3. Escapes all LaTeX special characters
+    4. Compiles via pdflatex
+    5. Returns the PDF bytes
+
+    Args:
+        llm_json: JSON dict with structured resume data from the LLM.
+        output_filename: Logical name for the PDF (used for temp naming).
+
+    Returns:
+        Bytes of the compiled PDF.
+
+    Raises:
+        ValueError: If llm_json is empty or missing required fields.
+        RuntimeError: If pdflatex is not found or compilation fails.
+    """
+    if not llm_json:
+        raise ValueError("LLM JSON data is empty — nothing to compile.")
+
+    latex_string = _build_latex_from_llm_json(llm_json)
+    return await compile_latex_string(latex_string, output_filename)
+
+
+# ─── LaTeX String Compiler ────────────────────────────────────────────────────
+
+
+def _compile_latex_sync(latex_string: str, output_filename: str = "resume.pdf") -> bytes:
+    """Synchronous implementation of LaTeX compilation.
+
+    Writes .tex to a temp directory, runs pdflatex twice, reads the PDF
+    into bytes, and cleans up all intermediate files.
+
+    Separated from the public async wrapper so it can be run in a thread
+    without blocking the event loop.
+
+    Args:
+        latex_string: Valid LaTeX document source.
+        output_filename: Logical name for the PDF (only used for temp file naming).
+
+    Returns:
+        Bytes of the compiled PDF.
+
+    Raises:
+        RuntimeError: If pdflatex not found or compilation fails.
+        ValueError: If the LaTeX source is empty.
+    """
+    import subprocess as _subprocess
+
+    if not latex_string or not latex_string.strip():
+        raise ValueError("LaTeX source string is empty — nothing to compile.")
+
+    pdflatex_path = _find_pdflatex()
+    if not pdflatex_path:
+        raise RuntimeError(
+            "pdflatex not found on system PATH. Install TeX Live (Linux/macOS) or "
+            "MiKTeX (Windows). On Ubuntu/Debian: sudo apt-get install texlive-latex-base "
+            "texlive-latex-extra texlive-fonts-recommended"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="barq_latex_") as tmpdir:
+        tex_name = output_filename.rsplit(".", 1)[0] + ".tex"
+        tex_path = os.path.join(tmpdir, tex_name)
+        pdf_name = output_filename.rsplit(".", 1)[0] + ".pdf"
+        pdf_path = os.path.join(tmpdir, pdf_name)
+
+        # Write source
+        with open(tex_path, "w", encoding="utf-8") as f:
+            f.write(latex_string)
+
+        # Compile twice (first pass generates .aux, second resolves refs/links)
+        for pass_num in range(1, 3):
+            proc = _subprocess.run(
+                [
+                    pdflatex_path,
+                    "-interaction=nonstopmode",
+                    "-halt-on-error",
+                    f"-output-directory={tmpdir}",
+                    tex_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            # Bail on first pass failure so we can surface the log
+            if proc.returncode != 0:
+                log_path = os.path.join(tmpdir, tex_name.replace(".tex", ".log"))
+                log_snippet = ""
+                if os.path.isfile(log_path):
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as lf:
+                        lines = lf.readlines()
+                        log_snippet = "".join(lines[-30:])
+                raise RuntimeError(
+                    f"pdflatex compilation failed on pass {pass_num}.\n"
+                    f"Exit code: {proc.returncode}\n"
+                    f"stderr: {proc.stderr[-500:] if proc.stderr else '(none)'}\n"
+                    f"=== Last lines of .log ===\n{log_snippet}"
+                )
+
+        # Read compiled PDF into memory
+        if not os.path.isfile(pdf_path):
+            raise RuntimeError(
+                f"pdflatex completed but no PDF was produced at: {pdf_path}"
+            )
+
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        # Cleanup is automatic via TemporaryDirectory
+
+    if not pdf_bytes:
+        raise RuntimeError("Compiled PDF is empty — LaTeX source may be malformed.")
+
+    return pdf_bytes
+
+
+async def compile_latex_string(latex_string: str, output_filename: str = "resume.pdf") -> bytes:
+    """Compile a raw LaTeX string into a PDF and return the bytes (async-safe).
+
+    Wraps the synchronous LaTeX compilation in `asyncio.to_thread()` so it
+    does NOT block the event loop during the pdflatex subprocess call.
+
+    Args:
+        latex_string: Valid LaTeX document source.
+        output_filename: Logical name for the PDF (used for temp file naming).
+
+    Returns:
+        Bytes of the compiled PDF.
+
+    Raises:
+        RuntimeError: If pdflatex is not found or compilation fails.
+        ValueError: If the LaTeX source is empty.
+    """
+    return await asyncio.to_thread(_compile_latex_sync, latex_string, output_filename)
+
+
 # Convenience function
 async def generate_resume_pdf(
     resume_data: dict[str, Any],

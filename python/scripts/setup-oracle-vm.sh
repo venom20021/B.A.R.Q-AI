@@ -44,6 +44,26 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommen
     libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
     && sudo apt-get autoremove -y && sudo apt-get clean
 
+# Install TeX Live for pdflatex-based PDF resume generation
+info "Installing TeX Live (LaTeX) for PDF resume generation..."
+sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    texlive-latex-base \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-fonts-extra \
+    texlive-latex-recommended \
+    texlive-xetex \
+    latex-xcolor \
+    texlive-latex-extra-doc \
+    && sudo apt-get autoremove -y && sudo apt-get clean
+
+# Verify pdflatex is available
+if command -v pdflatex &> /dev/null; then
+    ok "pdflatex installed: $(pdflatex --version | head -1)"
+else
+    warn "pdflatex not found after TeX Live install — check apt logs"
+fi
+
 # Install Caddy from official APT repository (works on all architectures including ARM64)
 info "Installing Caddy web server..."
 if ! command -v caddy &> /dev/null; then

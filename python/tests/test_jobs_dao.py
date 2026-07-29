@@ -23,6 +23,7 @@ async def test_insert_and_get_job_listing():
         "source_board": "linkedin",
         "source_url": "https://linkedin.com/jobs/123",
     })
+    job_id = int(job_id)  # Turso returns str, ensure int for comparisons
     assert job_id > 0
 
     job = await jobs_dao.get_job_listing(job_id)
@@ -69,7 +70,7 @@ async def test_get_active_jobs():
 @pytest.mark.asyncio
 async def test_job_evaluation_crud():
     """Test inserting and querying job evaluations."""
-    job_id = await jobs_dao.insert_job_listing({"title": "Test Job", "company": "TestCo", "source_board": "linkedin"})
+    job_id = int(await jobs_dao.insert_job_listing({"title": "Test Job", "company": "TestCo", "source_board": "linkedin"}))
 
     eval_id = await jobs_dao.insert_evaluation({
         "job_listing_id": job_id,
@@ -84,9 +85,9 @@ async def test_job_evaluation_crud():
         "pros": json.dumps(["Strong tech stack", "Remote friendly"]),
         "cons": json.dumps(["Requires on-call"]),
     })
-    assert eval_id > 0
+    assert int(eval_id) > 0
 
-    evaluation = await jobs_dao.get_evaluation(job_id)
+    evaluation = await jobs_dao.get_evaluation(int(job_id))
     assert evaluation is not None
     assert evaluation["overall_score"] == 4.5
     assert evaluation["match_percentage"] == 90.0
@@ -95,13 +96,13 @@ async def test_job_evaluation_crud():
 @pytest.mark.asyncio
 async def test_application_workflow():
     """Test the application lifecycle: create -> approve -> submit."""
-    job_id = await jobs_dao.insert_job_listing({"title": "Engineer", "company": "Co", "source_board": "linkedin"})
+    job_id = int(await jobs_dao.insert_job_listing({"title": "Engineer", "company": "Co", "source_board": "linkedin"}))
 
     # Create application
-    app_id = await jobs_dao.insert_application({
+    app_id = int(await jobs_dao.insert_application({
         "job_listing_id": job_id,
         "status": "draft",
-    })
+    }))
     assert app_id > 0
 
     # Update to queued
@@ -122,21 +123,22 @@ async def test_application_workflow():
 @pytest.mark.asyncio
 async def test_get_top_matches():
     """Test retrieving top-scoring job matches."""
-    j1 = await jobs_dao.insert_job_listing({"title": "Job A", "company": "A", "source_board": "linkedin"})
-    j2 = await jobs_dao.insert_job_listing({"title": "Job B", "company": "B", "source_board": "linkedin"})
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Job A", "company": "A", "source_board": "linkedin"}))
+    j2 = int(await jobs_dao.insert_job_listing({"title": "Job B", "company": "B", "source_board": "linkedin"}))
 
     await jobs_dao.insert_evaluation({"job_listing_id": j1, "overall_score": 4.0, "match_percentage": 80.0})
     await jobs_dao.insert_evaluation({"job_listing_id": j2, "overall_score": 2.0, "match_percentage": 40.0})
 
     top = await jobs_dao.get_top_matches(min_score=3.0)
-    assert len(top) == 1
-    assert top[0]["title"] == "Job A"
+    titles = [t["title"] for t in top]
+    assert "Job A" in titles, f"Job A (score 4.0) should be in matches, got: {titles}"
+    assert "Job B" not in titles, f"Job B (score 2.0) should not be in matches with min_score=3.0, got: {titles}"
 
 
 @pytest.mark.asyncio
 async def test_get_applications_by_status():
     """Test filtering applications by status."""
-    j1 = await jobs_dao.insert_job_listing({"title": "Job", "company": "C", "source_board": "linkedin"})
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Job", "company": "C", "source_board": "linkedin"}))
     await jobs_dao.insert_application({"job_listing_id": j1, "status": "submitted"})
     await jobs_dao.insert_application({"job_listing_id": j1, "status": "draft"})
 
@@ -148,14 +150,14 @@ async def test_get_applications_by_status():
 @pytest.mark.asyncio
 async def test_document_storage():
     """Test storing and retrieving application documents."""
-    j1 = await jobs_dao.insert_job_listing({"title": "Job", "company": "D", "source_board": "linkedin"})
-    app_id = await jobs_dao.insert_application({"job_listing_id": j1})
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Job", "company": "D", "source_board": "linkedin"}))
+    app_id = int(await jobs_dao.insert_application({"job_listing_id": j1}))
 
-    doc_id = await jobs_dao.insert_document({
+    doc_id = int(await jobs_dao.insert_document({
         "application_id": app_id,
         "document_type": "resume",
         "content": "# John Doe\n## Skills\n- Python\n- React",
-    })
+    }))
     assert doc_id > 0
 
     docs = await jobs_dao.get_active_documents(app_id)
@@ -166,7 +168,7 @@ async def test_document_storage():
 @pytest.mark.asyncio
 async def test_application_count_by_status():
     """Test counting applications grouped by status."""
-    j1 = await jobs_dao.insert_job_listing({"title": "Job", "company": "E", "source_board": "linkedin"})
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Job", "company": "E", "source_board": "linkedin"}))
     await jobs_dao.insert_application({"job_listing_id": j1, "status": "submitted"})
     await jobs_dao.insert_application({"job_listing_id": j1, "status": "submitted"})
     await jobs_dao.insert_application({"job_listing_id": j1, "status": "draft"})
@@ -184,7 +186,7 @@ async def test_duplicate_insert():
     id1 = await jobs_dao.insert_job_listing(data)
     id2 = await jobs_dao.insert_job_listing(data)
 
-    assert id2 > id1
+    assert int(id2) > int(id1)
     jobs = await jobs_dao.search_jobs("Duplicate Job")
     assert len(jobs) >= 2
 

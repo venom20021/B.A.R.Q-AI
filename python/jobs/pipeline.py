@@ -18,7 +18,7 @@ import html as html_mod
 import json
 import logging
 import os
-import re
+
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +34,13 @@ from utils import safe_filename
 from .applier import JobApplier
 from .cover_letter import CoverLetterGenerator
 from .optimizer import ResumeOptimizer
-from .pdf_generator import ResumePDFGenerator, GENERATED_DIR
+from .pdf_generator import (
+    ResumePDFGenerator,
+    GENERATED_DIR,
+    compile_latex_string,
+    compile_resume_pdf_from_json,
+    generate_cover_letter_pdf,
+)
 from .resume_parser import DEFAULT_RESUME_PATH, parse_resume
 
 # ─── Pipeline Settings ──────────────────────────────────────────────────────
@@ -235,7 +241,7 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 _pipeline_state["progress_pct"] = round(pct_base, 1)
                 _pipeline_state["message"] = f"Optimizing resume for {job_title} at {company}..."
 
-                # Run optimizer to tailor resume for this specific JD
+                # Build match analysis from evaluation (shared across paths)
                 match_analysis = {
                     "missing_skills": [],
                     "matching_skills": [],
@@ -252,10 +258,25 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-                optimized = await optimizer.optimize(resume_md, job, match_analysis)
-                optimized_md = optimized.get("optimized_md", resume_md)
+                # ── Phase 3: Try structured JSON optimization first, fall back to markdown ──
+                # The LLM outputs ONLY a JSON object (no LaTeX). The PDF generator
+                # injects this JSON into a hardcoded, pre-verified LaTeX template.
+                llm_json_data: dict | None = None
+                optimized_md: str = resume_md
+
+                json_result = await optimizer.optimize_latex(resume_md, job, match_analysis)
+                if json_result.get("_mode") == "latex_json" and json_result.get("json_data"):
+                    llm_json_data = json_result["json_data"]
+                    optimized_md = resume_md  # Keep original markdown for DB/compat
+                    print(f"[Pipeline] JSON optimization succeeded for {job_title}")
+                else:
+                    # Fall back to markdown optimization
+                    print(f"[Pipeline] JSON optimization unavailable, falling back to markdown for {job_title}")
+                    markdown_result = await optimizer.optimize(resume_md, job, match_analysis)
+                    optimized_md = markdown_result.get("optimized_md", resume_md)
+
                 app_result["optimized_resume"] = optimized_md
-                app_result["keywords_injected"] = optimized.get("keywords_injected", [])
+                app_result["llm_json_data"] = llm_json_data  # None if markdown fallback
 
                 # ── Phase 4: Generate Cover Letter ────────────────────
                 _pipeline_state["phase"] = PHASES[3]
@@ -266,37 +287,95 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 cover_letter = await cover_gen.generate(job, resume, optimized_md)
                 app_result["cover_letter"] = cover_letter
 
-                # ── Phase 5: Generate PDFs ────────────────────────────
+                # ── Phase 5: Generate PDFs (LaTeX when available) ─────
                 _pipeline_state["phase"] = PHASES[4]
                 _pipeline_state["phase_index"] = 4
                 _pipeline_state["progress_pct"] = round(pct_base + 30, 1)
                 _pipeline_state["message"] = f"Generating documents for {job_title}..."
 
-                pdf_paths = {}
+                pdf_paths: dict[str, str] = {}
+                pdf_bytes_dict: dict[str, bytes] = {}
+                job_slug = safe_filename(f"{company}_{job_title}".replace(" ", "_"), max_len=50)
+                job_description = job.get("description", "")
+
                 if cfg["generate_pdf"]:
-                    # Create a job-specific resume data dict with optimized content
-                    pdf_resume_data = {**resume, "raw_md": optimized_md}
-                    job_slug = safe_filename(f"{company}_{job_title}".replace(" ", "_"), max_len=50)
+                    # ── Resume PDF ────────────────────────────────────
+                    if llm_json_data:
+                        # Build LaTeX from structured JSON → compile PDF (in-memory → disk)
+                        # The JSON is injected into the hardcoded template — the LLM
+                        # never produces raw LaTeX, preventing malformed compilation.
+                        try:
+                            resume_pdf_bytes = await compile_resume_pdf_from_json(
+                                llm_json_data, f"Resume_{job_slug}.pdf"
+                            )
+                            pdf_bytes_dict["resume"] = resume_pdf_bytes
+                            # Also save to disk for DB path + auto-apply
+                            resume_dir = GENERATED_DIR / f"latex_{job_slug}"
+                            resume_dir.mkdir(parents=True, exist_ok=True)
+                            resume_pdf_path = str(resume_dir / f"Resume_{job_slug}.pdf")
+                            with open(resume_pdf_path, "wb") as f:
+                                f.write(resume_pdf_bytes)
+                            pdf_paths["resume"] = resume_pdf_path
+                            print(f"[Pipeline] JSON→LaTeX resume PDF generated for {job_title} ({len(resume_pdf_bytes)} bytes)")
+                        except Exception as e:
+                            print("\033[91m" + "═" * 70)
+                            print(f"  ⚠️  !!! PDF_COMPILATION_FAILED !!!")
+                            print(f"  Job: {job_title} @ {company}")
+                            print(f"  Method: JSON→LaTeX (compile_resume_pdf_from_json)")
+                            print(f"  Error: {e}")
+                            print(f"  Fix: Ensure LaTeX (pdflatex/shell-escape) is installed and templates are valid.")
+                            print("═" * 70 + "\033[0m")
+                            llm_json_data = None  # Reset so markdown path is used below
 
-                    # Generate resume PDF with JD-aware filtering
-                    job_description = job.get("description", "")
-                    resume_pdf_result = await pdf_gen.generate(
-                        pdf_resume_data,
-                        output_dir=str(GENERATED_DIR / f"optimized_{job_slug}"),
-                        filename=f"Resume_{job_slug}",
-                        job_description=job_description,
-                    )
-                    if resume_pdf_result.get("status") == "completed":
-                        pdf_paths["resume"] = resume_pdf_result["pdf_path"]
+                    if not llm_json_data:
+                        # Fall back to template-based PDF generation
+                        print(f"[Pipeline] Attempting markdown→PDF fallback for {job_title}...")
+                        pdf_resume_data = {**resume, "raw_md": optimized_md}
+                        resume_pdf_result = await pdf_gen.generate(
+                            pdf_resume_data,
+                            output_dir=str(GENERATED_DIR / f"optimized_{job_slug}"),
+                            filename=f"Resume_{job_slug}",
+                            job_description=job_description,
+                        )
+                        if resume_pdf_result.get("status") == "completed":
+                            pdf_paths["resume"] = resume_pdf_result["pdf_path"]
+                            # Read into bytes for in-memory Telegram send
+                            with open(resume_pdf_result["pdf_path"], "rb") as f:
+                                pdf_bytes_dict["resume"] = f.read()
+                            print(f"[Pipeline] Markdown→PDF fallback SUCCEEDED for {job_title} ({len(pdf_bytes_dict['resume'])} bytes)")
+                        else:
+                            print(f"[Pipeline] ⚠️ Markdown→PDF fallback ALSO FAILED for {job_title}: {resume_pdf_result.get('error', 'unknown error')}")
 
-                    # Save cover letter as text file (PDF template not available for cover letters)
+                    # ── Cover Letter PDF ───────────────────────────────
                     if cover_letter:
                         cl_dir = GENERATED_DIR / f"cover_letter_{job_slug}"
                         cl_dir.mkdir(parents=True, exist_ok=True)
-                        cl_path = str(cl_dir / f"Cover_Letter_{job_slug}.txt")
-                        with open(cl_path, "w", encoding="utf-8") as f:
-                            f.write(cover_letter)
-                        pdf_paths["cover_letter"] = cl_path
+                        cl_path = str(cl_dir / f"Cover_Letter_{job_slug}.pdf")
+                        cl_result = await generate_cover_letter_pdf(
+                            cover_letter_text=cover_letter,
+                            output_path=cl_path,
+                            job_title=job_title,
+                            company=company,
+                        )
+                        pdf_paths["cover_letter"] = cl_result["pdf_path"]
+                        if cl_result.get("backend") != "txt_fallback" and cl_result.get("pdf_path", "").endswith(".pdf"):
+                            with open(cl_result["pdf_path"], "rb") as f:
+                                pdf_bytes_dict["cover_letter"] = f.read()
+                            print(f"[Pipeline] Cover letter PDF generated for {job_title}")
+                        else:
+                            print(f"[Pipeline] ⚠️ Cover letter PDF fell back to txt: {cl_result.get('backend', 'unknown')}")
+
+                # Log PDF generation summary for this job
+                if cfg["generate_pdf"]:
+                    pdf_status = "✅ PDFs generated" if pdf_bytes_dict else "❌ All PDF methods failed"
+                    print(f"[Pipeline] {pdf_status} for {job_title} @ {company} (resume: {'✅' if 'resume' in pdf_bytes_dict else '❌'}, cover: {'✅' if 'cover_letter' in pdf_bytes_dict else '❌'})")
+                else:
+                    print(f"[Pipeline] PDF generation SKIPPED (disabled in settings) for {job_title}")
+                
+                if not pdf_bytes_dict:
+                    print(f"[Pipeline] ⚠️ No PDF bytes available for Telegram — will send text-only summary for {job_title}")
+                else:
+                    print(f"[Pipeline] 📎 PDF bytes ready for Telegram attachment ({sum(len(v) for v in pdf_bytes_dict.values())} bytes total) for {job_title}")
 
                 app_result["pdf_paths"] = pdf_paths
 
@@ -307,6 +386,7 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                     notes=json.dumps({
                         "pipeline_processed_at": datetime.now(timezone.utc).isoformat(),
                         "optimized": True,
+                        "optimization_mode": "latex_json" if llm_json_data else "markdown",
                         "cover_letter_generated": bool(cover_letter),
                         "pdf_generated": bool(pdf_paths),
                         "match_percentage": match_pct,
@@ -314,13 +394,19 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 )
 
                 # Store documents in DB
-                if optimized_md and app["id"]:
+                import json as _json_mod
+                if llm_json_data:
+                    resume_content = _json_mod.dumps(llm_json_data, indent=2)
+                else:
+                    resume_content = optimized_md
+                resume_format = "latex_json" if llm_json_data else "markdown"
+                if resume_content and app["id"]:
                     await jobs_dao.insert_document({
                         "application_id": app["id"],
                         "document_type": "resume",
-                        "content": optimized_md,
+                        "content": resume_content,
                         "file_path": pdf_paths.get("resume", ""),
-                        "format": "markdown",
+                        "format": resume_format,
                         "generated_by": "llm",
                     })
                 if cover_letter and app["id"]:
@@ -354,6 +440,7 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                         resume_snippet=optimized_md[:500] if optimized_md else "",
                         cover_letter_snippet=cover_letter[:300] if cover_letter else "",
                         pdf_paths=pdf_paths,
+                        pdf_bytes=pdf_bytes_dict,  # In-memory bytes for sendDocument
                     )
 
                 if cfg["auto_apply"] and source_url:
@@ -462,202 +549,7 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
         return {"status": "error", "message": str(e), "results": results}
 
 
-def _format_resume_html(resume: dict[str, Any]) -> str:
-    """
-    Format resume data as clean Telegram-compatible HTML following the ATS template.
 
-    Template structure:
-    <b>Name</b>
-    Location | Email | LinkedIn | GitHub | Portfolio
-
-    <b>SUMMARY</b>
-    Professional summary paragraph...
-
-    <b>TECHNICAL SKILLS</b>
-    Backend: ...
-    Frontend: ...
-    Cloud & DevOps: ...
-    Databases: ...
-    Core Concepts: ...
-
-    <b>EXPERIENCE</b>
-    <b>Role</b>
-    Company | Dates | Location
-    • achievement
-
-    <b>PROJECTS</b>
-    <b>Name</b>: description
-
-    <b>EDUCATION</b>
-    Degree
-    University | Year
-
-    <b>CERTIFICATIONS</b>
-    Name — Issuer (Date)
-    """
-
-    raw_md = resume.get("raw_md", "")
-    lines: list[str] = []
-
-    # ── Header ──────────────────────────────────────────────────────
-    name = resume.get("full_name", "Sai Prabhat")
-    lines.append(f"<b>{html_mod.escape(name)}</b>")
-
-    # Build contact line: Location | Email | LinkedIn | GitHub | Portfolio
-    location = "Lucknow, India"
-    loc_m = re.search(r"(?im)^\*\*Location:\*\*\s*(.+)", raw_md)
-    if loc_m:
-        location = loc_m.group(1).strip()
-
-    email = resume.get("email", "")
-    linkedin_url = resume.get("linkedin_url", "")
-    github_url = resume.get("github_url", "")
-    portfolio_url = resume.get("portfolio_url", "")
-
-    contact_parts = []
-    contact_parts.append(html_mod.escape(location))
-    if email:
-        contact_parts.append(html_mod.escape(email))
-    if linkedin_url:
-        display = linkedin_url.replace("https://", "").replace("http://", "").rstrip("/")
-        display = display.replace("www.", "")
-        contact_parts.append(f'<a href="{html_mod.escape(linkedin_url)}">{html_mod.escape(display)}</a>')
-    if github_url:
-        display = github_url.replace("https://", "").replace("http://", "").rstrip("/")
-        display = display.replace("www.", "")
-        contact_parts.append(f'<a href="{html_mod.escape(github_url)}">{html_mod.escape(display)}</a>')
-    if portfolio_url:
-        display = portfolio_url.replace("https://", "").replace("http://", "").rstrip("/")
-        display = display.replace("www.", "")
-        contact_parts.append(f'<a href="{html_mod.escape(portfolio_url)}">{html_mod.escape(display)}</a>')
-
-    lines.append(" | ".join(contact_parts))
-    lines.append("")
-
-    # ── Summary ─────────────────────────────────────────────────────
-    lines.append("<b>SUMMARY</b>")
-    summary = resume.get("summary", "") or resume.get("headline", "")
-    if summary:
-        lines.append(html_mod.escape(summary.strip()[:400]))
-    else:
-        lines.append("Full Stack Engineer with 3+ years experience architecting scalable backend systems.")
-    lines.append("")
-
-    # ── Technical Skills ────────────────────────────────────────────
-    lines.append("<b>TECHNICAL SKILLS</b>")
-    skill_groups: dict[str, list[str]] = {
-        "Backend": [], "Frontend": [], "Cloud & DevOps": [],
-        "Databases": [], "Core Concepts": [],
-    }
-    skills_match = re.search(
-        r"(?i)(?:^|\n)##\s*(?:skills|technical skills|technologies)\s*\n(.*?)(?=\n##\s|\Z)",
-        raw_md, re.DOTALL,
-    )
-    if skills_match:
-        for skill_line in skills_match.group(1).split("\n"):
-            cl = skill_line.strip().lstrip("-* ").strip()
-            if ":" in cl and not cl.startswith("http"):
-                gp, ip = cl.split(":", 1)
-                cg = gp.strip().strip("*").strip()
-                if cg in skill_groups:
-                    skill_groups[cg] = [
-                        x.strip().strip("*").strip()
-                        for x in ip.split(",") if x.strip()
-                    ]
-    for gn in ["Backend", "Frontend", "Cloud & DevOps", "Databases", "Core Concepts"]:
-        items = skill_groups.get(gn, [])
-        line = f"<b>{gn}:</b> {html_mod.escape(', '.join(items[:8]))}" if items else ""
-        if line:
-            lines.append(line)
-    lines.append("")
-
-    # ── Experience (up to 3 entries) ─────────────────────────────────
-    exp_list = resume.get("experience", [])
-    if exp_list:
-        lines.append("<b>EXPERIENCE</b>")
-        for exp in exp_list[:3]:
-            role = exp.get("role", "")
-            company_name = exp.get("company", "")
-            raw_date_line = exp.get("date_range", "")
-            bullets = exp.get("bullets", [])
-
-            # Parse date & location from date_range
-            location_str = "Remote"
-            clean_dates = raw_date_line
-            if raw_date_line:
-                pipe_parts = [p.strip() for p in raw_date_line.split("|")]
-                if len(pipe_parts) >= 2:
-                    location_str = pipe_parts[-1].replace("*", "").strip()
-                    for part in pipe_parts:
-                        dm = re.search(
-                            r"(\w+\s+\d{4})\s*[-\u2013\u2014to]+\s*(\w+\s+\d{4}|present|current|now)",
-                            part, re.IGNORECASE,
-                        )
-                        if dm:
-                            clean_dates = dm.group(0)
-                            break
-
-            # Build sub-header: Company | Dates | Location
-            sub_parts = []
-            if company_name:
-                sub_parts.append(html_mod.escape(company_name))
-            if clean_dates:
-                sub_parts.append(html_mod.escape(clean_dates.replace("|", "").strip()))
-            sub_parts.append(location_str)
-
-            lines.append(f"<b>{html_mod.escape(role)}</b>")
-            lines.append(" | ".join(sub_parts))
-            for b in bullets[:3]:
-                if b:
-                    lines.append(f"  • {html_mod.escape(b[:200])}")
-            lines.append("")
-
-    # ── Projects (up to 3 entries) ──────────────────────────────────
-    proj_list = resume.get("projects", [])
-    if proj_list:
-        lines.append("<b>PROJECTS</b>")
-        for proj in proj_list[:3]:
-            name = proj.get("name", "")
-            desc = proj.get("description", "")
-            if name:
-                desc_text = html_mod.escape(desc[:150]) if desc else ""
-                if desc_text:
-                    lines.append(f"  • <b>{html_mod.escape(name)}</b>: {desc_text}")
-                else:
-                    lines.append(f"  • <b>{html_mod.escape(name)}</b>")
-        lines.append("")
-
-    # ── Education ───────────────────────────────────────────────────
-    edu_list = resume.get("education", [])
-    if edu_list:
-        lines.append("<b>EDUCATION</b>")
-        for edu in edu_list[:2]:
-            title = edu.get("title", "")
-            if title:
-                lines.append(f"  • {html_mod.escape(title)}")
-        lines.append("")
-
-    # ── Certifications (from structured parser data) ───────────────
-    cert_list = resume.get("certifications", [])
-    if cert_list:
-        lines.append("<b>CERTIFICATIONS</b>")
-        for cert in cert_list[:3]:
-            name = cert.get("name", "")
-            issuer = cert.get("issuer", "")
-            date = cert.get("date", "")
-            credential = cert.get("credential", "")
-            parts = [html_mod.escape(name)]
-            if issuer:
-                parts.append(html_mod.escape(issuer))
-            if date:
-                parts.append(html_mod.escape(date))
-            cert_line = " — ".join(parts)
-            lines.append(f"  • {cert_line}")
-            if credential:
-                cred_display = html_mod.escape(credential[:80])
-                lines.append(f"    Credential: {cred_display}")
-
-    return "\n".join(lines)
 
 
 async def _send_telegram_notification(
@@ -671,16 +563,19 @@ async def _send_telegram_notification(
     resume_snippet: str = "",
     cover_letter_snippet: str = "",
     pdf_paths: dict[str, str] | None = None,
+    pdf_bytes: dict[str, bytes] | None = None,
 ) -> bool:
     """
-    Send a Telegram notification with job details and generated PDF documents.
+    Send a polished Telegram notification with a concise summary + PDF attachments.
 
-    1. Sends the match alert via notification_manager
-    2. Sends the resume PDF and cover letter PDF as Telegram document attachments
-    3. Sends a follow-up message with job link and preview text
+    1. Sends a clean, concise match summary: Score, Pros, Cons, Apply Link.
+    2. Sends the Resume PDF and Cover Letter PDF as Telegram document attachments.
+       Uses `send_document_from_bytes()` (in-memory) when pdf_bytes provided,
+       falls back to `send_document()` (file-based) otherwise.
+
+    NO raw text dumps, NO "Part 1/3" chunking, NO raw HTML tags leaking.
     """
     try:
-        from notifications.base import Category, NotificationEvent, Priority
         from notifications.telegram import TelegramChannel
 
         telegram = TelegramChannel()
@@ -688,194 +583,127 @@ async def _send_telegram_notification(
             print("[Pipeline] Telegram not configured; skipping detailed notification")
             return False
 
-        # 1. Send the match alert with job URL link
-        await notification_manager.send_job_match_alert(
-            job_title=job_title,
-            company=company,
-            match_score=match_pct,
-            job_id=app_id,
-            job_url=job_url,
-        )
+        # ── REDUNDANCY ELIMINATED ─────────────────────────────────────
+        # The notification_manager.send_job_match_alert() call has been REMOVED
+        # because it sends a SEPARATE sendMessage text via the Telegram channel
+        # (through manager.send() -> telegram.send() -> _format_message() ->
+        # Bot API sendMessage). This created a duplicate "old text message"
+        # alongside the new PDFs + concise summary below.
+        #
+        # DB history is already recorded via jobs_dao.update_application_status()
+        # and analytics_dao.log_activity() in the main pipeline loop.
 
-        priority = "high" if match_pct >= 80 else "normal"
         safe_title = html_mod.escape(job_title)
         safe_company = html_mod.escape(company)
 
-        # 2. Send actual PDF documents as Telegram file attachments
-        pdfs_sent = 0
-
-        # Send resume PDF
-        resume_pdf = (pdf_paths or {}).get("resume", "")
-        if resume_pdf and os.path.isfile(resume_pdf):
-            resume_caption = (
-                f"📄 <b>Optimized Resume</b>: {safe_title} @ {safe_company} "
-                f"(Match: {match_pct:.0f}%)"
-            )
-            doc_result = await telegram.send_document(
-                document_path=resume_pdf,
-                caption=resume_caption,
-            )
-            if doc_result.success:
-                pdfs_sent += 1
-                print(f"[Pipeline] Resume PDF sent for {job_title}")
-
-        # Send cover letter PDF
-        cl_pdf = (pdf_paths or {}).get("cover_letter", "")
-        if cl_pdf and os.path.isfile(cl_pdf) and cl_pdf.endswith(".pdf"):
-            cl_caption = (
-                f"✉️ <b>Cover Letter</b>: {safe_title} @ {safe_company}"
-            )
-            doc_result = await telegram.send_document(
-                document_path=cl_pdf,
-                caption=cl_caption,
-            )
-            if doc_result.success:
-                pdfs_sent += 1
-                print(f"[Pipeline] Cover letter PDF sent for {job_title}")
-
-        # 3. Build the full notification body
-        detailed_body = (
-            f"🎯 <b>{safe_title}</b> at <b>{safe_company}</b>\n"
-            f"📊 <b>Match Score:</b> {match_pct:.0f}%"
-        )
-
-        # ── Prominent Job Link ────────────────────────────────────────
-        if job_url:
-            detailed_body += (
-                f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\">"
-                f"<b>⬅️ OPEN APPLICATION LINK ➡️</b></a>"
-            )
-
-        # ── Match Reasoning (Pros/Cons) ──────────────────────────────
+        # ── Parse evaluation data ─────────────────────────────────────
+        pros: list = []
+        cons: list = []
         if evaluation:
             try:
                 pros_raw = evaluation.get("pros", "[]")
                 cons_raw = evaluation.get("cons", "[]")
                 pros = json.loads(pros_raw) if isinstance(pros_raw, str) else (pros_raw or [])
                 cons = json.loads(cons_raw) if isinstance(cons_raw, str) else (cons_raw or [])
-                reasoning = evaluation.get("reasoning", "")
             except (json.JSONDecodeError, TypeError):
-                pros, cons, reasoning = [], [], ""
+                pros, cons = [], []
 
-            if reasoning:
-                detailed_body += f"\n\n💡 <b>Why this match?</b>\n{html_mod.escape(reasoning[:200])}"
-            if pros:
-                detailed_body += "\n\n✅ <b>Strengths:</b>"
-                for p in pros[:3]:
-                    detailed_body += f"\n• {html_mod.escape(str(p)[:100])}"
-            if cons:
-                detailed_body += "\n\n⚠️ <b>Considerations:</b>"
-                for c in cons[:3]:
-                    detailed_body += f"\n• {html_mod.escape(str(c)[:100])}"
+        # 2. Send PDF documents as Telegram file attachments (in-memory when possible)
+        pdfs_sent = 0
+        by = pdf_bytes or {}
+        paths = pdf_paths or {}
 
-        # ── Formatted Resume ─────────────────────────────────────────
-        if resume:
-            formatted_resume = _format_resume_html(resume)
-            detailed_body += f"\n\n━━━ 📄 RESUME ━━━\n\n{formatted_resume}"
+        # ── Resume PDF ────────────────────────────────────────────────
+        resume_label = f"Resume_{safe_company}_{safe_title}"[:55].rstrip("_") + ".pdf"
+        resume_caption = (
+            f"📄 <b>Tailored Resume</b>: {safe_title} @ {safe_company} — "
+            f"Match: {match_pct:.0f}%"
+        )
 
-        # ── Cover Letter Snippet ──────────────────────────────────────
-        if cover_letter_snippet:
-            brief_cl = html_mod.escape(cover_letter_snippet[:200].strip())
-            detailed_body += f"\n━━━ ✉️ COVER LETTER ━━━\n\n<pre>{brief_cl}</pre>\n"
+        if by.get("resume"):
+            # In-memory: send from bytes (no disk read needed)
+            doc_result = await telegram.send_document_from_bytes(
+                file_bytes=by["resume"],
+                filename=resume_label,
+                caption=resume_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
+        elif paths.get("resume") and os.path.isfile(paths["resume"]):
+            # File-based fallback
+            doc_result = await telegram.send_document(
+                document_path=paths["resume"],
+                caption=resume_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
 
-        detailed_body += f"\n✅ Application #{app_id} — PDFs delivered above"
+        # ── Cover Letter PDF ──────────────────────────────────────────
+        cl_label = f"CoverLetter_{safe_company}_{safe_title}"[:55].rstrip("_") + ".pdf"
+        cl_caption = (
+            f"✉️ <b>Cover Letter</b>: {safe_title} @ {safe_company}"
+        )
 
-        # ── Telegram has 4096 char limit; split into multiple messages if needed ──
-        messages_to_send: list[str] = []
+        if by.get("cover_letter"):
+            # In-memory: send from bytes
+            doc_result = await telegram.send_document_from_bytes(
+                file_bytes=by["cover_letter"],
+                filename=cl_label,
+                caption=cl_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
+        elif paths.get("cover_letter") and os.path.isfile(paths["cover_letter"]) and paths["cover_letter"].endswith(".pdf"):
+            # File-based fallback
+            doc_result = await telegram.send_document(
+                document_path=paths["cover_letter"],
+                caption=cl_caption,
+            )
+            if doc_result.success:
+                pdfs_sent += 1
 
-        # Message 1: Header + link + match reasoning (always fits)
-        msg1 = f"🎯 <b>{safe_title}</b> at <b>{safe_company}</b>\n📊 <b>Match Score:</b> {match_pct:.0f}%"
+        # 3. Send CONCISE summary — NO resume dump, NO cover letter text
+        #    Just Score, Pros, Cons, and Apply Link.
+        summary = (
+            f"🎯 <b>Job Match Found</b>\n"
+            f"<b>{safe_title}</b> at <b>{safe_company}</b>\n"
+            f"📊 <b>Match Score:</b> {match_pct:.0f}%"
+        )
+
         if job_url:
-            msg1 += f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\"><b>⬅️ OPEN APPLICATION LINK ➡️</b></a>"
-        if evaluation:
-            try:
-                pros_raw = evaluation.get("pros", "[]")
-                cons_raw = evaluation.get("cons", "[]")
-                eval_pros = json.loads(pros_raw) if isinstance(pros_raw, str) else (pros_raw or [])
-                eval_cons = json.loads(cons_raw) if isinstance(cons_raw, str) else (cons_raw or [])
-                eval_reasoning = evaluation.get("reasoning", "")
-            except (json.JSONDecodeError, TypeError):
-                eval_pros, eval_cons, eval_reasoning = [], [], ""
-            if eval_reasoning:
-                msg1 += f"\n\n💡 <b>Why this match?</b>\n{html_mod.escape(eval_reasoning[:200])}"
-            if eval_pros:
-                msg1 += "\n\n✅ <b>Strengths:</b>"
-                for p in eval_pros[:3]:
-                    msg1 += f"\n• {html_mod.escape(str(p)[:100])}"
-            if eval_cons:
-                msg1 += "\n\n⚠️ <b>Considerations:</b>"
-                for c in eval_cons[:3]:
-                    msg1 += f"\n• {html_mod.escape(str(c)[:100])}"
-        messages_to_send.append(msg1)
+            summary += (
+                f"\n\n🔗 <a href=\"{html_mod.escape(job_url)}\">"
+                f"<b>⬅️ OPEN APPLICATION ➡️</b></a>"
+            )
 
-        # Message 2: Formatted resume
-        if resume:
-            msg2 = f"━━━ 📄 RESUME ━━━\n\n{_format_resume_html(resume)}"
-            messages_to_send.append(msg2)
+        if pros:
+            summary += "\n\n✅ <b>Strengths</b>"
+            for p in pros[:3]:
+                summary += f"\n  • {html_mod.escape(str(p)[:120])}"
 
-        # Message 3: Cover letter snippet (optional)
-        if cover_letter_snippet:
-            brief_cl = html_mod.escape(cover_letter_snippet[:200].strip())
-            msg3 = f"━━━ ✉️ COVER LETTER ━━━\n\n<pre>{brief_cl}</pre>"
-            messages_to_send.append(msg3)
+        if cons:
+            summary += "\n\n⚠️ <b>Considerations</b>"
+            for c in cons[:3]:
+                summary += f"\n  • {html_mod.escape(str(c)[:120])}"
 
-        # Add footer to the last message
-        messages_to_send[-1] += f"\n\n✅ Application #{app_id}"
+        if pdfs_sent:
+            summary += f"\n\n📎 <i>Resume + Cover Letter PDFs attached above</i>"
 
-        # Send each message — use send_html_message() for the resume (msg1)
-        # to bypass _format_message() double-escaping, and standard send()
-        # for plain-text messages (msg2, msg3).
-        all_sent = True
-        for idx, msg in enumerate(messages_to_send):
-            if len(msg) > 4096:
-                if idx == 1 and resume:
-                    # Build compressed resume (header + summary + skills only)
-                    compressed = (
-                        f"<b>{html_mod.escape(resume.get('full_name','Sai Prabhat'))}</b>\n"
-                        f"{html_mod.escape(resume.get('email',''))} | "
-                        f"{html_mod.escape(resume.get('linkedin_url',''))}"
-                    )
-                    summary = (resume.get("summary", "") or "").strip()[:200]
-                    if summary:
-                        compressed += f"\n\n{html_mod.escape(summary)}"
-                    compressed += "\n\n<i>Full resume attached as PDF. See document above.</i>"
-                    msg = f"━━━ 📄 RESUME (condensed) ━━━\n\n{compressed}"
-                    if len(msg) > 4096:
-                        msg = msg[:4090] + "..."
+        summary += f"\n\n✅ Application #{app_id}"
 
-            # Use send_html_message() for resume which already has HTML tags,
-            # use standard send() for plain-text messages (match alert, cover letter)
-            if idx == 1:
-                # Resume message — already HTML formatted, bypass double-escaping
-                result = await telegram.send_html_message(
-                    text=msg,
-                    title=f"📄 Resume: {job_title}",
-                    disable_notification=(priority != "high"),
-                )
-            else:
-                # Match alert or cover letter — plain text, use standard send()
-                event = NotificationEvent(
-                    title=f"🎯 Job Match: {job_title}" if idx == 0 else f"✉️ Cover Letter: {job_title}",
-                    body=msg,
-                    priority=Priority(priority),
-                    category=Category.JOB_MATCH,
-                    metadata={
-                        "application_id": app_id,
-                        "company": company,
-                        "title": job_title,
-                        "match_score": f"{match_pct:.0f}%",
-                        "job_url": job_url,
-                        "pdfs_sent": pdfs_sent,
-                        "part": f"{idx + 1}/{len(messages_to_send)}",
-                    },
-                )
-                result = await telegram.send(event)
+        # Send the concise summary as a clean HTML message
+        result = await telegram.send_html_message(
+            text=summary,
+            title=f"🎯 Job Match: {safe_title}",
+            disable_notification=(match_pct < 80),
+        )
 
-            if not result.success:
-                all_sent = False
-                print(f"[Pipeline] Failed to send message part {idx + 1}: {result.error}")
+        if not result.success:
+            print(f"[Pipeline] Failed to send summary: {result.error}")
+            return False
 
-        return all_sent or pdfs_sent > 0
+        print(f"[Pipeline] Telegram notification sent for {job_title} @ {company} (match: {match_pct:.0f}%, pdfs: {pdfs_sent})")
+        return True
 
     except Exception as e:
         print(f"[Pipeline] Telegram notification error: {e}")

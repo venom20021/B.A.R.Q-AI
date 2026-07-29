@@ -29,7 +29,6 @@ response_tracker = ResponseTracker()
 followup_automation = FollowUpAutomation()
 
 
-@router.get("")
 @router.get("/")
 async def jobs_root():
     """Jobs module root — returns module status."""
@@ -93,7 +92,7 @@ async def _run_scan():
                     "mode": "notify",
                     "max_per_run": 10,
                     "min_match_score": 60,
-                    "generate_pdf": False,  # Skip PDF gen in auto-mode (speed)
+                    "generate_pdf": True,   # Generate PDFs for auto-triggered pipeline runs
                     "send_telegram": True,
                 })
                 succeeded = pipeline_result.get("succeeded", 0)

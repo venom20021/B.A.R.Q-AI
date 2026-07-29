@@ -19,16 +19,17 @@ class JobEvaluator:
 
     async def evaluate(self, job: dict[str, Any], user_profile: dict[str, Any]) -> dict[str, Any]:
         """
-        Score a job listing on multiple dimensions.
+        Score a job listing — concise evaluation.
 
         Args:
             job: Job listing dict with title, company, location, salary, description
             user_profile: User's preferences (skills, experience, salary expectations, etc.)
 
         Returns:
-            Evaluation with scores (0-5) and reasoning
+            Evaluation: match_score (0-5), pros (2-3 items), cons (2-3 items).
+            No verbose reasoning, no conversational text.
         """
-        prompt = self._build_evaluation_prompt(job, user_profile)
+        prompt = self._build_concise_evaluation_prompt(job, user_profile)
 
         try:
             messages = [
@@ -36,7 +37,11 @@ class JobEvaluator:
                     "role": "system",
                     "content": (
                         "You are a career advisor AI. Evaluate the job listing against the "
-                        "user's profile. Return ONLY a JSON object with scores and reasoning."
+                        "user's profile.\n"
+                        "CRITICAL RULES:\n"
+                        "1. Return ONLY a raw JSON object — no markdown, no code fences, no extra text.\n"
+                        "2. Be brutally honest and concise.\n"
+                        "3. No yapping, no conversational filler, no introductions or conclusions."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -44,13 +49,10 @@ class JobEvaluator:
 
             response_text = await self._llm.chat(messages)
 
-            # Extract JSON from response (LLM may wrap in markdown code blocks)
-            response_text = response_text.strip()
-            if response_text.startswith("```"):
-                # Remove markdown code fences
-                lines = response_text.split("\n")
-                lines = [l for l in lines if not l.startswith("```")]
-                response_text = "\n".join(lines)
+            # Strip any surrounding whitespace/code fences
+            response_text = response_text.strip().strip("`").strip()
+            if response_text.lower().startswith("json"):
+                response_text = response_text[4:].strip().strip("`").strip()
 
             result = json.loads(response_text)
             return self._normalize_evaluation(result, job)
@@ -59,33 +61,58 @@ class JobEvaluator:
             print(f"[Evaluator] LLM evaluation failed: {e}")
             return self._fallback_evaluation(job, user_profile)
 
-    def _build_evaluation_prompt(self, job: dict[str, Any], profile: dict[str, Any]) -> str:
-        return f"""
-Job Listing:
+    def _build_concise_evaluation_prompt(self, job: dict[str, Any], profile: dict[str, Any]) -> str:
+        """Build a concise evaluation prompt requesting strict JSON output only."""
+        return f"""Job Listing:
 - Title: {job.get('title', 'Unknown')}
 - Company: {job.get('company', 'Unknown')}
 - Location: {job.get('location', 'Unknown')}
 - Salary: {job.get('salary', 'Not specified')}
-- Description: {job.get('description', '')[:1000]}
+- Description: {job.get('description', '')[:1500]}
 
 User Profile:
-- Skills: {', '.join(profile.get('skills', []))}
+- Skills: {', '.join(profile.get('skills', [])[:15])}
 - Experience Level: {profile.get('experience_level', 'Mid')}
 - Target Salary: {profile.get('target_salary', 'Not specified')}
 - Preferred Locations: {', '.join(profile.get('preferred_locations', []))}
 - Remote Preference: {profile.get('remote_preference', 'Any')}
-- Industry: {profile.get('industry', 'Technology')}
 
-Evaluate this job on:
-1. Role Fit (0-5): How well does the role match the user's skills and experience?
-2. Culture Score (0-5): Likelihood of good culture fit based on company and role type
-3. Compensation Score (0-5): How well does the compensation match expectations?
-4. Growth Potential (0-5): Career growth and learning opportunities
-5. Red Flags (0-5): Lower is better. Flag any concerns (unpaid, unrealistic requirements, etc.)
+Return ONLY this exact JSON — no extra text:
+{{
+  "match_score": <0.0-5.0>,
+  "pros": ["<strength 1>", "<strength 2>", "<strength 3>"],
+  "cons": ["<weakness 1>", "<weakness 2>", "<weakness 3>"]
+}}
 
-Return format:
-{{"role_fit": <score>, "culture_score": <score>, "compensation_score": <score>, "growth_potential": <score>, "red_flags": <score>, "overall": <average_score>, "reasoning": "<brief explanation>", "pros": ["<pro1>", "<pro2>"], "cons": ["<con1>", "<con2>"]}}
+- match_score: Overall fit to the user's profile (0 = no fit, 5 = perfect).
+- pros: 2-3 specific reasons why this job fits (skills match, growth, comp, culture).
+- cons: 2-3 specific reasons of concern (missing skills, red flags, location, etc.).
 """
+
+    def _normalize_evaluation(
+        self, result: dict[str, Any], job: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Normalize LLM output to a consistent format."""
+        match_score = min(max(float(result.get("match_score", result.get("overall", 3.0))), 0), 5)
+        pros = result.get("pros", [])
+        cons = result.get("cons", [])
+        return {
+            "job_id": job.get("id", ""),
+            "title": job.get("title", ""),
+            "company": job.get("company", ""),
+            "overall_score": match_score,
+            "scores": {
+                "role_fit": match_score,
+                "culture": match_score,
+                "compensation": match_score,
+                "growth": match_score,
+                "red_flags": 0.0,
+            },
+            "reasoning": "",
+            "pros": pros,
+            "cons": cons,
+            "match_percentage": round(match_score * 20, 1),
+        }
 
     def _normalize_evaluation(
         self, result: dict[str, Any], job: dict[str, Any]

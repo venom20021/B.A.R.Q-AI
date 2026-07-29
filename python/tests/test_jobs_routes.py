@@ -61,10 +61,10 @@ async def test_get_matches_empty(client):
 async def test_get_matches_with_data(client):
     """GET /matches should return evaluated matches."""
     # Insert a job listing and evaluation via DAO
-    job_id = await jobs_dao.insert_job_listing({
+    job_id = int(await jobs_dao.insert_job_listing({
         "title": "Senior Dev", "company": "Tech Co",
         "source_board": "linkedin",
-    })
+    }))
     await jobs_dao.insert_evaluation({
         "job_listing_id": job_id,
         "overall_score": 4.5,
@@ -78,27 +78,32 @@ async def test_get_matches_with_data(client):
     assert response.status_code == 200
     matches = response.json()["matches"]
     assert len(matches) >= 1
-    assert matches[0]["title"] == "Senior Dev"
-    assert matches[0]["company"] == "Tech Co"
-    assert matches[0]["match_score"] == 4.5
+    # Find our specific job — order-independent (other tests may leave data)
+    our_match = next((m for m in matches if m["id"] == job_id), None)
+    assert our_match is not None, f"Job #{job_id} (Senior Dev) not found in matches"
+    assert our_match["title"] == "Senior Dev"
+    assert our_match["company"] == "Tech Co"
+    assert our_match["match_score"] == 4.5
 
 
 @pytest.mark.asyncio
 async def test_get_matches_filter_by_score(client):
     """GET /matches should filter by min_score."""
-    job_id = await jobs_dao.insert_job_listing({
+    job_id = int(await jobs_dao.insert_job_listing({
         "title": "Jr Dev", "company": "Small Co", "source_board": "indeed",
-    })
+    }))
     await jobs_dao.insert_evaluation({
         "job_listing_id": job_id,
         "overall_score": 2.0,
         "match_percentage": 40,
     })
 
-    # High min_score should exclude the 2.0 match
-    response = await client.get("/matches?min_score=4.0")
+    # min_score above our 2.0-scored job should exclude it
+    response = await client.get("/matches?min_score=3.0")
     assert response.status_code == 200
-    assert len(response.json()["matches"]) == 0
+    matches = response.json()["matches"]
+    titles = [m["title"] for m in matches]
+    assert "Jr Dev" not in titles, f"Jr Dev (score 2.0) should be filtered out by min_score=3.0, got: {titles}"
 
 
 # ─── Approve ──────────────────────────────────────────────────────────────────
@@ -106,15 +111,15 @@ async def test_get_matches_filter_by_score(client):
 @pytest.mark.asyncio
 async def test_approve_application(client):
     """POST /approve should queue an application for a job."""
-    job_id = await jobs_dao.insert_job_listing({
+    job_id = int(await jobs_dao.insert_job_listing({
         "title": "Target Role", "company": "Target Co", "source_board": "linkedin",
-    })
+    }))
 
     response = await client.post("/approve", json={"job_id": str(job_id)})
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "approved"
-    assert data["application_id"] > 0
+    assert int(data["application_id"]) > 0
 
 
 @pytest.mark.asyncio
@@ -137,9 +142,9 @@ async def test_approve_nonexistent_job(client):
 @pytest.mark.asyncio
 async def test_get_applications_by_status(client):
     """GET /applications should filter by status."""
-    job_id = await jobs_dao.insert_job_listing({
+    job_id = int(await jobs_dao.insert_job_listing({
         "title": "App Role", "company": "App Co", "source_board": "linkedin",
-    })
+    }))
     await jobs_dao.insert_application({
         "job_listing_id": job_id, "status": "queued",
     })
@@ -185,7 +190,7 @@ async def test_listing_and_evaluation_inserted_together(client):
     insert its evaluation. Verify GET /matches returns it.
     """
     # 1. Insert listing (as _run_scan does)
-    listing_id = await jobs_dao.insert_job_listing({
+    listing_id = int(await jobs_dao.insert_job_listing({
         "title": "Full Stack Engineer",
         "company": "StartupXYZ",
         "location": "Remote",
@@ -194,11 +199,11 @@ async def test_listing_and_evaluation_inserted_together(client):
         "source_board": "linkedin",
         "source_url": "https://linkedin.com/jobs/456",
         "url": "https://linkedin.com/jobs/456",
-    })
+    }))
     assert listing_id > 0
 
     # 2. Insert evaluation (as _run_scan now does)
-    eval_id = await jobs_dao.insert_evaluation({
+    eval_id = int(await jobs_dao.insert_evaluation({
         "job_listing_id": listing_id,
         "overall_score": 4.0,
         "match_percentage": 80.0,
@@ -206,7 +211,7 @@ async def test_listing_and_evaluation_inserted_together(client):
         "pros": json.dumps(["Python", "React", "Remote"]),
         "cons": json.dumps(["Junior team"]),
         "evaluated_by": "scanner",
-    })
+    }))
     assert eval_id > 0
 
     # 3. Verify GET /matches returns the evaluated job
@@ -240,11 +245,11 @@ async def test_listing_without_evaluation_not_in_matches(client):
     })
 
     # Insert a different job WITH evaluation
-    good_id = await jobs_dao.insert_job_listing({
+    good_id = int(await jobs_dao.insert_job_listing({
         "title": "Proper Job",
         "company": "Good Co",
         "source_board": "linkedin",
-    })
+    }))
     await jobs_dao.insert_evaluation({
         "job_listing_id": good_id,
         "overall_score": 4.5,
@@ -266,12 +271,12 @@ async def test_url_fallback_to_source_url(client):
     when the scanner provides the URL under the 'url' key.
     """
     # Insert with 'url' key (as the scanner does) instead of 'source_url'
-    listing_id = await jobs_dao.insert_job_listing({
+    listing_id = int(await jobs_dao.insert_job_listing({
         "title": "URL Test",
         "company": "TestCorp",
         "source_board": "remotive",
         "url": "https://remotive.com/jobs/789",  # scanner writes 'url', not 'source_url'
-    })
+    }))
 
     # Retrieve and verify source_url got the fallback value
     job = await jobs_dao.get_job_listing(listing_id)
@@ -387,7 +392,7 @@ async def test_listing_with_evaluation_data_mixed_in(client):
     }
 
     # Insert as _run_scan does
-    listing_id = await jobs_dao.insert_job_listing(scanned_job)
+    listing_id = int(await jobs_dao.insert_job_listing(scanned_job))
     assert listing_id > 0
 
     # Insert evaluation if overall_score is present (the fix!)

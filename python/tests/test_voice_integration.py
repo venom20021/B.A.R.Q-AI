@@ -214,7 +214,7 @@ class MockDeepgramServer:
                     "type": "Error",
                     "description": self.error_description or "Mock error",
                 }))
-                print(f"[MockServer] Sent: Error (mock)")
+                print("[MockServer] Sent: Error (mock)")
                 return
 
             await websocket.send(json.dumps({"type": "SettingsApplied"}))
@@ -308,8 +308,6 @@ async def create_connected_agent(server: MockDeepgramServer) -> DeepgramVoiceAge
     agent = DeepgramVoiceAgent(api_key=MOCK_API_KEY)
 
     # Monkey-patch the connect method to use our mock URL
-    original_connect = agent.connect
-
     async def patched_connect() -> bool:
         try:
             import websockets as ws_module
@@ -390,12 +388,8 @@ def mock_sounddevice(monkeypatch):
     3. Each test creates a DeepgramVoiceAgent that tries to open audio streams
     """
     import sounddevice as sd
-    # Wrap the real InputStream with our mock that records args
-    original_input_stream = sd.InputStream
     def mock_input_stream(*args, **kwargs):
         return MockAudioStream(*args, **kwargs)
-
-    original_output_stream = sd.OutputStream
     def mock_output_stream(*args, **kwargs):
         return MockAudioStream(*args, **kwargs)
 
@@ -445,7 +439,7 @@ class TestVoicePipelineLifecycle:
 
         # Verify function schemas were injected
         functions = mock_server.received_settings.get("agent", {}).get("think", {}).get("functions", [])
-        assert len(functions) == 12, f"Expected 12 function schemas, got {len(functions)}"
+        assert len(functions) == 16, f"Expected 16 function schemas, got {len(functions)}"
         function_names = [f["name"] for f in functions]
         assert "minimize_window" in function_names
         assert "open_file" in function_names
@@ -454,6 +448,10 @@ class TestVoicePipelineLifecycle:
         assert "clipboard" in function_names
         assert "focus_window" in function_names
         assert "set_app_volume" in function_names
+        assert "mute_volume" in function_names
+        assert "media_control" in function_names
+        assert "empty_trash" in function_names
+        assert "lock_screen" in function_names
 
         # Start conversation
         await agent.start_conversation()
@@ -640,7 +638,6 @@ class TestVoicePipelineLifecycle:
 
         # Fill ring buffer
         agent._output_ring_buffer.extend(np.ones(5000, dtype=np.float32))
-        initial_len = len(agent._output_ring_buffer)
 
         # Send rapid UserStartedSpeaking messages (within 200ms debounce window)
         await mock_server.inject_message({"type": "UserStartedSpeaking"})
@@ -927,8 +924,6 @@ class TestVoicePipelineLifecycle:
         # Monkey-patch to inject empty functions
         async def patched_connect_no_funcs() -> bool:
             import websockets as ws_module
-            from voice.function_executor import get_function_schemas
-
             agent._ws = await ws_module.connect(
                 MOCK_WS_URL,
                 subprotocols=["token", agent.api_key],
@@ -1148,6 +1143,106 @@ class TestVoicePipelineLifecycle:
         assert len(mock_server.function_call_responses) >= 1
         response = mock_server.function_call_responses[0]
         # Volume may fail if no audio hardware, but should not crash
+        assert "output" in response
+
+        await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_mute_volume(self, mock_server: MockDeepgramServer):
+        """Test mute_volume function."""
+        agent = await create_connected_agent(mock_server)
+
+        connected = await agent.connect()
+        assert connected
+        await agent.start_conversation()
+        await asyncio.sleep(0.3)
+
+        await mock_server.inject_function_call(
+            function_name="mute_volume",
+            function_call_id="call_mute_001",
+            arguments={"mute": True},
+        )
+
+        await asyncio.sleep(0.5)
+
+        assert len(mock_server.function_call_responses) >= 1
+        response = mock_server.function_call_responses[0]
+        assert response["type"] == "FunctionCallResponse"
+        assert "output" in response
+
+        await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_media_control(self, mock_server: MockDeepgramServer):
+        """Test media_control function with all three actions."""
+        agent = await create_connected_agent(mock_server)
+
+        connected = await agent.connect()
+        assert connected
+        await agent.start_conversation()
+        await asyncio.sleep(0.3)
+
+        await mock_server.inject_function_call(
+            function_name="media_control",
+            function_call_id="call_media_001",
+            arguments={"action": "next"},
+        )
+
+        await asyncio.sleep(0.5)
+
+        assert len(mock_server.function_call_responses) >= 1
+        response = mock_server.function_call_responses[0]
+        assert response["type"] == "FunctionCallResponse"
+        assert "output" in response
+
+        await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_empty_trash(self, mock_server: MockDeepgramServer):
+        """Test empty_trash function."""
+        agent = await create_connected_agent(mock_server)
+
+        connected = await agent.connect()
+        assert connected
+        await agent.start_conversation()
+        await asyncio.sleep(0.3)
+
+        await mock_server.inject_function_call(
+            function_name="empty_trash",
+            function_call_id="call_trash_001",
+            arguments={},
+        )
+
+        await asyncio.sleep(0.5)
+
+        assert len(mock_server.function_call_responses) >= 1
+        response = mock_server.function_call_responses[0]
+        assert response["type"] == "FunctionCallResponse"
+        assert "output" in response
+
+        await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_lock_screen(self, mock_server: MockDeepgramServer):
+        """Test lock_screen function."""
+        agent = await create_connected_agent(mock_server)
+
+        connected = await agent.connect()
+        assert connected
+        await agent.start_conversation()
+        await asyncio.sleep(0.3)
+
+        await mock_server.inject_function_call(
+            function_name="lock_screen",
+            function_call_id="call_lock_001",
+            arguments={},
+        )
+
+        await asyncio.sleep(0.5)
+
+        assert len(mock_server.function_call_responses) >= 1
+        response = mock_server.function_call_responses[0]
+        assert response["type"] == "FunctionCallResponse"
         assert "output" in response
 
         await agent.stop()
