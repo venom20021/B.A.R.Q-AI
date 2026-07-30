@@ -28,7 +28,7 @@ aiosqlite>=0.20.0
 aiohttp>=3.9.0
 
 # Video Rendering
-moviepy>=1.0.3
+moviepy>=2.2.1
 pillow>=11.0.0
 numpy>=1.26.0
 
