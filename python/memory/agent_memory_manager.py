@@ -362,8 +362,78 @@ def _all_entries(memory: dict) -> list[tuple]:
     return entries
 
 
+# ── Session Memory (morning recall support) ────────────────────────────────
+
+_SESSION_MAX = 3   # safety cap — in practice 0-1 entries after pop
+
+
+def save_session_summary(summary: str, language: str = "") -> None:
+    """Append a 1-2 sentence session summary to long_term.json['sessions'].
+
+    This is the "morning recall" feature: each conversation is summarized and
+    the summary is injected into the next wake greeting so BARQ remembers what
+    you talked about last time.
+
+    Args:
+        summary: Short 1-2 sentence summary (max 280 chars).
+        language: Optional language code (e.g. "en", "hi") used during session.
+    """
+    summary = (summary or "").strip()
+    if not summary:
+        return
+    memory = load_memory()
+    sessions = memory.get("sessions", [])
+    if not isinstance(sessions, list):
+        sessions = []
+    entry: dict = {
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "summary": summary[:280],
+    }
+    if language:
+        entry["language"] = language
+    sessions.append(entry)
+    memory["sessions"] = sessions[-_SESSION_MAX:]
+    with _lock:
+        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MEMORY_PATH.write_text(
+            json.dumps(memory, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    print(f"[SessionMemory] 📝 Session saved: {summary[:80]}…")
+
+
+def pop_last_session() -> dict | None:
+    """Return AND remove the most recent session entry.
+
+    Calling this consumes the entry so it is never repeated in future briefings.
+    This is the "pop-on-read" pattern used by Mark-L for morning recall.
+
+    Returns:
+        Dict with keys 'date' and 'summary', or None if no sessions exist.
+    """
+    with _lock:
+        if not MEMORY_PATH.exists():
+            return None
+        try:
+            memory = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            sessions = memory.get("sessions", [])
+            if not isinstance(sessions, list) or not sessions:
+                return None
+            entry = sessions.pop()          # remove the last entry (most recent)
+            memory["sessions"] = sessions
+            MEMORY_PATH.write_text(
+                json.dumps(memory, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return entry
+        except Exception as e:
+            print(f"[SessionMemory] ⚠️ pop_last_session error: {e}")
+            return None
+
+
 def _trim_to_limit(memory: dict) -> dict:
     """Remove oldest entries if memory exceeds the character limit."""
+
     serialized = json.dumps(memory, ensure_ascii=False)
     if len(serialized) <= MEMORY_MAX_CHARS:
         return memory

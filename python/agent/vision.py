@@ -17,6 +17,7 @@ import base64
 import io
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -42,11 +43,72 @@ except ImportError:
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-IMG_MAX_WIDTH = 640
-IMG_MAX_HEIGHT = 360
-JPEG_QUALITY = 55
+# Higher resolution (1280x720) matches Mark-L's quality for detailed analysis
+IMG_MAX_WIDTH = 1280
+IMG_MAX_HEIGHT = 720
+JPEG_QUALITY = 82  # Higher quality for better Gemini vision analysis
 
 DEFAULT_VISION_PROMPT = "What do you see in this image? Describe it concisely."
+
+# Cache for auto-detected camera index
+_camera_index_cache: int = -1
+
+
+# ─── Camera Auto-Detection (like Mark-L's _probe_camera) ────────────────────
+
+def _cv2_backend() -> int:
+    """Return the best OpenCV camera backend for the current OS."""
+    if not _CV2_OK:
+        return 0
+    import platform
+    os_name = platform.system().lower()
+    if os_name == "windows":
+        return cv2.CAP_DSHOW
+    if os_name == "darwin":
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_ANY
+
+
+def _probe_camera(index: int, backend: int, warmup: int = 5) -> bool:
+    """Test if a camera index produces a valid frame."""
+    if not _CV2_OK:
+        return False
+    cap = cv2.VideoCapture(index, backend)
+    if not cap.isOpened():
+        cap.release()
+        return False
+    for _ in range(warmup):
+        cap.read()
+    ret, frame = cap.read()
+    cap.release()
+    if not ret or frame is None:
+        return False
+    import numpy as np
+    return bool(np.mean(frame) > 8)
+
+
+def auto_detect_camera() -> int:
+    """Auto-detect the first working camera index.
+
+    Probes indices 0-5 and returns the first that produces a valid frame.
+    Caches the result so subsequent calls are instant.
+    Matches Mark-L's approach.
+    """
+    global _camera_index_cache
+    if _camera_index_cache >= 0:
+        return _camera_index_cache
+
+    backend = _cv2_backend()
+    print("[Vision] 🔍 Auto-detecting camera...")
+    for idx in range(6):
+        if _probe_camera(idx, backend):
+            print(f"[Vision] ✅ Camera found at index {idx}")
+            _camera_index_cache = idx
+            return idx
+
+    print("[Vision] ⚠️  No camera found — defaulting to index 0")
+    _camera_index_cache = 0
+    return 0
 
 
 # ─── Image Capture ──────────────────────────────────────────────────────────
@@ -77,11 +139,14 @@ def capture_screen() -> Tuple[bytes, str]:
     return png_bytes, "image/png"
 
 
-def capture_camera(camera_index: int = 0) -> Tuple[bytes, str]:
+def capture_camera(camera_index: int = -1) -> Tuple[bytes, str]:
     """Capture a frame from the webcam.
 
+    Uses auto-detection when camera_index is -1 (default) — probes indices 0-5
+    and picks the first working camera, just like Mark-L.
+
     Args:
-        camera_index: Camera device index (default: 0).
+        camera_index: Camera device index. Use -1 for auto-detect (default).
 
     Returns:
         Tuple of (image_bytes, mime_type).
@@ -94,12 +159,16 @@ def capture_camera(camera_index: int = 0) -> Tuple[bytes, str]:
             "OpenCV not installed. Run: pip install opencv-python"
         )
 
-    cap = cv2.VideoCapture(camera_index)
+    if camera_index < 0:
+        camera_index = auto_detect_camera()
+
+    backend = _cv2_backend()
+    cap = cv2.VideoCapture(camera_index, backend)
     if not cap.isOpened():
         raise RuntimeError(f"Camera could not be opened: index {camera_index}")
 
-    # Warm up the camera by reading a few frames
-    for _ in range(5):
+    # Warm up the camera by reading several frames (like Mark-L)
+    for _ in range(10):
         cap.read()
 
     ret, frame = cap.read()
@@ -307,3 +376,312 @@ def _load_gemini_api_key() -> str:
         "Gemini API key not found. "
         "Set it in config/api_keys.json or as GEMINI_API_KEY environment variable."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Persistent Gemini Live Streaming Session (like Mark-L's _VisionSession)
+# ═══════════════════════════════════════════════════════════════════════
+
+_GEMINI_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+_LIVE_SAMPLE_RATE = 24000
+_LIVE_CHANNELS = 1
+_LIVE_CHUNK_SIZE = 1024
+
+_LIVE_SYSTEM_PROMPT = (
+    "You are BARQ, a voice AI assistant. "
+    "You are given an image from the user's screen or webcam. "
+    "Analyze what you see with precision. "
+    "Describe objects, text, and context clearly. "
+    "Be concise — 1-3 sentences — unless the question demands more detail. "
+    "Speak directly to the user."
+)
+
+
+class VisionStreamSession:
+    """Persistent Gemini Live vision session in a background thread.
+
+    Maintains a long-lived WebSocket connection to Gemini Live so that
+    images can be sent and analysed with zero connection latency.
+    Audio responses are collected and returned via a callback.
+
+    Like Mark-L's ``_VisionSession``, this runs its own asyncio event
+    loop in a daemon thread and auto-reconnects on failure.
+
+    Usage:
+        session = VisionStreamSession()
+        session.start()
+        session.analyze(image_bytes, mime_type, "What do you see?")
+        session.stop()
+    """
+
+    def __init__(self):
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._session = None  # Gemini Live session
+        self._out_queue: Optional[asyncio.Queue] = None  # (image, mime, prompt)
+        self._audio_callback: Optional[callable] = None  # called with PCM chunks
+        self._transcript_callback: Optional[callable] = None  # called with text
+        self._ready_evt = threading.Event()
+        self._stop_evt = threading.Event()
+        self._lock = threading.Lock()
+        self._connected = False
+        self._backoff = 2.0
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready_evt.is_set() and self._connected
+
+    def start(self, audio_callback=None, transcript_callback=None,
+              timeout: float = 25.0) -> bool:
+        """Start the persistent session in a background thread.
+
+        Args:
+            audio_callback: Called with PCM audio chunks (bytes).
+            transcript_callback: Called with transcript text (str).
+            timeout: Max seconds to wait for initial connection.
+
+        Returns:
+            True if session connected within timeout.
+        """
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                if audio_callback:
+                    self._audio_callback = audio_callback
+                if transcript_callback:
+                    self._transcript_callback = transcript_callback
+                return self._ready_evt.is_set()
+
+            self._audio_callback = audio_callback
+            self._transcript_callback = transcript_callback
+            self._stop_evt.clear()
+            self._thread = threading.Thread(
+                target=self._run_event_loop,
+                daemon=True,
+                name="VisionStreamThread",
+            )
+            self._thread.start()
+
+        ok = self._ready_evt.wait(timeout=timeout)
+        if ok:
+            print("[VisionStream] ✅ Session ready")
+        else:
+            print(f"[VisionStream] ⚠️  Session did not connect within {timeout}s")
+        return ok
+
+    def stop(self):
+        """Stop the session and background thread."""
+        self._stop_evt.set()
+        self._ready_evt.clear()
+        self._connected = False
+        if self._loop and not self._loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._close_session(), self._loop
+                )
+            except Exception:
+                pass
+
+    def analyze(self, image_bytes: bytes, mime_type: str, user_text: str):
+        """Queue an image for analysis via the persistent Gemini Live session.
+
+        This is non-blocking — returns immediately. The response comes
+        back via the ``audio_callback`` and ``transcript_callback``.
+        """
+        if not self._loop or not self._out_queue or not self._connected:
+            print("[VisionStream] ⚠️  Session not ready — dropping request")
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._out_queue.put((image_bytes, mime_type, user_text)),
+                self._loop,
+            )
+            return True
+        except Exception as e:
+            print(f"[VisionStream] Queue error: {e}")
+            return False
+
+    # ── Internal: thread loop ────────────────────────────────────────
+
+    def _run_event_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._session_loop())
+        except Exception as e:
+            print(f"[VisionStream] Thread error: {e}")
+        finally:
+            self._loop.close()
+
+    async def _close_session(self):
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
+
+    async def _session_loop(self):
+        self._out_queue = asyncio.Queue(maxsize=30)
+
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            print("[VisionStream] google-genai not installed")
+            return
+
+        api_key = _load_gemini_api_key()
+
+        client = genai.Client(
+            api_key=api_key,
+            http_options={"api_version": "v1beta"},
+        )
+
+        config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            output_audio_transcription={},
+            system_instruction=_LIVE_SYSTEM_PROMPT,
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name="Charon"
+                    )
+                )
+            ),
+        )
+
+        self._backoff = 2.0
+
+        while not self._stop_evt.is_set():
+            try:
+                print("[VisionStream] 🔌 Connecting to Gemini Live...")
+                async with client.aio.live.connect(
+                    model=_GEMINI_LIVE_MODEL, config=config
+                ) as session:
+                    self._session = session
+                    self._connected = True
+                    self._ready_evt.set()
+                    self._backoff = 2.0
+                    print("[VisionStream] ✅ Connected to Gemini Live")
+
+                    async with asyncio.TaskGroup() as tg:
+                        tg.create_task(self._send_loop())
+                        tg.create_task(self._recv_loop())
+                        # Keep alive until stopped or disconnected
+                        while not self._stop_evt.is_set():
+                            await asyncio.sleep(0.5)
+
+            except Exception as eg:
+                print(f"[VisionStream] ⚠️  Session error: {eg}")
+            finally:
+                self._session = None
+                self._connected = False
+                self._ready_evt.clear()
+
+            if self._stop_evt.is_set():
+                break
+
+            print(f"[VisionStream] 🔄 Reconnecting in {self._backoff:.0f}s...")
+            await asyncio.sleep(self._backoff)
+            self._backoff = min(self._backoff * 1.5, 30.0)
+
+    async def _send_loop(self):
+        """Send images from the out queue to Gemini Live."""
+        while not self._stop_evt.is_set():
+            try:
+                image_bytes, mime_type, user_text = (
+                    await asyncio.wait_for(self._out_queue.get(), timeout=1.0)
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            if not self._session:
+                print("[VisionStream] ⚠️  No session — dropping image")
+                continue
+
+            try:
+                b64 = base64.b64encode(image_bytes).decode("ascii")
+                await self._session.send_client_content(
+                    turns={
+                        "parts": [
+                            {"inline_data": {"mime_type": mime_type, "data": b64}},
+                            {"text": user_text},
+                        ]
+                    },
+                    turn_complete=True,
+                )
+                print(f"[VisionStream] 📤 Sent {len(image_bytes):,}B — '{user_text[:50]}'")
+            except Exception as e:
+                print(f"[VisionStream] ⚠️  Send error: {e}")
+                raise  # triggers session reconnect
+
+    async def _recv_loop(self):
+        """Receive audio and transcript from Gemini Live."""
+        transcript: list[str] = []
+        try:
+            async for response in self._session.receive():
+                # Audio data
+                if response.data and self._audio_callback:
+                    self._audio_callback(response.data)
+
+                # Transcription
+                sc = response.server_content
+                if not sc:
+                    continue
+
+                if sc.output_transcription and sc.output_transcription.text:
+                    chunk = sc.output_transcription.text.strip()
+                    if chunk:
+                        transcript.append(chunk)
+
+                if sc.turn_complete:
+                    if transcript and self._transcript_callback:
+                        full = " ".join(transcript).strip()
+                        self._transcript_callback(full)
+                        print(f"[VisionStream] 💬 '{full[:80]}'")
+                    transcript = []
+
+        except Exception as e:
+            print(f"[VisionStream] ⚠️  Recv error: {e}")
+            raise  # triggers session reconnect
+
+
+# ── Singleton factory ─────────────────────────────────────────────────
+
+_vision_stream_session: Optional[VisionStreamSession] = None
+
+
+def get_vision_stream_session() -> Optional[VisionStreamSession]:
+    """Get or create the VisionStreamSession singleton."""
+    global _vision_stream_session
+    if _vision_stream_session is None:
+        _vision_stream_session = VisionStreamSession()
+    return _vision_stream_session
+
+
+def ensure_vision_stream(audio_callback=None, transcript_callback=None,
+                         timeout: float = 25.0) -> bool:
+    """Ensure the persistent vision stream session is running.
+
+    Returns True if the session is connected and ready.
+    """
+    session = get_vision_stream_session()
+    if session.is_ready:
+        return True
+    return session.start(
+        audio_callback=audio_callback,
+        transcript_callback=transcript_callback,
+        timeout=timeout,
+    )
+
+
+def stop_vision_stream():
+    """Stop the persistent vision stream session."""
+    global _vision_stream_session
+    if _vision_stream_session is not None:
+        _vision_stream_session.stop()
+        _vision_stream_session = None

@@ -684,6 +684,34 @@ def register_builtin_skills(registry: Optional[SkillRegistry] = None) -> SkillRe
             category="research",
             metadata={"route_method": "POST", "route_path": "/research/deep", "route_payload": {"topic": "", "depth": "standard"}},
         ),
+        # ── Code Helper Skill ──────────────────────────────────────
+        Skill(
+            name="code_helper",
+            description="Generate, edit, explain, run, build, or debug code. Accepts 'action' (write/edit/explain/run/build/optimize/screen_debug/auto), 'description', 'language', 'file_path', 'code', 'output_path'. Calls an LLM to produce or modify code, executes it, and iterates until it works.",
+            parameters=[
+                SkillParameter("action", "string", False, "Action: write, edit, explain, run, build, optimize, screen_debug, auto (default)"),
+                SkillParameter("description", "string", False, "What the code should do / what change to make"),
+                SkillParameter("language", "string", False, "Programming language (default: python)"),
+                SkillParameter("file_path", "string", False, "Path to existing file for edit/explain/run"),
+                SkillParameter("output_path", "string", False, "Where to save the output file (default: Desktop/BARQ_Projects/)"),
+                SkillParameter("code", "string", False, "Raw code string for explain/optimize"),
+            ],
+            critical=False,
+            category="developer",
+            metadata={"route_method": "POST", "route_path": "/agent/code", "route_payload": {"action": "", "description": "", "language": "python", "file_path": "", "output_path": "", "code": ""}},
+        ),
+        Skill(
+            name="dev_agent",
+            description="Build a complete software project from a natural language description. Plans the project structure, writes all files in dependency order, installs dependencies, runs, and auto-fixes errors. Accepts 'description' (required), 'language', 'project_name'.",
+            parameters=[
+                SkillParameter("description", "string", True, "What project to build (e.g. 'a Flask REST API for a todo app')"),
+                SkillParameter("language", "string", False, "Programming language (default: python)"),
+                SkillParameter("project_name", "string", False, "Optional project directory name"),
+            ],
+            critical=False,
+            category="developer",
+            metadata={"route_method": "POST", "route_path": "/agent/dev", "route_payload": {"description": "", "language": "python", "project_name": ""}},
+        ),
         # ── Recruitment Agent Skills ───────────────────────────────
         Skill(
             name="recruitment_extract",

@@ -261,6 +261,128 @@ async def close_app(request: AppAction):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 2. File Operations
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -274,6 +396,128 @@ async def create_folder(request: FileOperation):
         return {"status": "created", "path": request.path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/file/read")
@@ -297,6 +541,128 @@ async def read_file(request: FileOperation):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/file/write")
@@ -331,6 +697,128 @@ async def write_file(request: FileOperation):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/file/delete")
 async def delete_file(request: FileOperation):
     """Delete a file or folder."""
@@ -348,6 +836,128 @@ async def delete_file(request: FileOperation):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/file/move")
@@ -368,6 +978,128 @@ async def move_file(request: FileOperation):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/file/search")
@@ -395,6 +1127,128 @@ async def search_files(query: str = Query(...), directory: str = Query(".")):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -480,6 +1334,128 @@ async def create_drop_zone_rule(rule: DropZoneRule):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.get("/drop-zone/rules")
 async def list_drop_zone_rules():
     """List all Smart Drop Zone rules."""
@@ -489,6 +1465,128 @@ async def list_drop_zone_rules():
         return {"rules": rules, "count": len(rules)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.put("/drop-zone/rules/{rule_index}")
@@ -508,6 +1606,128 @@ async def update_drop_zone_rule(rule_index: int, rule: DropZoneRule):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.delete("/drop-zone/rules/{rule_index}")
 async def delete_drop_zone_rule(rule_index: int):
     """Delete a drop zone rule by index."""
@@ -523,6 +1743,128 @@ async def delete_drop_zone_rule(rule_index: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/drop-zone/evaluate")
@@ -596,6 +1938,128 @@ async def evaluate_drop_zones(request: DropZoneEvaluate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/drop-zone/watch")
 async def watch_drop_zone(directory: str = Query(...), recursive: bool = True):
     """Watch a directory and auto-apply drop zone rules to new files."""
@@ -619,6 +2083,128 @@ async def watch_drop_zone(directory: str = Query(...), recursive: bool = True):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -728,6 +2314,128 @@ async def sort_preview(request: SortPreviewRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/file/sort/execute")
 async def sort_execute(request: SortExecuteRequest):
     """Execute file sorting with undo support."""
@@ -793,6 +2501,128 @@ async def sort_execute(request: SortExecuteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/file/sort/undo/{undo_id}")
 async def sort_undo(undo_id: str):
     """Undo a previous sort operation."""
@@ -825,6 +2655,128 @@ async def sort_undo(undo_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -916,6 +2868,128 @@ async def list_monitors():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/window/control")
 async def window_control(request: WindowAction):
     """Control window operations (maximize, minimize, snap, move to monitor)."""
@@ -985,6 +3059,128 @@ async def window_control(request: WindowAction):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 6. Git Operations
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1051,6 +3247,128 @@ async def git_operation(request: GitRequest):
         return {"status": "error", "operation": op, "output": "Git not found. Install git CLI."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1158,6 +3476,128 @@ async def package_manager_operation(request: PackageManagerRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1332,6 +3772,128 @@ async def run_command(request: CommandRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 10. Tunneling (Wormhole)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1429,6 +3991,128 @@ async def expose_port(request: TunnelingRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.get("/tunnel/status")
 async def tunnel_status(port: int = Query(...)):
     """Get the status of an active tunnel."""
@@ -1497,6 +4181,128 @@ async def tunnel_stop(request: TunnelingRequest):
         return {"status": "stopped", "port": request.port}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1578,6 +4384,128 @@ async def system_events(limit: int = Query(default=50, ge=1, le=200)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 13. System Status
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1629,3 +4557,125 @@ async def system_status():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Browser Control (Playwright)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BrowserActionRequest(BaseModel):
+    action: str  # go_to, search, click, type, scroll, screenshot, etc.
+    url: Optional[str] = None
+    query: Optional[str] = None
+    engine: str = "google"
+    selector: Optional[str] = None
+    text: Optional[str] = None
+    key: str = "Enter"
+    direction: str = "down"
+    amount: int = 500
+    browser: Optional[str] = None  # chrome, edge, brave, firefox
+    path: Optional[str] = None
+    clear_first: bool = True
+    fields: Optional[dict[str, str]] = None
+
+
+@router.post("/browser/action")
+async def browser_action(request: BrowserActionRequest):
+    """Execute a browser control action via Playwright.
+
+    Launches the user's real browser profile (Chrome, Edge, Brave, etc.)
+    and performs the requested action. Multiple browser sessions can run
+    simultaneously.
+
+    Actions:
+    - ``go_to``: Navigate to a URL (e.g. ``{"action": "go_to", "url": "https://github.com"}``)
+    - ``search``: Search the web (e.g. ``{"action": "search", "query": "python jobs"}``)
+    - ``click``: Click an element by text or CSS selector
+    - ``type``: Type text into an input field
+    - ``scroll``: Scroll the page (direction: "down" or "up")
+    - ``screenshot``: Take a screenshot of the current page
+    - ``get_text``: Get visible text from the current page
+    - ``get_url``: Get the current page URL
+    - ``get_title``: Get the current page title
+    - ``back``: Navigate back
+    - ``forward``: Navigate forward
+    - ``reload``: Reload the current page
+    - ``new_tab``: Open a new tab (optional: with a URL)
+    - ``close_tab``: Close the current tab
+    - ``press_key``: Press a keyboard key (Enter, Escape, Tab)
+    - ``fill_form``: Fill multiple form fields (key-value dict of selectors → text)
+    - ``switch``: Switch active browser session
+    - ``close``: Close a browser session
+    - ``close_all``: Close all browser sessions
+    - ``list_sessions``: List active browser sessions
+    """
+    try:
+        from .browser_control import browser_action as _browser_action
+
+        result = _browser_action(
+            action=request.action,
+            params={
+                "url": request.url,
+                "query": request.query,
+                "engine": request.engine,
+                "selector": request.selector,
+                "text": request.text,
+                "key": request.key,
+                "direction": request.direction,
+                "amount": request.amount,
+                "browser": request.browser,
+                "path": request.path,
+                "clear_first": request.clear_first,
+                "fields": request.fields,
+            }
+        )
+
+        await analytics_dao.log_activity(
+            "system", "browser_action",
+            f"Browser {request.action}: {request.url or request.query or request.text or ''} on {request.browser or 'default'}"
+        )
+
+        return {
+            "status": "completed",
+            "action": request.action,
+            "result": result,
+        }
+    except ImportError as e:
+        return {
+            "status": "unavailable",
+            "action": request.action,
+            "detail": "Browser control requires Playwright. Run: pip install playwright && playwright install chromium",
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": request.action,
+            "detail": str(e),
+        }
+
+
+@router.get("/browser/sessions")
+async def browser_sessions():
+    """List all active browser sessions."""
+    try:
+        from .browser_control import browser_action as _browser_action
+        result = _browser_action("list_sessions", {})
+        return {"status": "ok", "sessions": result}
+    except Exception as e:
+        return {"status": "ok", "sessions": "Browser control not available"}
+
+
+@router.post("/browser/open")
+async def browser_open(url: str, browser: Optional[str] = None):
+    """Open a URL in the native browser (no Playwright automation).
+
+    Simple navigation that opens the user's real browser with their real profile.
+    Use this for quick, one-shot navigation where automation is not needed.
+    """
+    try:
+        from .browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "completed", "url": url, "browser": browser or "default", "result": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { api } from '../utils/api'
 import { getBackendConfig } from '../utils/backendConfig'
+import type { RichContent } from '../components/DynamicContentTypes'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -14,12 +15,15 @@ interface VoiceContextValue {
   sttText: string
   responseText: string
   isRemote: boolean
+  richContent: RichContent | null
   /** Toggle the backend voice detector on/off */
   toggleDetector: () => Promise<void>
   /** Start the backend voice detector */
   startDetector: () => Promise<void>
   /** Stop the backend voice detector */
   stopDetector: () => Promise<void>
+  /** Clear the rich content panel */
+  clearRichContent: () => void
 }
 
 // ─── Context ─────────────────────────────────────────────────────────────────
@@ -32,9 +36,11 @@ const VoiceContext = createContext<VoiceContextValue>({
   sttText: '',
   responseText: '',
   isRemote: false,
+  richContent: null,
   toggleDetector: async () => {},
   startDetector: async () => {},
   stopDetector: async () => {},
+  clearRichContent: () => {},
 })
 
 export function useVoice(): VoiceContextValue {
@@ -73,9 +79,15 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   const [sttText, setSttText] = useState('')
   const [responseText, setResponseText] = useState('')
   const [isRemote, setIsRemote] = useState(false)
+  const [richContent, setRichContent] = useState<RichContent | null>(null)
 
   // Track current generation for stale caption filtering
   const currentGenerationRef = useRef(0)
+
+  // Clear rich content panel
+  const clearRichContent = useCallback(() => {
+    setRichContent(null)
+  }, [])
 
   // ── Detect mode on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -235,6 +247,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
                 currentGenerationRef.current++
                 setResponseText('')
                 setSttText('')
+                setRichContent(null)  // Clear old rich content on new conversation
               } else if (data.status === 'processing') {
                 setAiState('thinking')
                 currentGenerationRef.current++
@@ -267,6 +280,12 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
               setAiState((prev) => (prev !== 'responding' ? 'responding' : prev))
               break
             }
+
+            case 'rich_content':
+              if (data.content) {
+                setRichContent(data.content as RichContent)
+              }
+              break
 
             case 'voice_status':
               applyStatus(data)
@@ -323,9 +342,11 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
         sttText,
         responseText,
         isRemote,
+        richContent,
         toggleDetector,
         startDetector,
         stopDetector,
+        clearRichContent,
       }}
     >
       {children}

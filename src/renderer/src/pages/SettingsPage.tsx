@@ -4,7 +4,7 @@ import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, 
 import { motion, AnimatePresence } from 'framer-motion'
 import type { SettingsSection } from './settings/types'
 import { sections, TTS_VOICES, SENSITIVITY_LEVELS, type VoiceStatus } from './settings/types'
-import { AccentColorPicker } from './settings/AccentColorPicker'
+import { AssistantCustomization } from './settings/AssistantCustomization'
 import { VoskDebugToggle } from './settings/VoskDebugToggle'
 import { WhisperDebugToggle } from './settings/WhisperDebugToggle'
 import { renderToggle, renderSelect } from './settings/renderHelpers'
@@ -36,7 +36,11 @@ export function SettingsPage(): JSX.Element {
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsLanguage, setVoiceSettingsLanguage] = useState('en')
   const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
-  // Deepgram Voice Agent handles all STT + TTS
+  // Voice Agent Backend (deepgram / pipecat)
+  const [voiceAgentBackend, setVoiceAgentBackend] = useState('pipecat')
+  const [voiceAgentBackends, setVoiceAgentBackends] = useState<{ id: string; name: string; description: string; available?: boolean }[]>([])
+  const [voiceAgentSwitching, setVoiceAgentSwitching] = useState(false)
+
   // Wake word editing
   const [wakeWord, setWakeWord] = useState('')
   const [wakeWordInput, setWakeWordInput] = useState('')
@@ -251,7 +255,34 @@ export function SettingsPage(): JSX.Element {
     setVoiceLoading(false)
   }, [])
 
-  // TTS backend is always Deepgram Agent — no manual switching needed
+  const fetchVoiceAgentBackend = useCallback(async () => {
+    try {
+      const [backendResp, backendsResp] = await Promise.all([
+        api('/voice/backend'),
+        api('/voice/backends'),
+      ])
+      if (backendResp && typeof backendResp === 'object') {
+        const d = backendResp as Record<string, unknown>
+        if (typeof d.backend === 'string') setVoiceAgentBackend(d.backend)
+      }
+      if (backendsResp && typeof backendsResp === 'object') {
+        const d = backendsResp as Record<string, unknown>
+        if (Array.isArray(d.backends)) setVoiceAgentBackends(d.backends as typeof voiceAgentBackends)
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  const handleVoiceAgentSwitch = useCallback(async (backend: string) => {
+    setVoiceAgentSwitching(true)
+    try {
+      const resp = await api('/voice/backend', { backend })
+      if (resp && typeof resp === 'object') {
+        const d = resp as Record<string, unknown>
+        if (typeof d.backend === 'string') setVoiceAgentBackend(d.backend)
+      }
+    } catch { /* ignore */ }
+    setVoiceAgentSwitching(false)
+  }, [])
 
   const handleWakeWordChange = useCallback(async () => {
     const newWord = wakeWordInput.trim().toLowerCase()
@@ -585,6 +616,7 @@ export function SettingsPage(): JSX.Element {
       void fetchSoundSettings()
       void fetchWhitelistRules()
       void fetchVoiceSettings()
+      void fetchVoiceAgentBackend()
       void fetchTelegramCredentials()
       void fetchCloudLLM()
       void fetchCloudConfig()
@@ -667,11 +699,41 @@ export function SettingsPage(): JSX.Element {
                 </div>
 
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
-                  <div>
-                    <p className="text-sm font-rajdhani font-semibold text-ghost">Speech Engine</p>
-                    <p className="text-xs font-exo text-dim-400">Deepgram Voice Agent — managed STT + LLM + TTS</p>
+                  <div className="flex-1">
+                    <p className="text-sm font-rajdhani font-semibold text-ghost">Voice Agent Backend</p>
+                    <p className="text-xs font-exo text-dim-400">
+                      {voiceAgentBackend === 'deepgram'
+                        ? 'Deepgram Voice Agent — cloud STT + LLM + TTS (requires API key)'
+                        : 'Pipecat — local Whisper STT + Ollama LLM + Edge-TTS (no API key)'}
+                    </p>
                   </div>
-                  <span className="badge-cyan">Cloud</span>
+                  <div className="flex items-center gap-2">
+                    {voiceAgentSwitching && <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />}
+                    <select
+                      value={voiceAgentBackend}
+                      onChange={(e) => handleVoiceAgentSwitch(e.target.value)}
+                      disabled={voiceAgentSwitching}
+                      className="bg-void-800/80 text-ghost/80 text-xs font-exo px-2 py-1.5 rounded-lg border border-cyan-500/15 focus:outline-none focus:border-cyan-500/30 cursor-pointer disabled:opacity-50"
+                    >
+                      {voiceAgentBackends.map((b) => (
+                        <option
+                          key={b.id}
+                          value={b.id}
+                          disabled={b.available === false}
+                          className="bg-void-900 text-ghost"
+                        >
+                          {b.name}{b.available === false ? ' (unavailable)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <span className={`text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded ${
+                      voiceAgentBackend === 'deepgram'
+                        ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/15'
+                        : 'bg-green-500/10 text-green-300 border border-green-500/15'
+                    }`}>
+                      {voiceAgentBackend === 'deepgram' ? 'CLOUD' : 'LOCAL'}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Auto-detection status indicator */}
@@ -1981,7 +2043,15 @@ export function SettingsPage(): JSX.Element {
                     { value: 'cyber', label: 'Cyberpunk' },
                   ], (v) => setAppearanceSettings(prev => ({ ...prev, theme: v })))}
                 </div>
-                <AccentColorPicker />
+                {/* ── Assistant Customization ── */}
+                <div className="bg-void-700/30 rounded-lg p-4 border border-cyan-500/10 mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <User className="w-4 h-4 text-cyan-300" />
+                    <h4 className="text-xs font-orbitron font-bold text-ghost tracking-wider uppercase">Personalization</h4>
+                  </div>
+                  <AssistantCustomization />
+                </div>
+
                 <div className="flex items-center justify-between py-3 border-b border-cyan-500/8">
                   <div>
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Font Scale</p>

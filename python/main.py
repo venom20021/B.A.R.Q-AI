@@ -49,6 +49,7 @@ from auth_routes import router as auth_router
 from config import get_settings
 from database import analytics_dao, close_db, init_db
 from desktop_automation.routes import router as desktop_router
+from desktop_automation.clipboard_routes import router as clipboard_router
 from documents.routes import router as documents_router
 from external_apis.routes import router as external_apis_router
 from graph_brain import graph_brain
@@ -60,8 +61,10 @@ from memory_knowledge.ingestion_routes import router as ingestion_router
 from memory_knowledge.migration_routes import router as migration_router
 from memory_knowledge.routes import router as memory_router
 from notifications.routes import router as notification_router
+from notifications.reminder_routes import router as reminder_router
 from social.routes import router as social_router
 from system_control.routes import router as system_router
+from system_control.hardware_routes import router as hardware_router
 from voice.routes import router as voice_router
 from web_media.routes import router as web_router
 
@@ -103,6 +106,22 @@ async def start_scheduler():
             _auto_extract_knowledge,
             IntervalTrigger(hours=3),
             id="auto_extract_knowledge",
+            replace_existing=True,
+        )
+
+        # Proactive check-in every 30 minutes (if user is idle)
+        scheduler.add_job(
+            _proactive_checkin,
+            IntervalTrigger(minutes=30),
+            id="proactive_checkin",
+            replace_existing=True,
+        )
+
+        # Background topic monitoring every 6 hours
+        scheduler.add_job(
+            _background_monitor_check,
+            IntervalTrigger(hours=6),
+            id="background_monitor_check",
             replace_existing=True,
         )
 
@@ -324,6 +343,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[BARQ Sidecar] MemoryBus start error: {e}")
 
+    # Start the reminder background check
+    try:
+        from notifications.reminders import reminder_manager
+        await reminder_manager.start_background_check(interval_seconds=30)
+        print("[BARQ Sidecar] Reminder background check started")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Reminder check start error: {e}")
+
     # Start the ingestion drop-folder watcher
     _ingestion_monitor = None
     try:
@@ -360,6 +387,17 @@ async def lifespan(app: FastAPI):
         asyncio.ensure_future(_preload_whisper_model())
     except Exception:
         pass
+
+    # ── Silent Language Persistence ──
+    # Load saved voice settings (including language) from DB so the user's
+    # language preference is silently restored across restarts — no manual
+    # re-selection needed (Mark-L's "Silent Language Memory" feature).
+    try:
+        from voice.routes import load_sound_settings
+        await load_sound_settings()
+        print("[BARQ Sidecar] Voice settings loaded from DB (silent language persistence)")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Voice settings load skipped (non-fatal): {e}")
 
     # ── Start Telegram Ingestion Bot ─────────────────────────────────────
     _telegram_app = None
@@ -510,11 +548,14 @@ app.include_router(jobs_router, prefix="/jobs", tags=["Jobs"])
 app.include_router(social_router, prefix="/social", tags=["Social"])
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 app.include_router(notification_router, prefix="/notifications", tags=["Notifications"])
+app.include_router(reminder_router, prefix="/notifications", tags=["Notifications"])
 app.include_router(system_router, prefix="/system", tags=["System Control"])
+app.include_router(hardware_router, prefix="/system", tags=["System Control"])
 app.include_router(memory_router, prefix="/memory", tags=["Memory & Knowledge"])
 app.include_router(web_router, prefix="/web", tags=["Web & Media"])
 app.include_router(documents_router, prefix="/documents", tags=["Document Generation"])
 app.include_router(desktop_router, prefix="/desktop", tags=["Desktop Automation"])
+app.include_router(clipboard_router, prefix="/desktop", tags=["Desktop Automation"])
 app.include_router(graph_router, prefix="/graph", tags=["Graph Brain"])
 app.include_router(brain_api_router, tags=["Brain Visualisation"])
 app.include_router(auth_router, tags=["Auth"])
@@ -651,6 +692,50 @@ async def scheduler_status():
     return {"running": True, "jobs": jobs}
 
 
+async def _proactive_checkin():
+    """Proactive check-in — BARQ initiates a conversation if user is idle.
+
+    Called by APScheduler every 30 minutes. Checks if the user has been
+    silent and if enough time has passed since the last check-in.
+    If conditions are met, generates a context-aware message.
+    """
+    try:
+        from actions.proactive_engine import get_engine
+        engine = get_engine()
+        checkin = await engine.scheduled_checkin()
+        if checkin:
+            logger.info(f"[Proactive] Check-in generated: {checkin[:80]}")
+            # If there's an active conversation, inject the check-in
+            try:
+                from voice.routes import responder, conversation_listener
+                if responder and conversation_listener and conversation_listener.is_active:
+                    # Speak the check-in to the user
+                    logger.info(f"[Proactive] Speaking check-in during active conversation")
+            except Exception:
+                pass
+        else:
+            logger.info("[Proactive] No check-in needed (user active or cooldown)")
+    except Exception as e:
+        logger.error(f"[Proactive] Check-in error: {e}")
+
+
+async def _background_monitor_check():
+    """Check all monitored topics for new headlines.
+
+    Called by APScheduler every 6 hours. Uses DuckDuckGo's free API.
+    Alerts are dispatched via the notification system.
+    """
+    try:
+        from actions.background_monitor import scheduled_check
+        alerts = await scheduled_check()
+        if alerts:
+            logger.info(f"[BackgroundMonitor] {len(alerts)} new headline(s) found")
+        else:
+            logger.info("[BackgroundMonitor] No new headlines")
+    except Exception as e:
+        logger.error(f"[BackgroundMonitor] Error: {e}")
+
+
 async def _auto_extract_knowledge():
     """Auto-extract knowledge triplets from unprocessed jobs/social (called by scheduler)."""
     try:
@@ -666,6 +751,99 @@ async def _auto_extract_knowledge():
         )
     except Exception as e:
         logger.error("[AutoExtract] Failed: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Background Monitor API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/monitor/topics")
+async def list_monitor_topics():
+    """List all monitored topics."""
+    try:
+        from actions.background_monitor import list_monitors
+        topics = list_monitors()
+        return {"topics": topics, "count": len(topics)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/monitor/topics")
+async def add_monitor_topic(data: dict):
+    """Add a topic to monitor."""
+    try:
+        topic = data.get("topic", "")
+        if not topic:
+            raise HTTPException(status_code=400, detail="topic is required")
+        from actions.background_monitor import add_monitor
+        result = add_monitor(topic)
+        return {"status": "ok", "result": result, "topic": topic}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/monitor/topics")
+async def remove_monitor_topic(data: dict):
+    """Remove a monitored topic."""
+    try:
+        topic = data.get("topic", "")
+        if not topic:
+            raise HTTPException(status_code=400, detail="topic is required")
+        from actions.background_monitor import remove_monitor
+        result = remove_monitor(topic)
+        return {"status": "ok", "result": result, "topic": topic}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/monitor/check")
+async def check_monitors_now():
+    """Trigger an immediate check of all monitored topics."""
+    try:
+        from actions.background_monitor import scheduled_check
+        alerts = await scheduled_check()
+        return {"status": "completed", "alerts_count": len(alerts), "alerts": alerts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Proactive Engine API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/proactive/trigger")
+async def trigger_proactive_checkin():
+    """Manually trigger a proactive check-in."""
+    try:
+        from actions.proactive_engine import get_engine
+        engine = get_engine()
+        engine.mark_triggered()  # Reset cooldown so next should_trigger() passes
+        checkin = await engine.scheduled_checkin()
+        return {"status": "completed", "checkin": checkin}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/proactive/status")
+async def proactive_status():
+    """Get the proactive engine status."""
+    try:
+        from actions.proactive_engine import get_engine
+        engine = get_engine()
+        should = engine.should_trigger()
+        return {
+            "should_trigger": should,
+            "min_silence_secs": engine.min_silence_secs,
+            "check_cooldown": engine.check_cooldown,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/scheduler/run/{task_type}")

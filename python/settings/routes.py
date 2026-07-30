@@ -24,7 +24,41 @@ class CloudLLMSettingsRequest(BaseModel):
     base_url: str = "https://api.openai.com/v1"
 
 
+class AssistantCustomizationRequest(BaseModel):
+    assistant_name: str = "BARQ"
+    user_name: str = ""
+    accent_color: str = "cyan"
+
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+
+@router.get("/settings/assistant", summary="Get assistant customization")
+async def get_assistant_customization():
+    """Get assistant name, user name, and accent color preferences."""
+    try:
+        assistant_name = await settings_dao.get_setting("assistant_name") or "BARQ"
+        user_name = await settings_dao.get_setting("user_name") or ""
+        accent_color = await settings_dao.get_setting("accent_color") or "cyan"
+        return {
+            "assistant_name": assistant_name,
+            "user_name": user_name,
+            "accent_color": accent_color,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settings/assistant", summary="Save assistant customization")
+async def save_assistant_customization(request: AssistantCustomizationRequest):
+    """Save assistant name, user name, and accent color preferences."""
+    try:
+        await settings_dao.set_setting("assistant_name", request.assistant_name.strip() or "BARQ", "general")
+        await settings_dao.set_setting("user_name", request.user_name.strip(), "general")
+        await settings_dao.set_setting("accent_color", request.accent_color.strip() or "cyan", "general")
+        return {"status": "saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/settings/cloud-llm", summary="Get cloud LLM settings")

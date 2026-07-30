@@ -160,6 +160,101 @@ def _get_system_status() -> dict[str, Any]:
         return {"status": "error", "detail": str(e)}
 
 
+def _get_hardware_status(detailed: bool = False) -> dict[str, Any]:
+    """Get comprehensive hardware status (CPU, RAM, GPU, disk, network, uptime).
+
+    Args:
+        detailed: If True, returns full telemetry with GPU details.
+                  If False, returns a lightweight summary.
+
+    Returns:
+        Dict with hardware telemetry and a human-readable summary.
+    """
+    try:
+        from system_control.hardware_monitor import (
+            get_hardware_monitor,
+            format_hardware_summary,
+            format_uptime,
+        )
+        monitor = get_hardware_monitor()
+        snap = monitor.snapshot(collect_processes=detailed)
+        return {
+            "status": "success",
+            "telemetry": snap.to_dict() if detailed else snap.to_brief(),
+            "summary": format_hardware_summary(snap),
+            "uptime": format_uptime(snap.uptime_seconds),
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _start_hardware_monitoring(interval: float = 5.0) -> dict[str, Any]:
+    """Start background hardware monitoring with threshold alerts.
+
+    Args:
+        interval: Seconds between telemetry snapshots (default 5.0).
+
+    Returns:
+        Dict with monitoring start result.
+    """
+    try:
+        from system_control.hardware_monitor import get_hardware_monitor
+        import asyncio
+        monitor = get_hardware_monitor()
+        try:
+            asyncio.run(monitor.start_monitoring(interval=interval))
+        except RuntimeError:
+            # Already in a running loop — schedule as task
+            import asyncio as _asyncio
+            try:
+                _asyncio.get_event_loop().create_task(monitor.start_monitoring(interval=interval))
+            except RuntimeError:
+                asyncio.run(monitor.start_monitoring(interval=interval))
+        return {
+            "status": "success",
+            "detail": f"Hardware monitoring started (interval={interval}s)",
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _stop_hardware_monitoring() -> dict[str, Any]:
+    """Stop background hardware monitoring."""
+    try:
+        from system_control.hardware_monitor import get_hardware_monitor
+        import asyncio
+        monitor = get_hardware_monitor()
+        try:
+            asyncio.run(monitor.stop_monitoring())
+        except RuntimeError:
+            import asyncio as _asyncio
+            try:
+                _asyncio.get_event_loop().create_task(monitor.stop_monitoring())
+            except RuntimeError:
+                asyncio.run(monitor.stop_monitoring())
+        return {"status": "success", "detail": "Hardware monitoring stopped"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _get_hardware_alerts() -> dict[str, Any]:
+    """Get recent hardware threshold alerts."""
+    try:
+        from system_control.hardware_monitor import get_hardware_monitor
+        monitor = get_hardware_monitor()
+        alerts = monitor.get_alerts()
+        if alerts:
+            return {
+                "status": "success",
+                "alerts": alerts,
+                "count": len(alerts),
+                "detail": " | ".join(a["message"] for a in alerts[-3:]),
+            }
+        return {"status": "success", "alerts": [], "count": 0, "detail": "No active alerts — all systems nominal"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 def _list_files(directory: str, pattern: str = "*") -> dict[str, Any]:
     """List files in a directory with optional glob pattern."""
     path = Path(directory).expanduser().resolve()
@@ -656,6 +751,654 @@ def _lock_screen() -> dict[str, Any]:
             return {"status": "error", "detail": "Screen lock tools not found. Install: gnome-screensaver, xscreensaver, or xdg-utils"}
 
 
+# ─── Vision / Screen Analysis Functions (like Mark-L) ───────────────────
+
+def _run_async(coro):
+    """Run a coroutine synchronously from a thread pool context.
+
+    Uses ``new_event_loop()`` since we're in a thread (called via
+    ``asyncio.to_thread()`` from ``execute_function()``).
+    Falls back to ``asyncio.run()`` if a loop was already set.
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(coro)
+        loop.close()
+        return result
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+def _analyze_screen(prompt: str = "What do you see on my screen? Be concise.") -> dict[str, Any]:
+    """Capture the screen and analyze it using Gemini vision.
+
+    Requires:
+        - mss (screen capture)
+        - google-genai (Gemini API)
+        - GEMINI_API_KEY configured in .env or config/api_keys.json
+
+    Args:
+        prompt: The question or instruction about the screen content.
+
+    Returns:
+        Dict with analysis text and image metadata.
+    """
+    try:
+        from agent.vision import capture_screen, analyze_image_with_gemini
+
+        image_bytes, mime_type = capture_screen()
+        text = _run_async(
+            analyze_image_with_gemini(image_bytes, mime_type, prompt=prompt)
+        )
+        return {
+            "status": "success",
+            "analysis": text,
+            "source": "screen",
+            "image_size_bytes": len(image_bytes),
+        }
+    except ImportError as e:
+        return {"status": "error", "detail": f"Vision dependencies not installed: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Screen analysis failed: {e}"}
+
+        return {
+            "status": "success",
+            "analysis": text,
+            "source": "screen",
+            "image_size_bytes": len(image_bytes),
+        }
+    except ImportError as e:
+        return {"status": "error", "detail": f"Vision dependencies not installed: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Screen analysis failed: {e}"}
+
+
+def _analyze_camera(prompt: str = "What do you see? Be concise.") -> dict[str, Any]:
+    """Capture the webcam and analyze it using Gemini vision.
+
+    Requires:
+        - opencv-python (webcam)
+        - google-genai (Gemini API)
+        - GEMINI_API_KEY configured in .env or config/api_keys.json
+
+    Args:
+        prompt: The question or instruction about what the camera sees.
+
+    Returns:
+        Dict with analysis text and image metadata.
+    """
+    try:
+        from agent.vision import capture_camera, analyze_image_with_gemini
+
+        image_bytes, mime_type = capture_camera()
+        text = _run_async(
+            analyze_image_with_gemini(image_bytes, mime_type, prompt=prompt)
+        )
+        return {
+            "status": "success",
+            "analysis": text,
+            "source": "camera",
+            "image_size_bytes": len(image_bytes),
+        }
+    except ImportError as e:
+        return {"status": "error", "detail": f"Camera dependencies not installed: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Camera analysis failed: {e}"}
+
+        return {
+            "status": "success",
+            "analysis": text,
+            "source": "camera",
+            "image_size_bytes": len(image_bytes),
+        }
+    except ImportError as e:
+        return {"status": "error", "detail": f"Camera dependencies not installed: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Camera analysis failed: {e}"}
+
+
+def _analyze_file(image_path: str, prompt: str = "What is in this image? Be concise.") -> dict[str, Any]:
+    """Analyze a local image file using Gemini vision.
+
+    Requires:
+        - google-genai (Gemini API)
+        - GEMINI_API_KEY configured in .env or config/api_keys.json
+
+    Args:
+        image_path: Path to the image file on disk.
+        prompt: The question about the image.
+
+    Returns:
+        Dict with analysis text.
+    """
+    try:
+        from pathlib import Path
+        path = Path(image_path).expanduser().resolve()
+        if not path.is_file():
+            return {"status": "error", "detail": f"File not found: {path}"}
+
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(str(path))
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+
+        image_bytes = path.read_bytes()
+
+        from agent.vision import analyze_image_with_gemini
+        text = _run_async(
+            analyze_image_with_gemini(image_bytes, mime_type, prompt=prompt)
+        )
+
+        return {"status": "success", "analysis": text, "source": "file", "file_path": str(path)}
+    except Exception as e:
+        return {"status": "error", "detail": f"File analysis failed: {e}"}
+
+
+def _check_vision() -> dict[str, Any]:
+    """Check if vision capabilities are available (mss, opencv, Gemini key)."""
+    result = {"screen_capture": False, "webcam": False, "gemini_api": False}
+    try:
+        import mss  # noqa: F401
+        result["screen_capture"] = True
+    except ImportError:
+        pass
+    try:
+        import cv2  # noqa: F401
+        result["webcam"] = True
+    except ImportError:
+        pass
+    try:
+        from google import genai  # noqa: F401
+        result["gemini_api"] = True
+    except ImportError:
+        pass
+    return result
+
+
+def _vision_stream_start() -> dict[str, Any]:
+    """Start the persistent Gemini Live vision stream session.
+
+    Maintains a persistent WebSocket to Gemini Live for zero-latency
+    screen/camera analysis.  Once started, use ``analyze_screen`` or
+    ``analyze_camera`` with the ``use_stream`` parameter.
+    """
+    try:
+        from agent.vision import ensure_vision_stream
+        ok = ensure_vision_stream()
+        return {
+            "status": "connected" if ok else "timeout",
+            "detail": "Vision stream ready" if ok else "Vision stream timed out",
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _vision_stream_stop() -> dict[str, Any]:
+    """Stop the persistent Gemini Live vision stream session."""
+    try:
+        from agent.vision import stop_vision_stream
+        stop_vision_stream()
+        return {"status": "success", "detail": "Vision stream stopped"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _vision_stream_status() -> dict[str, Any]:
+    """Check the persistent vision stream session status."""
+    try:
+        from agent.vision import get_vision_stream_session
+        session = get_vision_stream_session()
+        if session:
+            return {
+                "status": "success",
+                "connected": session.is_connected,
+                "ready": session.is_ready,
+            }
+        return {"status": "success", "connected": False, "ready": False}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Function Registry ─────────────────────────────────────────────────
+
+# ─── Browser Control Functions (Playwright) ────────────────────────────
+
+def _browser_go_to(url: str, browser: str | None = None) -> dict[str, Any]:
+    """Navigate to a URL in the browser."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("go_to", {"url": url, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_search(query: str, engine: str = "google", browser: str | None = None) -> dict[str, Any]:
+    """Search the web."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("search", {"query": query, "engine": engine, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_click(selector: str | None = None, text: str | None = None, browser: str | None = None) -> dict[str, Any]:
+    """Click an element on the current page."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("click", {"selector": selector, "text": text, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_type_text(text: str, selector: str | None = None, browser: str | None = None) -> dict[str, Any]:
+    """Type text into an input field."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("type", {"text": text, "selector": selector, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_scroll(direction: str = "down", amount: int = 500, browser: str | None = None) -> dict[str, Any]:
+    """Scroll the current page."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("scroll", {"direction": direction, "amount": amount, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_screenshot(browser: str | None = None) -> dict[str, Any]:
+    """Take a screenshot of the current browser page."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("screenshot", {"browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_get_text(browser: str | None = None) -> dict[str, Any]:
+    """Get visible text from the current page."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("get_text", {"browser": browser})
+        return {"status": "success", "content": result, "detail": result[:200] + ('...' if len(result) > 200 else '')}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_new_tab(url: str = "", browser: str | None = None) -> dict[str, Any]:
+    """Open a new browser tab."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("new_tab", {"url": url, "browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_close_tab(browser: str | None = None) -> dict[str, Any]:
+    """Close the current browser tab."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("close_tab", {"browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_back(browser: str | None = None) -> dict[str, Any]:
+    """Navigate back in browser history."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("back", {"browser": browser})
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_get_url(browser: str | None = None) -> dict[str, Any]:
+    """Get the current browser page URL."""
+    try:
+        from system_control.browser_control import browser_action
+        result = browser_action("get_url", {"browser": browser})
+        return {"status": "success", "detail": result, "url": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _browser_open_native(url: str, browser: str | None = None) -> dict[str, Any]:
+    """Open a URL in the user's native browser (no automation)."""
+    try:
+        from system_control.browser_control import open_url_native
+        result = open_url_native(url, browser)
+        return {"status": "success", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Rich Content Broadcast Helper ─────────────────────────────────────
+
+def _broadcast_rich_content(content: dict) -> None:
+    """Fire-and-forget broadcast of structured data to the frontend Dynamic Content Panel.
+
+    Tries to schedule the async ``broadcast_rich_content()`` call on the current
+    running event loop via ``run_coroutine_threadsafe()``.  If no loop is running
+    (e.g. called from a thread pool thread), falls back to ``_run_async()`` which
+    creates a temporary event loop.
+
+    Never raises — all errors are silently caught to avoid breaking the function
+    result.
+    """
+    try:
+        from voice.websocket_manager import VoiceWSManager
+        mgr = VoiceWSManager.get_instance()
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.run_coroutine_threadsafe(
+                mgr.broadcast_rich_content(content),
+                loop,
+            )
+        except RuntimeError:
+            # No running loop (thread pool context) — use _run_async fallback
+            _run_async(mgr.broadcast_rich_content(content))
+    except Exception:
+        pass  # Never let a broadcast break the function result
+
+
+# ─── YouTube Control Functions ─────────────────────────────────────────
+
+def _youtube_play(query: str) -> dict[str, Any]:
+    """Search for a video on YouTube and play the first result."""
+    try:
+        from actions.youtube_control import youtube_play
+        result = _run_async(youtube_play(query))
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _youtube_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    """Search YouTube videos by query."""
+    try:
+        from actions.youtube_control import youtube_search
+        result = _run_async(youtube_search(query, max_results))
+        # Broadcast rich content to frontend panel
+        if result.get("status") == "ok" and result.get("results"):
+            _broadcast_rich_content({
+                "type": "youtube",
+                "query": query,
+                "results": result["results"],
+                "summary": result.get("summary", ""),
+            })
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _youtube_summarize(url: str, save: bool = False) -> dict[str, Any]:
+    """Get transcript and summarize a YouTube video using AI."""
+    try:
+        from actions.youtube_control import youtube_summarize
+        result = _run_async(youtube_summarize(url, save))
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _youtube_get_info(url: str) -> dict[str, Any]:
+    """Get metadata for a YouTube video."""
+    try:
+        from actions.youtube_control import youtube_get_info
+        result = _run_async(youtube_get_info(url))
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _youtube_trending(region: str = "US") -> dict[str, Any]:
+    """Get trending YouTube videos."""
+    try:
+        from actions.youtube_control import youtube_trending
+        result = _run_async(youtube_trending(region))
+        # Broadcast rich content to frontend panel
+        if result.get("status") == "ok" and result.get("results"):
+            _broadcast_rich_content({
+                "type": "youtube",
+                "query": f"Trending in {region}",
+                "results": result["results"],
+                "summary": result.get("summary", ""),
+            })
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Flight Finder Functions ───────────────────────────────────────────
+
+def _search_flights(
+    origin: str = "",
+    destination: str = "",
+    date: str = "",
+    return_date: str = "",
+    passengers: int = 1,
+    cabin: str = "economy",
+) -> dict[str, Any]:
+    """Search for flights using Google Flights."""
+    if not origin or not destination:
+        return {"status": "error", "detail": "Both origin and destination are required"}
+    if not date:
+        return {"status": "error", "detail": "Departure date is required"}
+    try:
+        from actions.flight_finder import search_flights
+        result = _run_async(search_flights(
+            origin=origin,
+            destination=destination,
+            date=date,
+            return_date=return_date or None,
+            passengers=max(1, passengers),
+            cabin=cabin.lower(),
+            open_browser=True,
+        ))
+        # Broadcast rich content to frontend panel
+        if result.get("status") in ("ok", "partial") and result.get("results"):
+            _broadcast_rich_content({
+                "type": "flights",
+                "origin": origin.upper(),
+                "destination": destination.upper(),
+                "date": date,
+                "results": result["results"],
+                "summary": result.get("summary", ""),
+            })
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Game Updater Functions ────────────────────────────────────────────
+
+def _steam_list_games() -> dict[str, Any]:
+    """List all installed Steam games with their update status."""
+    try:
+        from actions.game_updater import steam_list_games
+        return steam_list_games()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _steam_update_game(game_name: str) -> dict[str, Any]:
+    """Trigger update check for a specific Steam game."""
+    if not game_name:
+        return {"status": "error", "detail": "Game name is required"}
+    try:
+        from actions.game_updater import steam_update_game
+        return steam_update_game(game_name)
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _steam_update_all() -> dict[str, Any]:
+    """Trigger updates for all Steam games that need it."""
+    try:
+        from actions.game_updater import steam_update_all
+        return steam_update_all()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _steam_install_game(game_name: str) -> dict[str, Any]:
+    """Install a Steam game by name."""
+    if not game_name:
+        return {"status": "error", "detail": "Game name is required"}
+    try:
+        from actions.game_updater import steam_install_game
+        return steam_install_game(game_name)
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _epic_list_games() -> dict[str, Any]:
+    """List games installed via Epic Games Launcher."""
+    try:
+        from actions.game_updater import epic_list_games
+        return epic_list_games()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _get_free_games() -> dict[str, Any]:
+    """Get free-to-play games and current Steam deals."""
+    try:
+        from actions.game_updater import get_free_games
+        result = _run_async(get_free_games())
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _check_game_updates() -> dict[str, Any]:
+    """Check which installed games have pending updates."""
+    try:
+        from actions.game_updater import check_game_updates
+        return check_game_updates()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Reminder Functions ───────────────────────────────────────────────
+
+def _set_reminder(title: str, message: str = "", delay_minutes: int = 5) -> dict[str, Any]:
+    """Set a timed reminder with native OS toast notification."""
+    try:
+        from notifications.reminders import reminder_manager
+        result = _run_async(reminder_manager.create_reminder(
+            title=title,
+            message=message,
+            delay_minutes=max(1, delay_minutes),
+        ))
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _list_reminders() -> dict[str, Any]:
+    """List all active (non-dismissed) reminders."""
+    try:
+        from notifications.reminders import reminder_manager
+        reminders = _run_async(reminder_manager.list_reminders())
+        return {"status": "ok", "count": len(reminders), "reminders": reminders}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _dismiss_reminder(reminder_id: int) -> dict[str, Any]:
+    """Dismiss a reminder by its ID."""
+    try:
+        from notifications.reminders import reminder_manager
+        result = _run_async(reminder_manager.dismiss_reminder(reminder_id))
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ─── Code Helper & Dev Agent Functions (async → sync wrappers) ────────
+
+def _code_helper(
+    action: str = "auto",
+    description: str = "",
+    language: str = "python",
+    file_path: str = "",
+    output_path: str = "",
+    code: str = "",
+) -> dict[str, Any]:
+    """Generate, edit, explain, run, build, or debug code using an LLM.
+
+    Args:
+        action: "write" | "edit" | "explain" | "run" | "build" | "optimize" | "screen_debug" | "auto"
+        description: What the code should do / what change to make
+        language: Programming language (default: python)
+        file_path: Path to existing file
+        output_path: Where to save the output
+        code: Raw code string for explain/optimize
+
+    Returns:
+        Dict with human-readable result.
+    """
+    try:
+        from actions.code_helper import code_helper
+        result = _run_async(code_helper({
+            "action": action,
+            "description": description,
+            "language": language,
+            "file_path": file_path,
+            "output_path": output_path,
+            "code": code,
+        }))
+        truncated = len(result) > 5000
+        return {"status": "success", "detail": result[:5000], "truncated": truncated}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _dev_agent(
+    description: str = "",
+    language: str = "python",
+    project_name: str = "",
+) -> dict[str, Any]:
+    """Build a complete software project from a natural language description.
+
+    Plans the structure, writes all files, installs deps, runs, and auto-fixes.
+
+    Args:
+        description: What project to build (required)
+        language: Programming language (default: python)
+        project_name: Optional project directory name
+
+    Returns:
+        Dict with build report.
+    """
+    if not description:
+        return {"status": "error", "detail": "Please describe the project you want me to build."}
+    try:
+        from actions.dev_agent import dev_agent
+        result = _run_async(dev_agent({
+            "description": description,
+            "language": language,
+            "project_name": project_name,
+        }))
+        truncated = len(result) > 5000
+        return {"status": "success", "detail": result[:5000], "truncated": truncated}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 # ─── Function Registry ─────────────────────────────────────────────────
 
 FUNCTION_REGISTRY: dict[str, Any] = {
@@ -665,6 +1408,10 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "launch_app": _launch_app,
     "close_app": _close_app,
     "get_system_status": _get_system_status,
+    "get_hardware_status": _get_hardware_status,
+    "start_hardware_monitoring": _start_hardware_monitoring,
+    "stop_hardware_monitoring": _stop_hardware_monitoring,
+    "get_hardware_alerts": _get_hardware_alerts,
     "list_files": _list_files,
     "run_shell_command": _run_shell_command,
     "take_screenshot": _take_screenshot,
@@ -675,6 +1422,49 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "media_control": _media_control,
     "empty_trash": _empty_trash,
     "lock_screen": _lock_screen,
+    "analyze_screen": _analyze_screen,
+    "analyze_camera": _analyze_camera,
+    "analyze_file": _analyze_file,
+    "check_vision": _check_vision,
+    "vision_stream_start": _vision_stream_start,
+    "vision_stream_stop": _vision_stream_stop,
+    "vision_stream_status": _vision_stream_status,
+    # Browser control
+    "browser_go_to": _browser_go_to,
+    "browser_search": _browser_search,
+    "browser_click": _browser_click,
+    "browser_type_text": _browser_type_text,
+    "browser_scroll": _browser_scroll,
+    "browser_screenshot": _browser_screenshot,
+    "browser_get_text": _browser_get_text,
+    "browser_get_url": _browser_get_url,
+    "browser_new_tab": _browser_new_tab,
+    "browser_close_tab": _browser_close_tab,
+    "browser_back": _browser_back,
+    "browser_open_native": _browser_open_native,
+    # Code helper & Dev agent
+    "code_helper": _code_helper,
+    "dev_agent": _dev_agent,
+    # YouTube
+    "youtube_play": _youtube_play,
+    "youtube_search": _youtube_search,
+    "youtube_summarize": _youtube_summarize,
+    "youtube_get_info": _youtube_get_info,
+    "youtube_trending": _youtube_trending,
+    # Flight finder
+    "search_flights": _search_flights,
+    # Game updater
+    "steam_list_games": _steam_list_games,
+    "steam_update_game": _steam_update_game,
+    "steam_update_all": _steam_update_all,
+    "steam_install_game": _steam_install_game,
+    "epic_list_games": _epic_list_games,
+    "get_free_games": _get_free_games,
+    "check_game_updates": _check_game_updates,
+    # Reminders
+    "set_reminder": _set_reminder,
+    "list_reminders": _list_reminders,
+    "dismiss_reminder": _dismiss_reminder,
 }
 
 
@@ -756,6 +1546,48 @@ def get_function_schemas() -> list[dict]:
         {
             "name": "get_system_status",
             "description": "Returns current system status including CPU, memory, and disk usage.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "get_hardware_status",
+            "description": "Returns comprehensive hardware status including CPU, RAM, GPU, disk, network speed, and system uptime. Use this when the user asks about hardware health, system performance, GPU temperature, or any detailed hardware question.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "detailed": {
+                        "type": "boolean",
+                        "description": "If true, returns full telemetry with top processes and GPU details. Default: false.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "start_hardware_monitoring",
+            "description": "Starts background hardware monitoring with configurable threshold alerts. Will automatically fire desktop notifications when CPU, RAM, disk, or GPU exceed limits. Call this when the user says 'monitor my hardware', 'watch my system', or 'alert me about high usage'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "interval": {
+                        "type": "number",
+                        "description": "Seconds between telemetry checks. Default: 5.0. Range: 1-60.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "stop_hardware_monitoring",
+            "description": "Stops background hardware monitoring and threshold alerts.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "get_hardware_alerts",
+            "description": "Returns any active hardware threshold alerts (high CPU, RAM, GPU temperature, etc.). Use this when the user asks 'are there any alerts' or 'is my system healthy'.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -893,6 +1725,459 @@ def get_function_schemas() -> list[dict]:
         {
             "name": "lock_screen",
             "description": "Locks the computer screen immediately.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        # ── Browser Control Functions (Playwright) ────────────────────────
+        {
+            "name": "browser_go_to",
+            "description": "Opens a website or navigates to a URL in the user's web browser. Call this when the user says 'go to', 'open', 'navigate to', or 'browse' a website. Supports Chrome, Edge, Brave, and Firefox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL or website name to navigate to (e.g. 'github.com', 'youtube.com', 'gmail.com').",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use ('chrome', 'edge', 'brave', 'firefox'). Defaults to Chrome.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+        {
+            "name": "browser_search",
+            "description": "Searches the web using a search engine (Google by default). Call this when the user says 'search for', 'look up', 'google', or 'find' something online.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query (e.g. 'Python jobs in New York', 'best restaurants near me').",
+                    },
+                    "engine": {
+                        "type": "string",
+                        "enum": ["google", "bing", "duckduckgo"],
+                        "description": "Search engine to use. Default: google.",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "browser_click",
+            "description": "Clicks an element on the current browser page by its visible text or CSS selector. Call this when the user says 'click', 'press', or 'select' something on a webpage.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The visible text of the element to click (e.g. 'Sign in', 'Submit', 'Login').",
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional: CSS selector as alternative to text.",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_type_text",
+            "description": "Types text into an input field on the current browser page. Call this when the user says 'type', 'enter', 'fill in', or 'write' something in a form.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The text to type into the input field.",
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional: CSS selector for the input field. If omitted, types into the focused element.",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "browser_scroll",
+            "description": "Scrolls the current browser page up or down. Call this when the user says 'scroll down', 'scroll up', or 'page down'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["down", "up"],
+                        "description": "Scroll direction: 'down' or 'up'. Default: down.",
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": "Number of pixels to scroll. Default: 500.",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_get_text",
+            "description": "Gets the visible text content from the current browser page. Call this when the user asks 'what does the page say', 'read the page', or 'get text from the page'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_get_url",
+            "description": "Gets the current URL of the browser page. Call this when the user asks 'what's the current URL' or 'what page am I on'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_new_tab",
+            "description": "Opens a new browser tab, optionally navigating to a URL. Call this when the user says 'new tab' or 'open in new tab'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional: URL to open in the new tab.",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_close_tab",
+            "description": "Closes the current browser tab. Call this when the user says 'close tab' or 'close this tab'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "browser_back",
+            "description": "Navigates back in the browser history. Call this when the user says 'go back' or 'back'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "browser": {
+                        "type": "string",
+                        "description": "Optional: browser to use.",
+                    },
+                },
+            },
+        },
+        # ── Code Helper & Dev Agent ─────────────────────────────────────
+        {
+            "name": "code_helper",
+            "description": "Generates, edits, explains, runs, builds, or debugs code using an LLM. Call this when the user wants you to write code, fix a bug, explain code, build a program, or debug an error. Supports multiple programming languages.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["auto", "write", "edit", "explain", "run", "build", "optimize", "screen_debug"],
+                        "description": "Action to perform: 'auto' (auto-detect), 'write', 'edit', 'explain', 'run', 'build', 'optimize', or 'screen_debug'. Default: auto.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What the code should do or what change to make. Required for write/edit/build actions.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Programming language: python, javascript, typescript, html, css, java, cpp, bash, rust, go, sql, etc. Default: python.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to existing file for edit/explain/run actions.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "dev_agent",
+            "description": "Builds a complete software project from a natural language description. Plans the file structure, writes all files in dependency order, installs dependencies, runs the project, and auto-fixes errors. Call this when the user says 'build a project', 'create an app', or 'make a program'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "What project to build (e.g. 'a Flask REST API for a todo app', 'a CLI tool for file management'). Required.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Programming language: python, javascript, typescript, etc. Default: python.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Optional custom project directory name.",
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+        # ── Vision Functions (like Mark-L) ────────────────────────────────
+        {
+            "name": "analyze_screen",
+            "description": "Captures your computer screen and analyzes it using AI vision. Call this when the user asks what is on their screen, what you can see, or any question about the current display content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The question or instruction about what's on screen. Default: 'What do you see on my screen? Be concise.'",
+                    },
+                },
+            },
+        },
+        {
+            "name": "analyze_camera",
+            "description": "Captures the webcam and analyzes it using AI vision. Call this when the user asks you to look at them, see what's in front of the camera, or take a photo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The question about what the camera sees. Default: 'What do you see? Be concise.'",
+                    },
+                },
+            },
+        },
+        {
+            "name": "analyze_file",
+            "description": "Analyzes a local image file using AI vision. Provide the file path and an optional question about the image.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Full path to the image file on disk.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional question about the image. Default: 'What is in this image? Be concise.'",
+                    },
+                },
+                "required": ["image_path"],
+            },
+        },
+        {
+            "name": "check_vision",
+            "description": "Checks whether vision capabilities are available (screen capture library, webcam library, Gemini API key). Returns which components are ready.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        # ── YouTube Functions ────────────────────────────────────────────
+        {
+            "name": "youtube_play",
+            "description": "Searches YouTube for a video and opens the first result in your browser. Call this when you say 'play' or 'watch' a video on YouTube.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query for what to play (e.g. 'never gonna give you up', 'python tutorial').",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "youtube_search",
+            "description": "Searches YouTube and returns a list of matching video results with titles, channels, and durations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (e.g. 'tech reviews', 'music').",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max results to return (1-10). Default: 5.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "youtube_summarize",
+            "description": "Fetches the transcript of a YouTube video and summarizes it using AI. Call this when you want to understand a long video without watching it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The full YouTube video URL.",
+                    },
+                    "save": {
+                        "type": "boolean",
+                        "description": "If true, saves the summary to Desktop as a text file.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+        {
+            "name": "youtube_get_info",
+            "description": "Gets metadata for a YouTube video including title, channel, views, duration, and likes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The full YouTube video URL.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+        {
+            "name": "youtube_trending",
+            "description": "Gets the current trending YouTube videos for a region.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "string",
+                        "description": "ISO 3166-1 alpha-2 country code (e.g. 'US', 'IN', 'GB'). Default: 'US'.",
+                    },
+                },
+            },
+        },
+        # ── Flight Finder ────────────────────────────────────────────────
+        {
+            "name": "search_flights",
+            "description": "Searches for flights using Google Flights. Opens the results in your browser and returns flight options with prices, airlines, and durations. Call this when you want to find flights for travel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {
+                        "type": "string",
+                        "description": "Departure airport or city code (e.g. 'JFK', 'New York', 'DEL').",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Arrival airport or city code (e.g. 'LHR', 'London', 'DXB').",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Departure date. Supports natural language like 'tomorrow', 'next Monday', or YYYY-MM-DD format.",
+                    },
+                    "return_date": {
+                        "type": "string",
+                        "description": "Optional return date for round trips.",
+                    },
+                    "passengers": {
+                        "type": "integer",
+                        "description": "Number of passengers. Default: 1.",
+                    },
+                    "cabin": {
+                        "type": "string",
+                        "enum": ["economy", "premium", "business", "first"],
+                        "description": "Cabin class. Default: economy.",
+                    },
+                },
+                "required": ["origin", "destination", "date"],
+            },
+        },
+        # ── Game Updater ─────────────────────────────────────────────────
+        {
+            "name": "steam_list_games",
+            "description": "Lists all installed Steam games with their update status (up to date, downloading, update pending).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "steam_update_game",
+            "description": "Triggers an update check for a specific Steam game. Call this when you want to update a particular game.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "game_name": {
+                        "type": "string",
+                        "description": "Name of the game to update (e.g. 'Counter-Strike 2', 'Dota 2', 'Cyberpunk 2077').",
+                    },
+                },
+                "required": ["game_name"],
+            },
+        },
+        {
+            "name": "steam_update_all",
+            "description": "Triggers update checks for all Steam games that have pending updates. Call this to update all your games at once.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "steam_install_game",
+            "description": "Installs a Steam game by searching for its AppID and opening the Steam install dialog.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "game_name": {
+                        "type": "string",
+                        "description": "Name of the game to install (e.g. 'Elden Ring', 'Rust', 'Valheim').",
+                    },
+                },
+                "required": ["game_name"],
+            },
+        },
+        {
+            "name": "epic_list_games",
+            "description": "Lists games installed via the Epic Games Launcher.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "get_free_games",
+            "description": "Finds free-to-play games and current Steam deals/discounts.",
             "parameters": {
                 "type": "object",
                 "properties": {},

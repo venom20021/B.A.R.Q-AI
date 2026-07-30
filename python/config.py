@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     turso_database_url: str = os.getenv("TURSO_DATABASE_URL", "")
     turso_auth_token: str = os.getenv("TURSO_AUTH_TOKEN", "")
 
+    # Voice agent selection (deepgram or pipecat)
+    voice_agent_backend: str = os.getenv("VOICE_AGENT_BACKEND", "pipecat")
+
     # Deepgram (cloud STT/TTS)
     deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
 

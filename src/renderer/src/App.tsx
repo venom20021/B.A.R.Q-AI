@@ -10,8 +10,11 @@ import { ApprovalModal } from './components/ApprovalModal'
 import { TransientDiagnostics } from './components/TransientDiagnostics'
 import { Navbar } from './components/Navbar'
 import type { NavTab } from './components/Navbar'
+import { LiveCaptions } from './components/LiveCaptions'
+import { DynamicContentPanel } from './components/DynamicContentPanel'
+import type { RichContent } from './components/DynamicContentTypes'
 import { ThemeProvider } from './contexts/ThemeContext'
-import { VoiceProvider } from './contexts/VoiceContext'
+import { VoiceProvider, useVoice } from './contexts/VoiceContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { JobsPage } from './pages/JobsPage'
@@ -118,6 +121,27 @@ function AnimatedPage({ children }: { children: React.ReactNode }): JSX.Element 
 
 function TabView({ children }: { children: React.ReactNode }): JSX.Element {
   return <div className="h-full">{children}</div>
+}
+
+// ─── Live Captions Wrapper (inside VoiceProvider) ──────────────────────────
+
+function LiveCaptionsWrapper(): JSX.Element {
+  const { sttText, responseText, aiState, voiceListening, richContent, clearRichContent } = useVoice()
+  return (
+    <>
+      <DynamicContentPanel
+        content={richContent}
+        onDismiss={clearRichContent}
+      />
+      <LiveCaptions
+        sttText={sttText}
+        responseText={responseText}
+        isSpeaking={aiState === 'responding'}
+        isProcessing={aiState === 'thinking'}
+        conversationActive={voiceListening || aiState !== 'idle'}
+      />
+    </>
+  )
 }
 
 // ─── Map route to navbar tab ──────────────────────────────────────────────
@@ -322,6 +346,9 @@ function AppContent(): JSX.Element {
 
       {/* Transient Diagnostics — auto-dismissing system stats overlay */}
       <TransientDiagnostics />
+
+      {/* Live Captions — real-time STT + AI response subtitles */}
+      <LiveCaptionsWrapper />
     </>
   )
 }

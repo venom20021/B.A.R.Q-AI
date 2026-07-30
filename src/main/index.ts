@@ -5,6 +5,7 @@ import { createTray, setAppIsQuitting } from './tray'
 import { registerIpcHandlers } from './ipc'
 import { pythonBridge } from './python-bridge'
 import { initOverlayManager, destroyOverlayManager } from './overlay-manager'
+import { initClipboardWidget, destroyClipboardWidget } from './clipboard-widget'
 
 let mainWindow: BrowserWindow | null = null
 let pythonSidecar: typeof pythonBridge | null = null
@@ -167,6 +168,9 @@ app.whenReady().then(async () => {
   // Initialize desktop overlay manager
   initOverlayManager()
 
+  // Initialize clipboard intelligence widget (Ctrl+Shift+C)
+  initClipboardWidget()
+
   // Start Python sidecar (uses singleton — IPC handlers in ipc.ts share this instance)
   pythonSidecar = pythonBridge
   await pythonSidecar.start()
@@ -194,6 +198,9 @@ app.whenReady().then(async () => {
 app.on('will-quit', () => {
   // Cleanup overlay manager
   destroyOverlayManager()
+
+  // Cleanup clipboard widget
+  destroyClipboardWidget()
   // Unregister all shortcuts
   globalShortcut.unregisterAll()
 })

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BARQ Clipboard AI</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com;"
+    />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+        -webkit-app-region: drag;
+      }
+      #root {
+        width: 420px;
+        min-height: 200px;
+        max-height: 600px;
+        background: rgba(15, 23, 42, 0.92);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(6, 182, 212, 0.25);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(6, 182, 212, 0.15);
+        color: #e2e8f0;
+        overflow-y: auto;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+        -webkit-app-region: drag;
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .logo-icon {
+        width: 22px;
+        height: 22px;
+        background: linear-gradient(135deg, #06b6d4, #0891b2);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 11px;
+        color: #0f172a;
+        flex-shrink: 0;
+      }
+      .title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #f1f5f9;
+        letter-spacing: 0.3px;
+      }
+      .close-btn {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        border: none;
+        background: rgba(239, 68, 68, 0.15);
+        color: #f87171;
+        cursor: pointer;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+        -webkit-app-region: no-drag;
+      }
+      .close-btn:hover {
+        background: rgba(239, 68, 68, 0.3);
+      }
+      .clipboard-preview {
+        background: rgba(30, 41, 59, 0.6);
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 14px;
+        border: 1px solid rgba(71, 85, 105, 0.3);
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .clipboard-label {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: #64748b;
+        margin-bottom: 6px;
+      }
+      .clipboard-text {
+        font-size: 12px;
+        line-height: 1.5;
+        color: #cbd5e1;
+        word-wrap: break-word;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+      }
+      .clipboard-text.empty {
+        color: #64748b;
+        font-style: italic;
+        font-family: 'Inter', sans-serif;
+      }
+      .loading-dots {
+        display: inline-flex;
+        gap: 3px;
+        align-items: center;
+        margin-left: 4px;
+      }
+      .loading-dots span {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #06b6d4;
+        animation: pulse 1s infinite;
+      }
+      .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+      .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 12px;
+        -webkit-app-region: no-drag;
+      }
+      .action-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 8px;
+        border-radius: 10px;
+        border: 1px solid rgba(71, 85, 105, 0.3);
+        background: rgba(30, 41, 59, 0.5);
+        color: #e2e8f0;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+        font-family: 'Inter', sans-serif;
+      }
+      .action-btn:hover { 
+        border-color: rgba(6, 182, 212, 0.5);
+        background: rgba(6, 182, 212, 0.12);
+        transform: translateY(-1px);
+      }
+      .action-btn:active { transform: translateY(0); }
+      .action-btn .icon { font-size: 15px; }
+      .action-btn.translate { border-color: rgba(168, 85, 247, 0.3); }
+      .action-btn.translate:hover { border-color: rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.12); }
+      .action-btn.summarize { border-color: rgba(34, 211, 238, 0.3); }
+      .action-btn.summarize:hover { border-color: rgba(34, 211, 238, 0.6); background: rgba(34, 211, 238, 0.12); }
+      .action-btn.explain { border-color: rgba(250, 204, 21, 0.3); }
+      .action-btn.explain:hover { border-color: rgba(250, 204, 21, 0.6); background: rgba(250, 204, 21, 0.12); }
+      .action-btn.fix { border-color: rgba(239, 68, 68, 0.3); }
+      .action-btn.fix:hover { border-color: rgba(239, 68, 68, 0.6); background: rgba(239, 68, 68, 0.12); }
+      .result-area {
+        background: rgba(15, 23, 42, 0.5);
+        border-radius: 10px;
+        padding: 12px;
+        border: 1px solid rgba(71, 85, 105, 0.2);
+        min-height: 60px;
+        max-height: 250px;
+        overflow-y: auto;
+        -webkit-app-region: no-drag;
+      }
+      .result-text {
+        font-size: 12px;
+        line-height: 1.6;
+        color: #cbd5e1;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .result-text .action-label {
+        font-weight: 600;
+        color: #06b6d4;
+        margin-bottom: 6px;
+        display: block;
+      }
+      .result-text.loading {
+        color: #64748b;
+        font-style: italic;
+      }
+      .copy-result {
+        margin-top: 8px;
+        padding: 5px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(71, 85, 105, 0.3);
+        background: rgba(30, 41, 59, 0.4);
+        color: #94a3b8;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.15s;
+        font-family: 'Inter', sans-serif;
+        -webkit-app-region: no-drag;
+      }
+      .copy-result:hover {
+        border-color: rgba(6, 182, 212, 0.4);
+        color: #06b6d4;
+      }
+      .footer {
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        -webkit-app-region: no-drag;
+      }
+      .hotkey-hint {
+        font-size: 10px;
+        color: #475569;
+        font-family: 'JetBrains Mono', monospace;
+      }
+      .esc-hint {
+        font-size: 10px;
+        color: #475569;
+        cursor: pointer;
+        transition: color 0.15s;
+      }
+      .esc-hint:hover { color: #94a3b8; }
+      ::-webkit-scrollbar { width: 4px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(71, 85, 105, 0.4); border-radius: 2px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(71, 85, 105, 0.6); }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!-- Header -->
+      <div class="header">
+        <div class="header-left">
+          <div class="logo-icon">B</div>
+          <span class="title">Clipboard AI</span>
+        </div>
+        <button class="close-btn" id="closeBtn">✕</button>
+      </div>
+
+      <!-- Clipboard Preview -->
+      <div class="clipboard-preview">
+        <div class="clipboard-label">📋 Copied Text</div>
+        <div class="clipboard-text" id="clipboardText">Waiting for clipboard...</div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions">
+        <button class="action-btn translate" data-action="translate">
+          <span class="icon">🌐</span> Translate
+        </button>
+        <button class="action-btn summarize" data-action="summarize">
+          <span class="icon">📝</span> Summarize
+        </button>
+        <button class="action-btn explain" data-action="explain">
+          <span class="icon">💡</span> Explain
+        </button>
+        <button class="action-btn fix" data-action="fix">
+          <span class="icon">🔧</span> Fix
+        </button>
+      </div>
+
+      <!-- Result Area -->
+      <div class="result-area" id="resultArea">
+        <div class="result-text" id="resultText">Select an action above to process the clipboard text...</div>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <span class="hotkey-hint">Ctrl+Shift+C to open</span>
+        <span class="esc-hint" id="escHint">Press Esc to close</span>
+      </div>
+    </div>
+
+    <script>
+      // ─── Vanilla JS clipboard widget (no React needed for this light UI) ───
+      const { clipboardWidget } = window
+
+      let currentText = ''
+      let isLoading = false
+
+      const $ = (id) => document.getElementById(id)
+      const clipboardText = $('clipboardText')
+      const resultText = $('resultText')
+      const resultArea = $('resultArea')
+      const closeBtn = $('closeBtn')
+
+      // ─── Receive clipboard text from main process ──────────────────────────
+      clipboardWidget.onClipboardText((data) => {
+        currentText = data.text
+        clipboardText.textContent = currentText.slice(0, 500)
+        clipboardText.className = 'clipboard-text'
+        if (currentText.length > 500) {
+          clipboardText.textContent += '...'
+        }
+      })
+
+      // ─── Action buttons ───────────────────────────────────────────────────
+      document.querySelectorAll('.action-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (isLoading) return
+          if (!currentText) {
+            resultText.textContent = '⚠️ No clipboard text to process. Copy some text first (Ctrl+C) then press Ctrl+Shift+C.'
+            return
+          }
+
+          const action = btn.dataset.action
+          const actionLabels = {
+            translate: '🌐 Translating...',
+            summarize: '📝 Summarizing...',
+            explain: '💡 Explaining...',
+            fix: '🔧 Fixing...',
+          }
+
+          isLoading = true
+          resultText.innerHTML = `<span class="action-label">${actionLabels[action] || 'Processing...'}</span><span>Please wait<span class="loading-dots"><span></span><span></span><span></span></span></span>`
+
+          try {
+            const response = await clipboardWidget.runAction(action, currentText)
+            if (response.success) {
+              resultText.innerHTML = `<span class="action-label">✅ Result</span>${escapeHtml(response.result)}`
+
+              // Add copy button after result
+              const existingCopy = resultArea.querySelector('.copy-result')
+              if (!existingCopy) {
+                const copyBtn = document.createElement('button')
+                copyBtn.className = 'copy-result'
+                copyBtn.textContent = '📋 Copy Result'
+                copyBtn.addEventListener('click', () => {
+                  clipboardWidget.copy(response.result)
+                  copyBtn.textContent = '✅ Copied!'
+                  setTimeout(() => { copyBtn.textContent = '📋 Copy Result' }, 2000)
+                })
+                resultArea.appendChild(copyBtn)
+              }
+            } else {
+              resultText.innerHTML = `<span style="color: #f87171;">⚠️ Error: ${escapeHtml(response.result)}</span>`
+            }
+          } catch (err) {
+            resultText.innerHTML = `<span style="color: #f87171;">⚠️ Error: ${escapeHtml(String(err))}</span>`
+          } finally {
+            isLoading = false
+          }
+        })
+      })
+
+      // ─── Close ─────────────────────────────────────────────────────────────
+      closeBtn.addEventListener('click', () => clipboardWidget.close())
+
+      // Esc key to close
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') clipboardWidget.close()
+      })
+
+      // ─── HTML Escape ──────────────────────────────────────────────────────
+      function escapeHtml(str) {
+        const div = document.createElement('div')
+        div.textContent = str
+        return div.innerHTML
+      }
+    </script>
+  </body>
+</html>

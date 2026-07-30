@@ -161,6 +161,31 @@ class VoiceWSManager:
             "status": status,
         })
 
+    async def broadcast_rich_content(self, content: dict[str, Any]) -> None:
+        """Broadcast structured rich content data to the frontend Dynamic Content Panel.
+
+        Content dict should have:
+            type: str — one of "flights", "youtube", "news", "reminders", "generic"
+            results: list — structured items for the content type
+            ... — type-specific fields
+
+        Example (flights):
+            await manager.broadcast_rich_content({
+                "type": "flights",
+                "origin": "NYC",
+                "destination": "LON",
+                "date": "2025-12-01",
+                "results": [
+                    {"airline": "Delta", "departure": "07:30", ...}
+                ],
+                "summary": "Cheapest option is Delta at $450",
+            })
+        """
+        await self.broadcast({
+            "type": "rich_content",
+            "content": content,
+        })
+
     async def send_safe(self, ws: WebSocket, msg: dict[str, Any]) -> bool:
         """Send a JSON message to a specific WebSocket with state verification.
 

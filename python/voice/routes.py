@@ -35,11 +35,17 @@ from . import (
 )
 from .action_log import DANGER as ACTION_DANGER
 from .action_log import INFO, WARNING, get_recent_actions, log_action
-from .conversation_listener import ConversationListener, get_voice_agent_instance
+from .conversation_listener import ConversationListener
 from .evolution_logger import get_evolution_logger
 from .websocket_manager import VoiceWSManager
 
+from memory.agent_memory_manager import pop_last_session
+
 router = APIRouter()
+
+# Keep a reference to the ConversationListener singleton
+# (used by pipecat_agent.py for exit handling)
+conversation_listener_singleton = None
 
 # Singleton instances
 wake_word_detector: WakeWordDetector | None = None
@@ -50,6 +56,8 @@ conversation_listener = ConversationListener(
     stt=speech_processor,
     responder=responder,
 )
+conversation_listener_singleton = conversation_listener
+
 # on_stop is set after _on_conversation_stopped is defined (below)
 # parse_command and execute_command are set after _parse_and_route is defined
 
@@ -258,7 +266,11 @@ async def _gather_background_info() -> str:
 async def _inject_background_info():
     """Background task: gather info and inject it as a system message
     into the active conversation.  Runs concurrently with the conversation
-    loop so the user can start talking immediately."""
+    loop so the user can start talking immediately.
+
+    Also injects the previous session's summary (morning recall) so BARQ
+    remembers what was discussed last time.
+    """
     print("[BackgroundInfo] Gathering system info in background...")
     try:
         info = await _gather_background_info()
@@ -271,6 +283,27 @@ async def _inject_background_info():
             print("[BackgroundInfo] Info gathered but conversation already ended — discarding")
         else:
             print("[BackgroundInfo] No info gathered")
+
+        # ── Session memory recall (morning recall) ────────────────
+        # Pop the last session summary so it's only injected once.
+        # The summary is a short 1-2 sentence description of what was
+        # discussed in the previous conversation.
+        try:
+            last_session = pop_last_session()
+            if last_session and responder.conversation.is_active:
+                summary = last_session.get("summary", "")
+                session_date = last_session.get("date", "")
+                if summary:
+                    recall_msg = (
+                        f"[Previous session — {session_date}]: {summary}\n"
+                        f"Use this as context for the current conversation. "
+                        f"If relevant, mention this naturally (e.g., 'Last time we talked about...')."
+                    )
+                    responder.conversation.add_system_message(recall_msg)
+                    print(f"[SessionMemory] 🧠 Injected session recall: {summary[:80]}…")
+        except Exception as e:
+            print(f"[SessionMemory] Recall injection error (non-fatal): {e}")
+
     except Exception as e:
         print(f"[BackgroundInfo] Error: {e}")
 
@@ -627,7 +660,7 @@ async def load_sound_settings():
     # Load hands-free conversation mode setting
     hf_val = await settings_dao.get_setting("hands_free_mode")
     if hf_val is not None:
-        global _hands_free_mode
+        global _hands_free_mode, _language, _tts_voice
         _hands_free_mode = hf_val.lower() == "true"
         print(f"[Voice] Hands-free mode loaded from DB: {_hands_free_mode}")
 
@@ -637,6 +670,26 @@ async def load_sound_settings():
         global _wake_greeting_enabled
         _wake_greeting_enabled = wg_val.lower() == "true"
         print(f"[Voice] Wake greeting enabled loaded from DB: {_wake_greeting_enabled}")
+
+    # ── Silent Language Persistence ──
+    # Auto-load the last saved language from DB so the user never has to
+    # manually re-select their language after restart — it adapts silently
+    # (like Mark-L's "Silent Language Memory" feature).
+    lang_val = await settings_dao.get_setting("voice_language")
+    if lang_val is not None and lang_val.lower() in ("en", "hi"):
+        lang = lang_val.lower()
+        if lang != _language:
+            _language = lang
+            speech_processor.stt_language = lang
+            if wake_word_detector is not None:
+                wake_word_detector.set_language(lang)
+            if lang == "hi":
+                _tts_voice = "hi-IN-SwaraNeural"
+            print(f"[Voice] Language silently restored from DB: {lang}")
+        else:
+            print(f"[Voice] Language already set to: {lang}")
+    else:
+        print(f"[Voice] No saved language in DB, using default: {_language}")
 
 # ─── Multi-turn conversation state ─────────────────────────────────────────
 
@@ -941,43 +994,83 @@ async def set_tts_voice(request: TTSVoiceRequest):
 
 @router.get("/tts-voices")
 async def list_tts_voices():
-    """List available TTS voices (Deepgram Voice Agent models)."""
-    voices = [
-        {"id": "aura-2-odysseus-en", "name": "Odysseus", "locale": "en-US"},
-        {"id": "aura-2-hera-en", "name": "Hera", "locale": "en-US"},
-        {"id": "aura-2-athena-en", "name": "Athena", "locale": "en-US"},
-        {"id": "aura-2-persephone-en", "name": "Persephone", "locale": "en-US"},
-        {"id": "aura-2-ares-en", "name": "Ares", "locale": "en-US"},
-        {"id": "aura-2-orion-en", "name": "Orion", "locale": "en-US"},
-        {"id": "aura-2-helios-en", "name": "Helios", "locale": "en-US"},
-        {"id": "aura-2-arcas-en", "name": "Arcas", "locale": "en-US"},
-        {"id": "aura-2-stella-en", "name": "Stella", "locale": "en-US"},
-        {"id": "aura-2-luna-en", "name": "Luna", "locale": "en-US"},
-        {"id": "aura-2-nova-en", "name": "Nova", "locale": "en-US"},
-        {"id": "aura-2-iris-en", "name": "Iris", "locale": "en-US"},
-        {"id": "aura-2-asteria-en", "name": "Asteria", "locale": "en-US"},
-        {"id": "aura-2-selene-en", "name": "Selene", "locale": "en-US"},
-        {"id": "aura-2-aphrodite-en", "name": "Aphrodite", "locale": "en-US"},
-        {"id": "aura-2-hades-en", "name": "Hades", "locale": "en-US"},
-        {"id": "aura-2-poseidon-en", "name": "Poseidon", "locale": "en-US"},
-        {"id": "aura-2-zeus-en", "name": "Zeus", "locale": "en-US"},
-        {"id": "aura-2-demetra-en", "name": "Demetra", "locale": "en-US"},
+    """List available TTS voices from all backends."""
+    # Deepgram Aura-2 voices
+    deepgram_voices = [
+        {"id": "aura-2-odysseus-en", "name": "Odysseus", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-hera-en", "name": "Hera", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-athena-en", "name": "Athena", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-persephone-en", "name": "Persephone", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-ares-en", "name": "Ares", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-orion-en", "name": "Orion", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-helios-en", "name": "Helios", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-arcas-en", "name": "Arcas", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-stella-en", "name": "Stella", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-luna-en", "name": "Luna", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-nova-en", "name": "Nova", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-iris-en", "name": "Iris", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-asteria-en", "name": "Asteria", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-selene-en", "name": "Selene", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-aphrodite-en", "name": "Aphrodite", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-hades-en", "name": "Hades", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-poseidon-en", "name": "Poseidon", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-zeus-en", "name": "Zeus", "locale": "en-US", "backend": "deepgram"},
+        {"id": "aura-2-demetra-en", "name": "Demetra", "locale": "en-US", "backend": "deepgram"},
+    ]
+
+    # Kokoro offline neural voices
+    from .kokoro_tts import KNOWN_VOICES as kokoro_voices
+    kokoro_list = [
+        {"id": v["id"], "name": v["name"], "locale": v["locale"],
+         "gender": v["gender"], "backend": "kokoro"}
+        for v in kokoro_voices
+    ]
+
+    # Edge-TTS voices (partial list, common ones)
+    edge_voices = [
+        {"id": "en-US-AriaNeural", "name": "Aria", "locale": "en-US", "gender": "female", "backend": "edge-tts"},
+        {"id": "en-US-GuyNeural", "name": "Guy", "locale": "en-US", "gender": "male", "backend": "edge-tts"},
+        {"id": "en-US-JennyNeural", "name": "Jenny", "locale": "en-US", "gender": "female", "backend": "edge-tts"},
+        {"id": "en-GB-SoniaNeural", "name": "Sonia", "locale": "en-GB", "gender": "female", "backend": "edge-tts"},
+        {"id": "hi-IN-SwaraNeural", "name": "Swara", "locale": "hi-IN", "gender": "female", "backend": "edge-tts"},
     ]
 
     return {
-        "voices": voices,
+        "voices": deepgram_voices + kokoro_list + edge_voices,
         "current": _tts_voice,
-        "note": "Deepgram Aura-2 voices (managed by Voice Agent)",
+        "groups": {
+            "deepgram": {"name": "Deepgram Cloud TTS", "count": len(deepgram_voices)},
+            "kokoro": {"name": "Kokoro Offline Neural TTS", "count": len(kokoro_list), "offline": True},
+            "edge-tts": {"name": "Edge TTS (online)", "count": len(edge_voices)},
+        },
     }
 
 
 @router.get("/tts-backend")
 async def get_tts_backend():
-    """Get the current TTS backend (always deepgram_agent)."""
+    """Get the current TTS backend."""
+    try:
+        from .agent_factory import get_backend_from_db
+        active_backend = await get_backend_from_db()
+    except Exception:
+        active_backend = "deepgram"
+
+    # Get Pipecat TTS backend preference
+    pipecat_tts = speech_processor.tts_backend
+    try:
+        db_pipecat_tts = await settings_dao.get_setting("pipecat_tts_backend")
+        if db_pipecat_tts:
+            pipecat_tts = db_pipecat_tts
+    except Exception:
+        pass
+
     return {
-        "backend": speech_processor.tts_backend,
-        "available_backends": ["deepgram_agent"],
-        "note": "Deepgram Voice Agent handles all TTS",
+        "backend": pipecat_tts,
+        "available_backends": ["deepgram_agent", "pipecat_local"],
+        "pipecat_tts_options": ["edge-tts", "kokoro"],
+        "pipecat_tts_backend": pipecat_tts,
+        "active_voice_agent": active_backend,
+        "note": f"Voice agent backend: {active_backend}, Pipecat TTS: {pipecat_tts}",
     }
 
 
@@ -988,15 +1081,76 @@ class TTSBackendRequest(BaseModel):
 
 @router.post("/tts-backend")
 async def set_tts_backend(request: TTSBackendRequest):
-    """TTS backend selection — only deepgram_agent is available."""
-    if request.backend != "deepgram_agent":
-        raise HTTPException(status_code=400, detail="Only 'deepgram_agent' backend is available")
+    """TTS backend selection."""
+    valid_backends = {"deepgram_agent", "pipecat_local"}
+    if request.backend not in valid_backends:
+        raise HTTPException(status_code=400, detail=f"Backend must be one of: {', '.join(sorted(valid_backends))}")
 
-    speech_processor.tts_backend = "deepgram_agent"
-    await settings_dao.set_setting("tts_backend", "deepgram_agent", "voice")
-    await analytics_dao.log_activity("voice", "tts_backend", "TTS backend set to deepgram_agent")
+    speech_processor.tts_backend = request.backend
+    await settings_dao.set_setting("tts_backend", request.backend, "voice")
+    await analytics_dao.log_activity("voice", "tts_backend", f"TTS backend set to {request.backend}")
 
-    return {"status": "set", "backend": "deepgram_agent"}
+    return {"status": "set", "backend": request.backend}
+
+
+class PipecatTTSRequest(BaseModel):
+    """Pipecat TTS settings."""
+    tts_backend: str  # "edge-tts" or "kokoro"
+    tts_voice: Optional[str] = None  # voice ID for the selected backend
+    tts_speed: Optional[float] = None  # speed multiplier (0.5–2.0)
+
+
+@router.get("/pipecat-tts")
+async def get_pipecat_tts_settings():
+    """Get Pipecat-specific TTS settings."""
+    backend = await settings_dao.get_setting("pipecat_tts_backend") or "edge-tts"
+    voice = await settings_dao.get_setting("pipecat_tts_voice") or "en-US-AriaNeural"
+    speed = await settings_dao.get_setting("pipecat_tts_speed") or "1.0"
+
+    return {
+        "tts_backend": backend,
+        "tts_voice": voice,
+        "tts_speed": float(speed),
+        "available_backends": ["edge-tts", "kokoro"],
+    }
+
+
+@router.post("/pipecat-tts")
+async def set_pipecat_tts_settings(request: PipecatTTSRequest):
+    """Update Pipecat-specific TTS settings (Kokoro voice, speed, backend)."""
+    valid_backends = {"edge-tts", "kokoro"}
+    if request.tts_backend not in valid_backends:
+        raise HTTPException(status_code=400,
+                            detail=f"TTS backend must be one of: {', '.join(sorted(valid_backends))}")
+
+    await settings_dao.set_setting("pipecat_tts_backend", request.tts_backend, "voice")
+
+    if request.tts_voice:
+        await settings_dao.set_setting("pipecat_tts_voice", request.tts_voice, "voice")
+
+    if request.tts_speed is not None:
+        speed = max(0.5, min(2.0, request.tts_speed))
+        await settings_dao.set_setting("pipecat_tts_speed", str(speed), "voice")
+
+    # Reset the cached agent so the new settings take effect
+    try:
+        from .agent_factory import reset_voice_agent
+        reset_voice_agent()
+    except Exception:
+        pass
+
+    await analytics_dao.log_activity(
+        "voice", "pipecat_tts",
+        f"Pipecat TTS set to {request.tts_backend} (voice={request.tts_voice}, speed={request.tts_speed})"
+    )
+
+    return {
+        "status": "set",
+        "tts_backend": request.tts_backend,
+        "tts_voice": request.tts_voice or "default",
+        "tts_speed": request.tts_speed or 1.0,
+        "note": "Will take effect on next wake word trigger",
+    }
 
 
 class STTBackendRequest(BaseModel):
@@ -1006,25 +1160,104 @@ class STTBackendRequest(BaseModel):
 @router.get("/stt-backend")
 async def get_stt_backend():
     """Get the current STT backend."""
+    try:
+        from .agent_factory import get_backend_from_db
+        active_backend = await get_backend_from_db()
+    except Exception:
+        active_backend = "deepgram"
+
+    backends = ["deepgram_agent", "pipecat_local"]
+
     return {
         "backend": speech_processor.stt_backend,
-        "available_backends": ["deepgram_agent"],
+        "available_backends": backends,
+        "active_voice_agent": active_backend,
         "deepgram_configured": bool(get_settings().deepgram_api_key),
-        "note": "Deepgram Voice Agent handles all STT",
+        "note": f"Voice agent: {active_backend}",
     }
 
 
 @router.post("/stt-backend")
 async def set_stt_backend(request: STTBackendRequest):
-    """STT backend selection — only deepgram_agent is available."""
-    if request.backend != "deepgram_agent":
-        raise HTTPException(status_code=400, detail="Only 'deepgram_agent' backend is available")
+    """STT backend selection."""
+    valid_backends = {"deepgram_agent", "pipecat_local"}
+    if request.backend not in valid_backends:
+        raise HTTPException(status_code=400, detail=f"Backend must be one of: {', '.join(sorted(valid_backends))}")
 
-    speech_processor.stt_backend = "deepgram_agent"
-    await settings_dao.set_setting("stt_backend", "deepgram_agent", "voice")
-    await analytics_dao.log_activity("voice", "stt_backend", "STT backend set to deepgram_agent")
+    speech_processor.stt_backend = request.backend
+    await settings_dao.set_setting("stt_backend", request.backend, "voice")
+    await analytics_dao.log_activity("voice", "stt_backend", f"STT backend set to {request.backend}")
 
-    return {"status": "set", "backend": "deepgram_agent"}
+    return {"status": "set", "backend": request.backend}
+
+
+class VoiceBackendRequest(BaseModel):
+    backend: str  # "deepgram" or "pipecat"
+
+
+@router.get("/backends")
+async def list_voice_backends():
+    """List all available voice agent backends with metadata."""
+    from .agent_factory import get_available_backends
+    backends = get_available_backends()
+
+    try:
+        from .agent_factory import get_backend_from_db
+        active = await get_backend_from_db()
+    except Exception:
+        active = "deepgram"
+
+    return {
+        "backends": backends,
+        "active": active,
+    }
+
+
+@router.get("/backend")
+async def get_voice_backend():
+    """Get the currently active voice agent backend."""
+    from .agent_factory import get_backend_from_db
+    active = await get_backend_from_db()
+    return {
+        "backend": active,
+        "available": ["deepgram", "pipecat"],
+    }
+
+
+@router.post("/backend")
+async def set_voice_backend(request: VoiceBackendRequest):
+    """Switch the voice agent backend between deepgram and pipecat.
+
+    If a conversation is active, it will be stopped and the new backend
+    will be used for the next wake word trigger.
+    """
+    if request.backend not in ("deepgram", "pipecat"):
+        raise HTTPException(status_code=400, detail="Backend must be 'deepgram' or 'pipecat'")
+
+    # If conversation is active, stop it
+    if conversation_listener.is_active:
+        await conversation_listener.stop_conversation()
+
+    # Reset the factory cache so the next get_voice_agent() call creates
+    # the new backend
+    from .agent_factory import reset_voice_agent
+    reset_voice_agent()
+
+    # Persist to DB
+    await settings_dao.set_setting("voice_agent_backend", request.backend, "voice")
+
+    print(f"[Voice] Voice agent backend switched to: {request.backend}")
+
+    await analytics_dao.log_activity(
+        "voice", "backend_switch",
+        f"Voice agent backend switched to {request.backend}",
+    )
+
+    return {
+        "status": "set",
+        "backend": request.backend,
+        "note": "Will take effect on next wake word trigger",
+    }
 
 
 class VoiceAgentModeRequest(BaseModel):
@@ -1034,31 +1267,34 @@ class VoiceAgentModeRequest(BaseModel):
 @router.get("/agent")
 async def get_agent_mode():
     """Get the current Voice Agent mode status."""
+    from .agent_factory import get_backend_from_db
+    active_backend = await get_backend_from_db()
+
     return {
         "voice_agent_enabled": True,
+        "active_backend": active_backend,
         "deepgram_api_key_configured": bool(get_settings().deepgram_api_key),
-        "note": "Deepgram Voice Agent is the default pipeline",
+        "note": f"Active voice agent: {active_backend}",
     }
 
 
 @router.post("/agent")
 async def set_agent_mode(request: VoiceAgentModeRequest):
-    """Enable or disable Deepgram Voice Agent mode.
+    """Enable or disable Voice Agent mode.
 
-    When enabled, the wake word triggers a Deepgram Voice Agent connection
-    which handles STT + LLM + TTS entirely in the cloud.
-    When disabled (default), BARQ uses its local pipeline.
+    When enabled, the wake word triggers the configured voice agent
+    (Deepgram or Pipecat) which handles STT + LLM + TTS.
+    When disabled, BARQ uses its local non-streaming pipeline.
     """
     if request.enabled and not get_settings().deepgram_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Deepgram API key not configured. Set DEEPGRAM_API_KEY in .env",
-        )
+        # Only warn about missing Deepgram key — Pipecat doesn't need it
+        print("[Voice] Voice Agent enabled but DEEPGRAM_API_KEY is not set — Pipecat will try to connect")
 
     # If conversation is active, stop and restart
     if conversation_listener.is_active:
         await conversation_listener.stop_conversation()
-        reset_voice_agent_instance()
+        from .agent_factory import reset_voice_agent
+        reset_voice_agent()
 
     print(f"[Voice] Voice Agent mode: {'ENABLED' if request.enabled else 'DISABLED'}")
 

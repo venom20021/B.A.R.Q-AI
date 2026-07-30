@@ -24,6 +24,9 @@ from .vision import (
     analyze_image_with_gemini_live,
     capture_camera,
     capture_screen,
+    ensure_vision_stream,
+    get_vision_stream_session,
+    stop_vision_stream,
 )
 
 logger = logging.getLogger("barq.vision")
@@ -216,6 +219,93 @@ async def analyze_camera(request: CameraRequest):
         return {"status": "unavailable", "message": str(e)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class StreamAnalyzeRequest(BaseModel):
+    """Request body for stream analysis."""
+    prompt: str = "What do you see? Be concise."
+    angle: str = "screen"  # "screen" or "camera"
+    camera_index: int = -1
+
+
+@router.post("/stream/start", summary="Start persistent Gemini Live vision stream")
+async def start_vision_stream():
+    """Start the persistent Gemini Live vision streaming session.
+
+    This maintains a long-lived WebSocket connection to Gemini Live
+    for real-time screen/camera analysis with audio responses.
+    Once started, use ``/stream/analyze`` to send images.
+    """
+    try:
+        ok = ensure_vision_stream()
+        return {
+            "status": "connected" if ok else "timeout",
+            "note": "If connected, audio responses will stream back automatically",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stream/analyze", summary="Analyze screen/webcam via persistent stream")
+async def analyze_via_stream(request: StreamAnalyzeRequest):
+    """Capture and send an image through the persistent Gemini Live stream.
+
+    The session must have been started via ``/stream/start`` first.
+    Audio responses arrive asynchronously (not in this response).
+    Returns a text analysis from Gemini for REST clients.
+    """
+    try:
+        session = get_vision_stream_session()
+        if not session or not session.is_ready:
+            return {"status": "error", "message": "Stream not started. Call /stream/start first."}
+
+        # Capture
+        if request.angle.lower() == "camera":
+            image_bytes, mime_type = capture_camera(
+                camera_index=request.camera_index if request.camera_index >= 0 else -1
+            )
+            source = "camera"
+        else:
+            image_bytes, mime_type = capture_screen()
+            source = "screen"
+
+        if not image_bytes:
+            return {"status": "error", "message": "Failed to capture image"}
+
+        # Queue for analysis via persistent session
+        ok = session.analyze(image_bytes, mime_type, request.prompt)
+
+        # Also do a direct Gemini analysis for text response
+        text = await analyze_image_with_gemini(
+            image_bytes, mime_type, prompt=request.prompt
+        )
+
+        return {
+            "status": "queued" if ok else "error",
+            "source": source,
+            "text": text,
+            "image_size_bytes": len(image_bytes),
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stream/stop", summary="Stop the persistent vision stream")
+async def stop_vision_stream_endpoint():
+    """Stop the persistent Gemini Live vision streaming session."""
+    stop_vision_stream()
+    return {"status": "stopped"}
+
+
+@router.get("/stream/status", summary="Check persistent stream status")
+async def stream_status():
+    """Check if the persistent stream session is connected."""
+    session = get_vision_stream_session()
+    return {
+        "connected": session.is_connected if session else False,
+        "ready": session.is_ready if session else False,
+    }
 
 
 @router.get("/check", summary="Check vision capabilities")

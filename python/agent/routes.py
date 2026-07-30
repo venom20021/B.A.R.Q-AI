@@ -270,6 +270,70 @@ async def discover_skills(query: dict = {}):
     return {"status": "discovered", "skills_registered": count, "total": registry.count()}
 
 
+# ─── Code Helper & Dev Agent ──────────────────────────────────────────────
+
+
+@router.post("/code", summary="Generate, edit, or debug code")
+async def code_helper_endpoint(data: dict):
+    """Run the code helper: generate, edit, explain, run, build, or debug code.
+
+    Request body:
+        action: "write" | "edit" | "explain" | "run" | "build" | "optimize" | "screen_debug" | "auto"
+        description: What the code should do
+        language: Programming language (default: python)
+        file_path: Path to existing file
+        output_path: Where to save
+        code: Raw code string
+
+    Returns the result as a string.
+    """
+    try:
+        from actions.code_helper import code_helper
+        result = await code_helper(data)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dev", summary="Build a complete software project")
+async def dev_agent_endpoint(data: dict):
+    """Build a complete software project from a natural language description.
+
+    Request body:
+        description: What to build (required)
+        language: Programming language (default: python)
+        project_name: Optional project directory name
+
+    Returns a build report.
+    """
+    try:
+        from actions.dev_agent import dev_agent
+        result = await dev_agent(data)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dev/plan", summary="Plan a project structure without building")
+async def dev_agent_plan(data: dict):
+    """Plan a project structure without writing or running code.
+
+    Useful for previewing the file layout before building.
+    """
+    try:
+        from actions.dev_agent import plan_project
+        description = data.get("description", "")
+        language = data.get("language", "python")
+        if not description:
+            raise HTTPException(status_code=400, detail="description is required")
+        plan = await plan_project(description, language)
+        return {"status": "ok", "plan": plan}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/memory/extract", summary="Extract facts from conversation")
 async def extract_facts(request: MemoryExtractRequest):
     """Analyze a conversation turn and extract memorable facts.

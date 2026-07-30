@@ -1,7 +1,7 @@
 """
 Conversation listener for continuous voice interaction.
 
-Powered by the Deepgram Voice Agent — a managed STT → LLM → TTS pipeline.
+Powered by a pluggable Voice Agent (Deepgram Voice Agent or Pipecat local).
 Wake word (Vosk) triggers the conversation, then the Voice Agent handles
 all speech processing. Say "nothing" to end the conversation.
 """
@@ -12,37 +12,36 @@ from collections.abc import Awaitable
 from typing import Callable, Optional
 
 from ai.responder import BARQResponder
+from memory.agent_memory_manager import save_session_summary
 from voice.evolution_logger import get_evolution_logger
 from voice.websocket_manager import VoiceWSManager
 from voice.speech import SpeechProcessor
-
-# Lazy import for Deepgram Voice Agent
-_voice_agent_instance = None
-
-def get_voice_agent_instance():
-    global _voice_agent_instance
-    if _voice_agent_instance is None:
-        from config import get_settings
-        settings = get_settings()
-        if settings.deepgram_api_key:
-            from .deepgram_agent import DeepgramVoiceAgent
-            _voice_agent_instance = DeepgramVoiceAgent(api_key=settings.deepgram_api_key)
-    return _voice_agent_instance
-
-def reset_voice_agent_instance():
-    global _voice_agent_instance
-    _voice_agent_instance = None
 
 # Type aliases for optional command callbacks
 ParseCommandFn = Callable[[str, bool, Optional[str]], Awaitable[dict]]
 ExecuteCommandFn = Callable[[str, dict], Awaitable[str]]
 
+# Module-level reference to the current ConversationListener singleton
+_conversation_listener = None
+
+
+def get_listener():
+    """Get the active ConversationListener singleton."""
+    global _conversation_listener
+    return _conversation_listener
+
+
+def set_listener(listener):
+    """Set the active ConversationListener singleton."""
+    global _conversation_listener
+    _conversation_listener = listener
+
 
 class ConversationListener:
-    """Manages the Deepgram Voice Agent conversation loop.
+    """Manages the voice agent conversation loop.
 
-    Once activated (via wake word), connects to the Voice Agent WebSocket.
-    The Voice Agent handles STT → LLM → TTS internally.
+    Once activated (via wake word), connects to the configured Voice Agent
+    (Deepgram or Pipecat).  The Voice Agent handles STT → LLM → TTS internally.
     Say "nothing" (or another exit phrase) to end and return to wake-word standby.
     """
 
@@ -70,6 +69,9 @@ class ConversationListener:
         self._parse_command: Optional[ParseCommandFn] = parse_command
         self._execute_command: Optional[ExecuteCommandFn] = execute_command
 
+        # Register as the global singleton
+        set_listener(self)
+
     @property
     def is_active(self) -> bool:
         return self._conversation_active
@@ -81,12 +83,35 @@ class ConversationListener:
         self._conversation_active = True
         self.responder.conversation.start_session("voice_conversation")
 
-        print("[Conversation] Deepgram Voice Agent starting...")
+        print("[Conversation] Voice Agent starting...")
         self._loop_task = asyncio.create_task(self._conversation_loop())
 
     async def stop_conversation(self):
         """End the conversation loop and return to wake-word standby."""
         self._conversation_active = False
+
+        # ── Auto-save session summary before ending ────────────────
+        # Generate a concise summary from the conversation history
+        # so BARQ can recall it on next wake (morning recall feature).
+        try:
+            if self.responder.conversation.is_active and self.responder.conversation.turn_count > 0:
+                recent = self.responder.conversation.get_recent_history(6)
+                topics = set()
+                for msg in recent:
+                    if msg["role"] == "user":
+                        text = msg["content"][:80]
+                        # Extract key phrases (first few words as topic indicators)
+                        words = text.strip().split()[:6]
+                        if words:
+                            phrase = " ".join(words)
+                            topics.add(phrase)
+                if topics:
+                    summary = "Discussed: " + "; ".join(sorted(topics))[:280]
+                    language = getattr(self.responder, "_last_language", "")
+                    save_session_summary(summary, language=language)
+        except Exception as e:
+            print(f"[Conversation] Session summary save error (non-fatal): {e}")
+
         if self._loop_task:
             self._loop_task.cancel()
             try:
@@ -115,34 +140,39 @@ class ConversationListener:
 
         print("[Conversation] Conversation ended — back to wake word standby")
 
-    # ── Deepgram Voice Agent loop ──────────────────────────────────
+    # ── Voice Agent loop ─────────────────────────────────────────────
 
     async def _conversation_loop(self):
-        """Connect to Deepgram Voice Agent and stream audio.
+        """Connect to the configured Voice Agent (Deepgram or Pipecat) and stream audio.
 
-        The Voice Agent handles STT → Gemini LLM → TTS internally.
+        The Voice Agent handles STT → LLM → TTS internally.
         Streams microphone audio and plays back responses.
 
-        Retries WebSocket connection up to 5 times with exponential
+        Retries connection up to 5 times with exponential
         backoff (1s, 3s, 9s, 27s, 81s) if the connection drops
-        unexpectedly during a conversation. This handles transient
-        network issues without needing a full process restart.
-
-        If the entire Python process crashes (exit code 3221226356),
-        recovery is handled at the Electron sidecar level in
-        python-bridge.ts (_handleProcessCrash).
+        unexpectedly during a conversation.
         """
-
         max_retries = 5
         retry_delay = 1.0  # initial delay in seconds
+
+        # Get the active backend *before* the retry loop so we don't
+        # re-read the DB on every attempt (the backend shouldn't change
+        # mid-conversation).
+        backend = await _get_backend_once()
 
         for attempt in range(1, max_retries + 1):
             if not self._conversation_active:
                 return
 
-            agent = get_voice_agent_instance()
-            if not agent:
-                print("[VoiceAgent] No Deepgram API key configured — cannot start conversation")
+            # Get agent from the factory (uses cached instance)
+            from .agent_factory import get_voice_agent_async, reset_voice_agent
+            if attempt > 1:
+                # On retry, force a fresh agent instance
+                reset_voice_agent()
+
+            agent = await get_voice_agent_async(backend=backend)
+            if agent is None:
+                print(f"[VoiceAgent] No voice agent available for backend '{backend}'")
                 self._conversation_active = False
                 return
 
@@ -175,12 +205,18 @@ class ConversationListener:
                 agent.on_agent_done_speaking = lambda: self.ws_manager.fire(
                     self.ws_manager.broadcast_state("listening")
                 )
+                agent.on_agent_text = lambda text: self.ws_manager.fire(
+                    self.ws_manager.broadcast({
+                        "type": "caption_barq",
+                        "text": text,
+                    })
+                )
                 agent.on_audio_chunk = self._on_agent_audio_chunk
 
                 self.responder.is_speaking_event.set()
                 await agent.start_conversation()
 
-                print(f"[VoiceAgent] Conversation active (attempt {attempt}/{max_retries})")
+                print(f"[VoiceAgent] Conversation active ({backend}, attempt {attempt}/{max_retries})")
 
                 # Wait until conversation ends
                 while self._conversation_active and agent.is_running:
@@ -191,14 +227,12 @@ class ConversationListener:
                     print("[VoiceAgent] Conversation ended by user")
                     break
                 elif not agent.is_running:
-                    # Agent stopped unexpectedly (WS disconnected, not process crash)
                     print(f"[VoiceAgent] Agent disconnected unexpectedly (attempt {attempt}/{max_retries})")
                     if attempt < max_retries:
                         wait = retry_delay * (3 ** (attempt - 1))
                         print(f"[VoiceAgent] Reconnecting in {wait:.0f}s...")
                         await asyncio.sleep(wait)
-                        # Reset agent state for clean reconnection
-                        reset_voice_agent_instance()
+                        reset_voice_agent()
                         continue
                     else:
                         print("[VoiceAgent] Max retries reached — ending conversation")
@@ -210,7 +244,7 @@ class ConversationListener:
                     wait = retry_delay * (3 ** (attempt - 1))
                     print(f"[VoiceAgent] Retrying in {wait:.0f}s...")
                     await asyncio.sleep(wait)
-                    reset_voice_agent_instance()
+                    reset_voice_agent()
                     continue
                 else:
                     break
@@ -233,12 +267,9 @@ class ConversationListener:
     def _on_agent_audio_chunk(self, pcm_array, sample_rate: int):
         """Handle an audio chunk from the Voice Agent.
 
-        NOTE: Playback is now handled internally by DeepgramVoiceAgent's
-        _output_thread, which plays chunks sequentially via sd.play()
-        + sd.wait(). This callback is kept for state tracking only.
+        Playback is handled internally by the agent's output stream.
+        This callback exists for future state tracking (e.g., captions).
         """
-        # Playback is handled by deepgram_agent.py's _output_thread.
-        # This callback exists for future state tracking (e.g., captions).
         pass
 
     # ── Helpers ─────────────────────────────────────────────────────
@@ -250,3 +281,13 @@ class ConversationListener:
             if re.search(rf"\b{re.escape(phrase)}\b", text_lower):
                 return True
         return False
+
+
+async def _get_backend_once() -> str:
+    """Read the voice agent backend from DB once (with env fallback)."""
+    try:
+        from .agent_factory import get_backend_from_db
+        return await get_backend_from_db()
+    except Exception:
+        import os
+        return os.getenv("VOICE_AGENT_BACKEND", "deepgram")

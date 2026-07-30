@@ -31,6 +31,7 @@ import numpy as np
 
 from config import get_settings
 
+from .agent_base import VoiceAgentBase
 from .function_executor import get_function_schemas
 
 
@@ -106,7 +107,7 @@ AGENT_INPUT_BLOCK_SIZE = 2400  # 50ms at 48kHz
 AGENT_OUTPUT_SAMPLE_RATE = 24000
 
 
-class DeepgramVoiceAgent:
+class DeepgramVoiceAgent(VoiceAgentBase):
     """Manages a Deepgram Voice Agent WebSocket session.
 
     Creates a connection to Deepgram's managed voice pipeline,
@@ -160,11 +161,13 @@ class DeepgramVoiceAgent:
         self._output_ring_buffer: collections.deque = collections.deque(maxlen=72000)  # 3s at 24kHz
 
         # Callbacks — wired by the conversation listener
-        self.on_interim_transcript = None  # callback(text)
-        self.on_final_transcript = None    # callback(text)
-        self.on_agent_speaking = None      # callback()
-        self.on_agent_done_speaking = None # callback()
-        self.on_audio_chunk = None         # callback(pcm_array, sample_rate)
+        # (These default to None from VoiceAgentBase)
+        # self.on_interim_transcript = None  -- inherited from base class
+        # self.on_final_transcript = None
+        # self.on_agent_speaking = None
+        # self.on_agent_done_speaking = None
+        # self.on_audio_chunk = None
+        # self.on_agent_text = None
 
         # Function call tracking (dedup)
         self._pending_function_calls: set[str] = set()
@@ -915,6 +918,10 @@ class DeepgramVoiceAgent:
                 self._flush_audio_queue("greeting")
                 self._can_send_audio.set()
                 print("[DeepgramAgent] Greeting text received — pausing mic during greeting audio")
+            # Forward the text as a caption_barq message for live captions
+            conv_text = data.get("text", "") or data.get("content", "")
+            if conv_text and self.on_agent_text:
+                self.on_agent_text(conv_text)
 
         elif msg_type == "FunctionCallRequest":
             functions = data.get("functions", [])

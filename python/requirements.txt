@@ -82,6 +82,13 @@ psutil>=7.0.0
 # File System Monitoring
 watchdog>=4.0.0
 
+# Pipecat voice agent (local STT→LLM→TTS pipeline)
+# Install with: pip install pipecat-ai
+# Optional extras:
+#   faster-whisper for local STT
+#   edge-tts for local TTS
+#   av for MP3 decoding in edge-tts pipeline
+
 # Utilities
 python-dotenv>=1.0.1
 rich>=13.8.0
@@ -89,6 +96,12 @@ rich>=13.8.0
 # PDF text extraction (resume upload)
 PyMuPDF>=1.25.0
 pypdf>=5.0
+
+# Pipecat voice agent dependencies (install conditionally)
+# faster-whisper>=1.0.0  # local STT (Whisper)
+# edge-tts>=6.0.0       # local TTS
+# piper-tts>=1.2.0      # alternative local TTS
+# av>=14.0.0             # MP3 decoding for edge-tts (already present above)
 
 # Gemini AI Vision
 google-genai>=1.0.0
