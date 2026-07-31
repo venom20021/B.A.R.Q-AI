@@ -797,7 +797,7 @@ export function ResearchPage(): JSX.Element {
                 { text: 'Research company Google', icon: Building2 },
                 { text: 'Query knowledge base about auth', icon: BookOpen },
                 { text: 'Deep research quantum computing', icon: Zap },
-              ].map(item => {
+              ].map((item, i) => {
                 const Icon = item.icon
                 return (
                   <button key={i} onClick={() => setQuery(item.text)}

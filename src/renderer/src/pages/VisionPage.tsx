@@ -297,11 +297,12 @@ export function VisionPage(): JSX.Element {
       try {
         const data = await api<{ capabilities?: Capabilities }>('/vision/check')
         if (data?.capabilities) {
+          const caps = data.capabilities
           setCaps((prev) => ({
             // WS status takes priority for gemini, REST for screen/camera
-            ...data.capabilities,
-            gemini_api: prev?.gemini_api ?? data.capabilities.gemini_api,
-            gemini_live: prev?.gemini_live ?? data.capabilities.gemini_live,
+            ...caps,
+            gemini_api: prev?.gemini_api ?? caps.gemini_api,
+            gemini_live: prev?.gemini_live ?? caps.gemini_live,
           }))
         }
       } catch { /* ignore */ }

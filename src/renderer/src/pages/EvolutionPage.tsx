@@ -11,7 +11,7 @@ import {
   ChevronRight,
   X,
 } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { motion, type Variants } from 'framer-motion'
 import { StatCard } from '../components/StatCard'
 import { GlassPanel } from '../components/GlassPanel'
 import { DynamicChart } from '../components/DynamicChart'
@@ -321,12 +321,12 @@ export function EvolutionPage(): JSX.Element {
     return events.filter((e) => selectedTypes.has(e.type)).slice(0, 50)
   }, [events, selectedTypes, hasFilter])
 
-  const container = {
+  const container: Variants = {
     hidden: { opacity: 0 },
     show: { opacity: 1, transition: { staggerChildren: 0.05 } },
   }
 
-  const itemAnim = {
+  const itemAnim: Variants = {
     hidden: { opacity: 0, y: 16 },
     show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } },
   }

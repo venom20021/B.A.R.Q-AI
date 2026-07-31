@@ -95,11 +95,22 @@ async def setup_db():
     """
     Set up a fresh in-memory database for each test.
     All tables and default seed data are created before each test.
+
+    Always forces LOCAL SQLite mode: if the dev machine's .env sets
+    ``TURSO_ENABLED=true``, tests would otherwise hit the remote cloud
+    database (slow, non-deterministic, and writes test data to prod).
+    CI has no .env so this is a no-op there.
     """
     db_connection._db_path = ":memory:"
-    db = await db_connection.connect()
-    await initialize_schema(db)
-    await seed_defaults(db)
+    db_connection._turso_mode = False  # Force local SQLite regardless of .env
+    db_connection._turso = None
+    db_connection._db = None
+    await db_connection.connect()
+    # Pass the db_connection WRAPPER (not the raw aiosqlite Connection):
+    # seed_defaults() calls db.fetch_one(), which only exists on the wrapper
+    # / TursoConnection — matching how production initializes in database/__init__.py.
+    await initialize_schema(db_connection)
+    await seed_defaults(db_connection)
     yield
     await db_connection.close()
 

@@ -25,7 +25,7 @@ export function SettingsPage(): JSX.Element {
   const [selectedVoice, setSelectedVoice] = useState('en-US-JennyNeural')
   const [lastDetectedLanguage, setLastDetectedLanguage] = useState('')  // last auto-detected language
   const [lastDetectedAt, setLastDetectedAt] = useState('')  // ISO timestamp of last auto-detection
-  const [sensitivity, setSensitivity] = useState('medium')
+  const [sensitivity, setSensitivity] = useState<'low' | 'medium' | 'high'>('medium')
   const [voiceUpdating, setVoiceUpdating] = useState(false)
   const [wakeSoundEnabled, setWakeSoundEnabled] = useState(true)
   const [commandSoundEnabled, setCommandSoundEnabled] = useState(true)
@@ -36,8 +36,8 @@ export function SettingsPage(): JSX.Element {
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsLanguage, setVoiceSettingsLanguage] = useState('en')
   const [vadSettingsLoading, setVadSettingsLoading] = useState(false)
-  // Voice Agent Backend (deepgram / pipecat)
-  const [voiceAgentBackend, setVoiceAgentBackend] = useState('pipecat')
+  // Voice Agent Backend (deepgram / gemini)
+  const [voiceAgentBackend, setVoiceAgentBackend] = useState('gemini')
   const [voiceAgentBackends, setVoiceAgentBackends] = useState<{ id: string; name: string; description: string; available?: boolean }[]>([])
   const [voiceAgentSwitching, setVoiceAgentSwitching] = useState(false)
 
@@ -139,9 +139,8 @@ export function SettingsPage(): JSX.Element {
         setCloudMode(resp.data.isRemote)
         setCloudModeStatus(resp.data.isRemote ? 'connected' : 'disconnected')
         setCloudModeMsg(resp.data.isRemote ? 'Connected to cloud backend' : 'Switched to local backend')
-        // Invalidate cached config in renderer
-        const { invalidateBackendConfig } = await import('../utils/backendConfig')
-        invalidateBackendConfig()
+        // Note: backendConfig is NOT cached (fetches fresh via IPC each call),
+        // so no cache invalidation is needed here.
       } else {
         setCloudMode(!newMode) // revert
         setCloudModeStatus('disconnected')
@@ -382,7 +381,7 @@ export function SettingsPage(): JSX.Element {
     setVoiceUpdating(false)
   }, [])
 
-  const handleSensitivityChange = useCallback(async (level: string) => {
+  const handleSensitivityChange = useCallback(async (level: 'low' | 'medium' | 'high') => {
     setSensitivity(level)
     try {
       await window.barq?.voice.setSensitivity(level)
@@ -702,9 +701,9 @@ export function SettingsPage(): JSX.Element {
                   <div className="flex-1">
                     <p className="text-sm font-rajdhani font-semibold text-ghost">Voice Agent Backend</p>
                     <p className="text-xs font-exo text-dim-400">
-                      {voiceAgentBackend === 'deepgram'
-                        ? 'Deepgram Voice Agent — cloud STT + LLM + TTS (requires API key)'
-                        : 'Pipecat — local Whisper STT + Ollama LLM + Edge-TTS (no API key)'}
+                      {voiceAgentBackend === 'gemini'
+                        ? 'Gemini Live — native audio WebSocket, no local STT/TTS needed (requires GEMINI_API_KEY)'
+                        : 'Deepgram Voice Agent — cloud STT + LLM + TTS (requires DEEPGRAM_API_KEY)'}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -727,11 +726,11 @@ export function SettingsPage(): JSX.Element {
                       ))}
                     </select>
                     <span className={`text-[9px] font-mono font-bold tracking-wider uppercase px-1.5 py-0.5 rounded ${
-                      voiceAgentBackend === 'deepgram'
-                        ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/15'
-                        : 'bg-green-500/10 text-green-300 border border-green-500/15'
+                      voiceAgentBackend === 'gemini'
+                        ? 'bg-purple-500/10 text-purple-300 border border-purple-500/15'
+                        : 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/15'
                     }`}>
-                      {voiceAgentBackend === 'deepgram' ? 'CLOUD' : 'LOCAL'}
+                      {voiceAgentBackend === 'gemini' ? 'GEMINI' : 'CLOUD'}
                     </span>
                   </div>
                 </div>

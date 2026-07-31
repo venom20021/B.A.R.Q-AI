@@ -61,7 +61,7 @@ function useSpeechRecognition(): {
 
   useEffect(() => {
     if (!supported) return
-    const SpeechRecognitionCls = (window as Record<string, unknown>).SpeechRecognition || (window as Record<string, unknown>).webkitSpeechRecognition
+    const SpeechRecognitionCls = (window as unknown as Record<string, unknown>).SpeechRecognition || (window as unknown as Record<string, unknown>).webkitSpeechRecognition
     const recognition = new (SpeechRecognitionCls as new () => SpeechRecognition)()
     recognition.continuous = true
     recognition.interimResults = true
@@ -175,14 +175,16 @@ export function ChatPage(): JSX.Element {
 
   // Fetch recent voice commands (voice detector state comes from VoiceContext)
   useEffect(() => {
-    startTransition(async () => {
-      try {
-        const data = await api('/voice/status')
-        if (data && typeof data === 'object') {
-          const d = data as { recent_commands?: { transcript: string; created_at: string }[] }
-          if (d.recent_commands) setRecentCommands(d.recent_commands)
-        }
-      } catch { /* silent */ }
+    startTransition(() => {
+      void (async () => {
+        try {
+          const data = await api('/voice/status')
+          if (data && typeof data === 'object') {
+            const d = data as { recent_commands?: { transcript: string; created_at: string }[] }
+            if (d.recent_commands) setRecentCommands(d.recent_commands)
+          }
+        } catch { /* silent */ }
+      })()
     })
   }, [])
 

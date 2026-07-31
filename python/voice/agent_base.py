@@ -70,3 +70,25 @@ class VoiceAgentBase(ABC):
         """Gracefully shut down the pipeline, release audio devices,
         and close any network connections."""
         ...
+
+    async def speak_text(self, text: str) -> None:
+        """Synthesize and play a spoken phrase through the agent's TTS output.
+
+        This is used for wake greetings and other proactive speech that
+        happens outside the normal conversation turn-taking loop.
+
+        The default implementation is a no-op — only agents with local TTS
+        support (e.g. PipecatVoiceAgent) implement this.  Cloud voice agents
+        like Deepgram handle greeting TTS internally.
+
+        Args:
+            text: The text to speak aloud.
+        """
+        pass
+
+    def cancel_current_tts(self) -> None:
+        """Cancel any in-progress TTS synthesis (used for barge-in).
+
+        Default implementation is a no-op.
+        """
+        pass

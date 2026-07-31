@@ -26,6 +26,100 @@ from config import get_settings
 from .agent_base import VoiceAgentBase
 
 
+# ── Windows asyncio AssertionError suppressor ─────────────────────────
+# Python 3.13's Proactor event loop on Windows may fire a spurious
+# AssertionError from _ProactorBaseWritePipeTransport._loop_writing()
+# when a pipe write completes after the transport has been closed.
+# This corrupts the event loop and causes "Cannot enter into task"
+# cascades, which then manifest as bogus UnicodeEncodeError / charmap
+# errors in downstream HTTP calls (edge-tts, av, httpx).
+#
+# The fix: monkey-patch the method to catch and suppress the
+# AssertionError so the event loop stays healthy.
+
+_ORIG_LOOP_WRITING = None
+
+
+def _install_proactor_assertion_guard():
+    """Install a guard that suppresses AssertionError from
+    asyncio.proactor_events._ProactorBaseWritePipeTransport._loop_writing.
+
+    This is a known Windows asyncio bug in Python 3.13 where a completed
+    write future doesn't match the expected future when the transport is
+    being closed concurrently.
+    """
+    global _ORIG_LOOP_WRITING
+    try:
+        import asyncio.proactor_events as _pe
+        cls = _pe._ProactorBaseWritePipeTransport
+        if _ORIG_LOOP_WRITING is None:
+            _ORIG_LOOP_WRITING = cls._loop_writing
+
+            def _safe_loop_writing(self, f=None, **kwargs):
+                try:
+                    _ORIG_LOOP_WRITING(self, f, **kwargs)
+                except AssertionError:
+                    pass  # benign — transport was likely closed
+
+            cls._loop_writing = _safe_loop_writing
+            print("[PipecatAgent] Installed Windows asyncio AssertionError guard")
+    except Exception:
+        pass  # Not on Windows or different Python version
+
+
+_install_proactor_assertion_guard()
+
+
+def _find_ffmpeg() -> Optional[str]:
+    """Try to find ffmpeg.exe on the system.
+
+    Searches common install locations and PATH. Returns the path
+    to ffmpeg.exe if found, or None if not found.
+    """
+    import os as _os
+    import shutil as _shutil
+
+    # 1. Check PATH first (fastest)
+    exe = _shutil.which("ffmpeg")
+    if exe:
+        return exe
+
+    # 2. Check common Windows install locations
+    common_paths = [
+        # Winget install location
+        _os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        ),
+        # Chocolatey
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+        # Manual install under Program Files
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        # Scoop
+        _os.path.expandvars(r"%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"),
+        # Common user install
+        _os.path.expandvars(r"%USERPROFILE%\ffmpeg\bin\ffmpeg.exe"),
+    ]
+
+    for path in common_paths:
+        if _os.path.isfile(path):
+            return path
+
+    # 3. Recursive scan of PATH directories for ffmpeg.exe
+    path_dirs = _os.environ.get("PATH", "").split(";")
+    for pdir in path_dirs:
+        if not pdir or not _os.path.isdir(pdir):
+            continue
+        try:
+            for entry in _os.listdir(pdir):
+                if entry.lower() == "ffmpeg.exe":
+                    return _os.path.join(pdir, entry)
+        except PermissionError:
+            continue
+
+    return None
+
+
 # ── Audio constants ───────────────────────────────────────────────────
 
 STT_SAMPLE_RATE = 16000       # Whisper expects 16kHz
@@ -97,9 +191,6 @@ class PipecatVoiceAgent(VoiceAgentBase):
         # Whisper model (lazy-loaded)
         self._whisper_model: Any = None
 
-        # Ollama client
-        self._ollama_client: Any = None
-
         # Kokoro TTS engine (lazy-loaded)
         self._kokoro_engine: Any = None
 
@@ -130,6 +221,9 @@ class PipecatVoiceAgent(VoiceAgentBase):
         # Rate-limiter for ring buffer full log
         self._output_log_timer: float = 0.0
 
+        # Rate-limiter for underflow warning
+        self._underflow_log_timer: float = 0.0
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -156,25 +250,16 @@ class PipecatVoiceAgent(VoiceAgentBase):
             print("[PipecatAgent] faster-whisper not installed. Install with: pip install faster-whisper")
             raise
 
-    async def _get_ollama_client(self):
-        """Lazy-create the Ollama async client."""
-        if self._ollama_client is not None:
-            return self._ollama_client
-        try:
-            from ollama import AsyncClient
-            self._ollama_client = AsyncClient(host=self.ollama_host)
-            print(f"[PipecatAgent] Ollama client created ({self.ollama_host})")
-        except ImportError:
-            print("[PipecatAgent] ollama Python package not installed")
-            raise
-        return self._ollama_client
-
     async def connect(self) -> bool:
         """Initialize models and verify Ollama is reachable.
 
         This doesn't open audio streams — those are opened in
         start_conversation().  We just validate that the required
         models and services are available.
+
+        Uses ``httpx`` for Ollama verification instead of the
+        ``ollama.AsyncClient`` to avoid aiohttp event loop conflicts
+        that cause "Cannot enter into task" RuntimeErrors.
         """
         # Load Whisper model
         try:
@@ -183,21 +268,34 @@ class PipecatVoiceAgent(VoiceAgentBase):
             print(f"[PipecatAgent] Failed to load Whisper: {e}")
             return False
 
-        # Verify Ollama is reachable
+        # Verify Ollama is reachable via httpx (NOT aiohttp — avoids task conflicts)
+        import httpx
         try:
-            client = await self._get_ollama_client()
-            # Send a simple ping to verify connectivity
-            await asyncio.wait_for(
-                client.chat(
-                    model=self.ollama_model,
-                    messages=[{"role": "user", "content": "ping"}],
-                    options={"num_predict": 1},
-                ),
-                timeout=10.0,
-            )
-            print(f"[PipecatAgent] Ollama verified (model={self.ollama_model})")
-        except asyncio.TimeoutError:
-            print(f"[PipecatAgent] Ollama timeout — is the server running at {self.ollama_host}?")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Check if Ollama server is running
+                resp = await client.get(f"{self.ollama_host}/api/tags")
+                if resp.status_code != 200:
+                    print(f"[PipecatAgent] Ollama server returned {resp.status_code} at {self.ollama_host}")
+                    return False
+
+                # Check if the configured model exists in the model list
+                models = resp.json().get("models", [])
+                model_names = [m["name"] for m in models]
+
+                if self.ollama_model not in model_names:
+                    print(
+                        f"[PipecatAgent] Model '{self.ollama_model}' not found on Ollama. "
+                        f"Available models: {', '.join(model_names[:5])}{"..." if len(model_names) > 5 else ""}. "
+                        f"Run: ollama pull {self.ollama_model}"
+                    )
+                    return False
+
+                print(f"[PipecatAgent] Ollama verified (model={self.ollama_model}, {len(models)} models)")
+        except httpx.ConnectError:
+            print(f"[PipecatAgent] Ollama not reachable at {self.ollama_host} — is it running?")
+            return False
+        except httpx.TimeoutException:
+            print(f"[PipecatAgent] Ollama timeout at {self.ollama_host}")
             return False
         except Exception as e:
             print(f"[PipecatAgent] Ollama error: {e}")
@@ -211,6 +309,33 @@ class PipecatVoiceAgent(VoiceAgentBase):
             print("[PipecatAgent] edge-tts not installed. Install with: pip install edge-tts")
             # Non-fatal — we'll try piper or another fallback
             pass
+
+        # Initialize output stream early so speak_text() works
+        # before start_conversation() is called (wake greeting).
+        try:
+            import sounddevice as sd
+            from .audio_device import resolve_output_device
+            output_device = resolve_output_device(self.settings.audio_output_device)
+
+            # Log the resolved output device for debugging
+            if output_device is not None:
+                dev_info = sd.query_devices(output_device)
+                print(f"[PipecatAgent] Output device [{output_device}]: {dev_info['name'].strip()}")
+            else:
+                print("[PipecatAgent] Output device: system default")
+
+            self._output_stream = sd.OutputStream(
+                device=output_device,
+                samplerate=TTS_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=self._output_callback,
+                blocksize=TTS_BLOCK_SIZE,
+            )
+            self._output_stream.start()
+            print("[PipecatAgent] Output stream started")
+        except Exception as e:
+            print(f"[PipecatAgent] Could not init output stream in connect(): {e}")
 
         print("[PipecatAgent] Ready — models loaded")
         return True
@@ -320,17 +445,30 @@ class PipecatVoiceAgent(VoiceAgentBase):
         outdata.fill(0.0)
 
         if available >= frames:
+            # Enough data — fill the entire output buffer
             for i in range(frames):
                 try:
                     outdata[i, 0] = self._output_ring_buffer.popleft()
                 except IndexError:
                     break
         elif available > 0:
+            # Partial data — use what's available, rest stays silence
             for i in range(available):
                 try:
                     outdata[i, 0] = self._output_ring_buffer.popleft()
                 except IndexError:
                     break
+            # Rate-limited log for underflow
+            now = time.time()
+            if available > 0 and now - self._underflow_log_timer > 2.0:
+                self._underflow_log_timer = now
+                print(f"[PipecatAgent] Output buffer underflow: {available}/{frames} samples")
+
+        # Log volume level periodically (first callback only)
+        if not hasattr(self, "_logged_first_output"):
+            self._logged_first_output = True
+            peak = np.max(np.abs(outdata))
+            print(f"[PipecatAgent] First output callback: {available} avail, peak={peak:.4f}")
 
     async def _audio_capture_loop(self, device: Optional[int] = None):
         """Capture mic audio and feed it to the VAD/transcription buffer."""
@@ -340,19 +478,21 @@ class PipecatVoiceAgent(VoiceAgentBase):
         if device is None:
             device = resolve_input_device(self.settings.audio_input_device)
 
-        # Start output stream first (needed for TTS playback)
-        from .audio_device import resolve_output_device
-        output_device = resolve_output_device(self.settings.audio_output_device)
-        self._output_stream = sd.OutputStream(
-            device=output_device,
-            samplerate=TTS_SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            callback=self._output_callback,
-            blocksize=TTS_BLOCK_SIZE,
-        )
-        self._output_stream.start()
-        print("[PipecatAgent] Output stream started")
+        # Output stream is already initialized in connect() — just verify it's running
+        if self._output_stream is None:
+            # Fallback: create it here if connect() didn't
+            from .audio_device import resolve_output_device
+            output_device = resolve_output_device(self.settings.audio_output_device)
+            self._output_stream = sd.OutputStream(
+                device=output_device,
+                samplerate=TTS_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=self._output_callback,
+                blocksize=TTS_BLOCK_SIZE,
+            )
+            self._output_stream.start()
+            print("[PipecatAgent] Output stream started (fallback)")
 
         # Open mic input stream
         self._input_stream = sd.InputStream(
@@ -409,8 +549,9 @@ class PipecatVoiceAgent(VoiceAgentBase):
             return
 
         try:
-            # Convert int16 to float32
-            audio_float = audio.astype(np.float32) / 32768.0
+            # Convert int16 to float32 and flatten to 1D (sounddevice gives
+            # shape (frames, channels) even for mono — Whisper needs flat 1D)
+            audio_float = audio.astype(np.float32).flatten() / 32768.0
 
             # Run Whisper in a thread to avoid blocking
             segments, info = await asyncio.get_event_loop().run_in_executor(
@@ -464,8 +605,6 @@ class PipecatVoiceAgent(VoiceAgentBase):
 
     async def _process_with_llm(self, user_text: str):
         """Send user text to Ollama LLM and process the response."""
-        client = await self._get_ollama_client()
-
         # Check for exit commands
         exit_phrases = [
             "nothing", "that's all", "we're done",
@@ -511,24 +650,29 @@ class PipecatVoiceAgent(VoiceAgentBase):
                 "Speak naturally." + tools_desc
             )
 
-        # Call Ollama
+        # Call Ollama via httpx (no aiohttp — avoids event loop conflicts)
         try:
-            response = await asyncio.wait_for(
-                client.chat(
-                    model=self.ollama_model,
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": user_text},
-                    ],
-                    options={
-                        "temperature": 0.7,
-                        "num_predict": 256,
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.ollama_host}/api/chat",
+                    json={
+                        "model": self.ollama_model,
+                        "messages": [
+                            {"role": "system", "content": system_msg},
+                            {"role": "user", "content": user_text},
+                        ],
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.7,
+                            "num_predict": 256,
+                        },
                     },
-                ),
-                timeout=30.0,
-            )
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                reply = data.get("message", {}).get("content", "")
 
-            reply = response.get("message", {}).get("content", "")
             if not reply:
                 reply = "I understand. Let me know how I can help."
 
@@ -541,7 +685,7 @@ class PipecatVoiceAgent(VoiceAgentBase):
             # Synthesize speech
             await self._synthesize_and_play(reply)
 
-        except asyncio.TimeoutError:
+        except httpx.TimeoutException:
             print("[PipecatAgent] LLM timed out")
             await self._synthesize_and_play("Sorry, I'm thinking too long. Please try again.")
         except Exception as e:
@@ -598,6 +742,40 @@ class PipecatVoiceAgent(VoiceAgentBase):
         """
         if self._kokoro_engine is not None:
             self._kokoro_engine.cancel()
+
+    async def speak_text(self, text: str) -> None:
+        """Synthesize and play a spoken phrase through the TTS output.
+
+        Used for wake greetings and proactive speech outside the normal
+        conversation turn-taking loop.  Feeds audio directly into the
+        output ring buffer so it plays through the speakers.
+
+        Args:
+            text: The text to speak aloud (e.g. "How can I help you?").
+        """
+        if not self._output_stream:
+            print("[PipecatAgent] Cannot speak — output stream not initialized")
+            return
+
+        self._agent_is_speaking = True
+        if self.on_agent_speaking:
+            self.on_agent_speaking()
+
+        try:
+            await self._synthesize_edge_tts(text)
+        except Exception as e:
+            print(f"[PipecatAgent] speak_text error: {e}")
+
+        # Wait for the ring buffer to drain (playback to finish)
+        wait_start = time.time()
+        while len(self._output_ring_buffer) > 0 and time.time() - wait_start < 10.0:
+            await asyncio.sleep(0.05)
+
+        self._agent_is_speaking = False
+        if self.on_agent_done_speaking:
+            self.on_agent_done_speaking()
+
+        print("[PipecatAgent] Greeting done speaking")
 
     async def _synthesize_and_play(self, text: str):
         """Convert text to speech and feed audio to output ring buffer.
@@ -672,10 +850,50 @@ class PipecatVoiceAgent(VoiceAgentBase):
         # Kokoro already produces 24kHz float32 PCM — feed directly
         self._feed_pcm_to_buffer(audio, sample_rate)
 
+    @staticmethod
+    def _sanitize_text_for_tts(text: str) -> str:
+        """Strip or replace non-ASCII characters for edge-tts.
+
+        Edge-TTS uses the system's default encoding (cp1252 on Windows)
+        for HTTP requests, which can't handle Unicode smart quotes,
+        em-dashes, or other extended characters. This function replaces
+        common problematic characters with ASCII equivalents.
+
+        Args:
+            text: Raw input text (may contain Unicode characters).
+
+        Returns:
+            Cleaned text safe for edge-tts and console printing.
+        """
+        replacements = {
+            "\u2018": "'",  # Left single quotation mark → ASCII apostrophe
+            "\u2019": "'",  # Right single quotation mark → ASCII apostrophe
+            "\u201c": '"',  # Left double quotation mark → ASCII quote
+            "\u201d": '"',  # Right double quotation mark → ASCII quote
+            "\u2013": "-",  # En dash → hyphen
+            "\u2014": "--", # Em dash → double hyphen
+            "\u2026": "...",# Ellipsis → three dots
+            "\u00a0": " ",  # Non-breaking space → space
+            "\u00b0": " degrees",  # Degree symbol
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+
+        # Encode to ASCII, dropping anything that can't be mapped
+        text = text.encode("ascii", "ignore").decode("ascii")
+
+        return text.strip()
+
     async def _synthesize_edge_tts(self, text: str):
         """Use edge-tts for speech synthesis."""
         import edge_tts
         import io
+
+        # Sanitize text to avoid UnicodeEncodeError on Windows cp1252
+        text = self._sanitize_text_for_tts(text)
+        if not text:
+            print("[PipecatAgent] edge-tts text empty after sanitization")
+            return
 
         communicate = edge_tts.Communicate(text, voice="en-US-AriaNeural")
         audio_data = b""
@@ -689,45 +907,82 @@ class PipecatVoiceAgent(VoiceAgentBase):
             return
 
         # edge-tts returns MP3 bytes by default. We need PCM.
-        # Decode MP3 to PCM using pydub or av
+        # Decode MP3 to PCM — try pydub first (more reliable on Windows),
+        # fall back to av (av on Windows sometimes decodes to all zeros).
+        pcm_float = None
+        sample_rate = 24000
+
+        # Priority 1: pydub (more reliable on Windows)
         try:
-            import av
+            from pydub import AudioSegment
 
-            # Open the MP3 bytes as a memory stream
-            input_file = av.open(io.BytesIO(audio_data))
-            pcm_chunks = []
+            # Try to find ffmpeg at runtime in case it's installed but not on PATH
+            _ffmpeg_path = _find_ffmpeg()
+            if _ffmpeg_path:
+                AudioSegment.converter = _ffmpeg_path
+                AudioSegment.ffmpeg = _ffmpeg_path
 
-            for frame in input_file.decode(audio=0):
-                # Convert to float32 numpy array
-                arr = frame.to_ndarray()
-                if arr.shape[0] == 1:  # Mono
-                    pcm_chunks.append(arr[0].astype(np.float32) / 32768.0)
-                else:
-                    # Mix down to mono
-                    mono = np.mean(arr, axis=0).astype(np.float32) / 32768.0
-                    pcm_chunks.append(mono)
+            seg = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
+            raw = seg.raw_data
+            pcm_int16 = np.frombuffer(raw, dtype=np.int16)
+            pcm_float = pcm_int16.astype(np.float32) / 32768.0
+            sample_rate = seg.frame_rate
+            print(f"[PipecatAgent] Decoded MP3 via pydub: {len(pcm_float)} samples at {sample_rate}Hz")
+        except Exception:
+            # pydub may fail at runtime if ffmpeg isn't on PATH — fall through to av
+            print("[PipecatAgent] pydub unavailable or failed, trying av...")
 
-            if pcm_chunks:
-                pcm_float = np.concatenate(pcm_chunks)
-                # Resample from edge-tts sample rate (usually 24000) to our output rate
-                sample_rate = 24000  # edge-tts default
-                self._feed_pcm_to_buffer(pcm_float, sample_rate)
-
-        except ImportError:
-            # Fall back to saving to file and reading back with pydub
-            print("[PipecatAgent] av not installed, trying pydub fallback")
+        # Priority 2: av (fallback if pydub not available or failed)
+        if pcm_float is None:
             try:
-                from pydub import AudioSegment
+                import av
 
-                # edge-tts returns 24kHz 16-bit mono MP3
-                seg = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
-                # Convert to raw PCM
-                raw = seg.raw_data
-                pcm_int16 = np.frombuffer(raw, dtype=np.int16)
-                pcm_float = pcm_int16.astype(np.float32) / 32768.0
-                self._feed_pcm_to_buffer(pcm_float, seg.frame_rate)
+                input_file = av.open(io.BytesIO(audio_data))
+                pcm_chunks: list[np.ndarray] = []
+                last_shape = "unknown"
+
+                for frame in input_file.decode(audio=0):
+                    arr = frame.to_ndarray()  # shape varies: (C, T), (C, 1, T), or (C, T, 1)
+                    last_shape = str(arr.shape)
+
+                    # Flatten to 1D while handling any shape:
+                    #   (1, T)       → channels-first mono: take axis 0
+                    #   (2, T)       → channels-first stereo: average
+                    #   (T, 1), (T,) → already planar: ravel
+                    #   (1, 1, T)    → 3D: ravel
+                    if arr.ndim == 1:
+                        flat = arr
+                    elif arr.ndim == 2:
+                        if arr.shape[0] <= 2 and arr.shape[1] >= arr.shape[0]:
+                            flat = np.mean(arr.astype(np.float64), axis=0)
+                        else:
+                            flat = arr[:, 0] if arr.shape[1] <= 2 else arr.ravel()
+                    elif arr.ndim == 3:
+                        # (C, 1, T) → squeeze to (C, T) then average
+                        flat = np.mean(arr.squeeze().astype(np.float64), axis=0) if arr.squeeze().ndim == 2 else arr.ravel()
+                    else:
+                        flat = arr.ravel()
+
+                    pcm_chunks.append(flat.astype(np.float32) / 32768.0)
+
+                if pcm_chunks:
+                    pcm_float = np.concatenate(pcm_chunks)
+                    peak_check = float(np.max(np.abs(pcm_float)))
+                    print(f"[PipecatAgent] Decoded MP3 via av: {len(pcm_float)} samples, shape={last_shape} (peak={peak_check:.4f})")
+                    if peak_check < 0.001:
+                        print(f"[PipecatAgent] ⚠️ av decoded audio is silent (shape={last_shape})")
+                else:
+                    print("[PipecatAgent] av decoded 0 PCM chunks")
             except ImportError:
-                print("[PipecatAgent] Need av or pydub for MP3 decoding. Install: pip install av")
+                print("[PipecatAgent] av not installed either — no MP3 decoder available")
+            except Exception as e:
+                print(f"[PipecatAgent] av decode error: {e}")
+
+        if pcm_float is None:
+            print("[PipecatAgent] No MP3 decoder available — need pydub or av")
+            return
+
+        self._feed_pcm_to_buffer(pcm_float, sample_rate)
 
     def _feed_pcm_to_buffer(self, pcm_float: np.ndarray, sample_rate: int):
         """Resample PCM to TTS_SAMPLE_RATE and feed to the ring buffer."""
@@ -737,6 +992,15 @@ class PipecatVoiceAgent(VoiceAgentBase):
             target_len = int(len(pcm_float) * ratio)
             indices = np.round(np.linspace(0, len(pcm_float) - 1, target_len)).astype(np.int32)
             pcm_float = pcm_float[indices]
+
+        # Diagnostic: check audio amplitude — if near zero, something went wrong
+        peak = float(np.max(np.abs(pcm_float)))
+        rms_val = float(np.sqrt(np.mean(pcm_float ** 2)))
+        print(f"[PipecatAgent] Feeding {len(pcm_float)} samples to buffer (peak={peak:.4f}, rms={rms_val:.4f})")
+
+        if peak < 0.001:
+            print(f"[PipecatAgent] ⚠️ Audio appears silent (peak={peak:.4f}) — possible decode issue")
+            return  # Don't feed silent audio to the buffer
 
         # Feed to ring buffer
         self._output_ring_buffer.extend(pcm_float)

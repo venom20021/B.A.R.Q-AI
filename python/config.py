@@ -143,3 +143,67 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
+
+# ─── ffmpeg PATH helper ───────────────────────────────────────────────
+# pydub uses ffmpeg for audio conversion. The Winget-installed ffmpeg is in
+# the LOCALAPPDATA directory which may not be on the system PATH in all
+# environments (e.g. when launched from VS Code terminal, Electron sidecar,
+# or Windows Service). This fallback ensures it's always available.
+
+def ensure_ffmpeg_on_path() -> bool:
+    """Ensure ffmpeg is available on the process PATH.
+
+    Checks if ffmpeg is already findable via ``shutil.which()``.
+    If not, probes common ffmpeg install locations and, if found,
+    prepends its directory to ``os.environ['PATH']`` so that pydub,
+    ffmpeg-python, and subprocess calls can locate it.
+
+    Returns True if ffmpeg was found (either already on PATH or after
+    the fallback), False otherwise.
+    """
+    import shutil
+
+    if shutil.which("ffmpeg"):
+        return True
+
+    # Common ffmpeg install locations (in preference order)
+    candidates = [
+        # Winget (Gyan.FFmpeg) — wildcard publisher hash so it survives
+        # winget package updates (the hash suffix can change between installs)
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Microsoft", "WinGet", "Packages",
+            "Gyan.FFmpeg_*", "ffmpeg-*-full_build", "bin",
+        ),
+        # Scoop
+        os.path.join(os.path.expanduser("~"), "scoop", "shims"),
+        # Chocolatey
+        r"C:\ProgramData\chocolatey\bin",
+        # Manual install
+        r"C:\Program Files\ffmpeg\bin",
+        r"C:\tools\ffmpeg\bin",
+    ]
+
+    import glob as _glob
+    for candidate in candidates:
+        expanded = os.path.expanduser(candidate)
+        # Handle wildcard in path (e.g. ffmpeg-*-full_build)
+        matches = _glob.glob(expanded, recursive=False)
+        for match in matches:
+            if os.path.isdir(match) and shutil.which("ffmpeg", path=match):
+                os.environ["PATH"] = match + os.pathsep + os.environ.get("PATH", "")
+                print(f"[Config] ffmpeg found at: {match}")
+                return True
+        # Also check the raw path (non-wildcard)
+        if os.path.isdir(expanded) and shutil.which("ffmpeg", path=expanded):
+            os.environ["PATH"] = expanded + os.pathsep + os.environ.get("PATH", "")
+            print(f"[Config] ffmpeg found at: {expanded}")
+            return True
+
+    print("[Config] ffmpeg not found — audio/video conversion via pydub will be unavailable")
+    return False
+
+
+# Run the check at import time so pydub picks up ffmpeg before any audio code loads
+_ffmpeg_ok = ensure_ffmpeg_on_path()

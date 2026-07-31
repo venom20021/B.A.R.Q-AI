@@ -288,9 +288,11 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
   // Apply drill-down filter on mount
   useEffect(() => {
     if (drillFilter && onDrillConsumed) {
-      if (drillFilter.status) setFilter(drillFilter.status)
-      if (drillFilter.minScore != null) setMinScoreFilter(drillFilter.minScore)
-      if (drillFilter.sourceBoard != null) setSourceBoardFilter(drillFilter.sourceBoard)
+      startTransition(() => {
+        if (drillFilter.status) setFilter(drillFilter.status)
+        if (drillFilter.minScore != null) setMinScoreFilter(drillFilter.minScore)
+        if (drillFilter.sourceBoard != null) setSourceBoardFilter(drillFilter.sourceBoard)
+      })
       onDrillConsumed()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -478,9 +480,11 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
       if (progress.status === 'scanning' || progress.status === 'evaluating' || progress.status === 'starting') {
         openEventSource()
       } else if (['complete', 'idle', 'error'].includes(progress.status) || !progress) {
-        setScanning(false)
-        setProgress(null)
-        fetchJobs()
+        startTransition(() => {
+          setScanning(false)
+          setProgress(null)
+          void fetchJobs()
+        })
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1363,7 +1367,9 @@ function FollowUpPanel(): JSX.Element {
     setLoading(false)
   }, [])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => {
+    startTransition(() => { void fetchData() })
+  }, [fetchData])
 
   const handleSendFollowup = useCallback(async (candidate: FollowupCandidate) => {
     setSending(prev => ({ ...prev, [candidate.id]: true }))
@@ -1751,7 +1757,7 @@ function PipelinePanel(): JSX.Element {
           parsed: {
             full_name: resp?.parsed?.full_name || '',
             skills_count: Number(resp?.parsed?.skills_count || 0),
-            page_count: Number(data?.page_count || 0),
+            page_count: Number(resp?.page_count || 0),
           },
         })
         // Refresh resume info
@@ -2314,7 +2320,7 @@ function PipelinePanel(): JSX.Element {
                     </p>
                     {pdfUploadResult.parsed && (
                       <p className="text-[10px] font-exo text-dim-400 mt-1">
-                        Found: {pdfUploadResult.parsed.full_name || 'Unknown'} · {pdfUploadResult.parsed.skills_count} skills · {pdfUploadResult.page_count} pages
+                        Found: {pdfUploadResult.parsed.full_name || 'Unknown'} · {pdfUploadResult.parsed.skills_count} skills · {pdfUploadResult.parsed.page_count} pages
                       </p>
                     )}
                   </div>

@@ -19,7 +19,7 @@ export function AssistantCustomization(): JSX.Element {
   // Load from backend on mount
   useEffect(() => {
     let mounted = true
-    setLoading(true)
+    // loading already initializes to true — no sync setState here (lint)
     api('/settings/assistant')
       .then((resp) => {
         if (!mounted) return

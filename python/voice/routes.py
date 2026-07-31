@@ -44,7 +44,7 @@ from memory.agent_memory_manager import pop_last_session
 router = APIRouter()
 
 # Keep a reference to the ConversationListener singleton
-# (used by pipecat_agent.py for exit handling)
+# (used by voice agents for exit handling)
 conversation_listener_singleton = None
 
 # Singleton instances
@@ -1055,22 +1055,11 @@ async def get_tts_backend():
     except Exception:
         active_backend = "deepgram"
 
-    # Get Pipecat TTS backend preference
-    pipecat_tts = speech_processor.tts_backend
-    try:
-        db_pipecat_tts = await settings_dao.get_setting("pipecat_tts_backend")
-        if db_pipecat_tts:
-            pipecat_tts = db_pipecat_tts
-    except Exception:
-        pass
-
     return {
-        "backend": pipecat_tts,
-        "available_backends": ["deepgram_agent", "pipecat_local"],
-        "pipecat_tts_options": ["edge-tts", "kokoro"],
-        "pipecat_tts_backend": pipecat_tts,
+        "backend": "deepgram_agent",
+        "available_backends": ["deepgram_agent"],
         "active_voice_agent": active_backend,
-        "note": f"Voice agent backend: {active_backend}, Pipecat TTS: {pipecat_tts}",
+        "note": f"Voice agent backend: {active_backend}",
     }
 
 
@@ -1082,75 +1071,15 @@ class TTSBackendRequest(BaseModel):
 @router.post("/tts-backend")
 async def set_tts_backend(request: TTSBackendRequest):
     """TTS backend selection."""
-    valid_backends = {"deepgram_agent", "pipecat_local"}
+    valid_backends = {"deepgram_agent"}
     if request.backend not in valid_backends:
-        raise HTTPException(status_code=400, detail=f"Backend must be one of: {', '.join(sorted(valid_backends))}")
+        raise HTTPException(status_code=400, detail=f"Backend must be: {', '.join(sorted(valid_backends))}")
 
     speech_processor.tts_backend = request.backend
     await settings_dao.set_setting("tts_backend", request.backend, "voice")
     await analytics_dao.log_activity("voice", "tts_backend", f"TTS backend set to {request.backend}")
 
     return {"status": "set", "backend": request.backend}
-
-
-class PipecatTTSRequest(BaseModel):
-    """Pipecat TTS settings."""
-    tts_backend: str  # "edge-tts" or "kokoro"
-    tts_voice: Optional[str] = None  # voice ID for the selected backend
-    tts_speed: Optional[float] = None  # speed multiplier (0.5–2.0)
-
-
-@router.get("/pipecat-tts")
-async def get_pipecat_tts_settings():
-    """Get Pipecat-specific TTS settings."""
-    backend = await settings_dao.get_setting("pipecat_tts_backend") or "edge-tts"
-    voice = await settings_dao.get_setting("pipecat_tts_voice") or "en-US-AriaNeural"
-    speed = await settings_dao.get_setting("pipecat_tts_speed") or "1.0"
-
-    return {
-        "tts_backend": backend,
-        "tts_voice": voice,
-        "tts_speed": float(speed),
-        "available_backends": ["edge-tts", "kokoro"],
-    }
-
-
-@router.post("/pipecat-tts")
-async def set_pipecat_tts_settings(request: PipecatTTSRequest):
-    """Update Pipecat-specific TTS settings (Kokoro voice, speed, backend)."""
-    valid_backends = {"edge-tts", "kokoro"}
-    if request.tts_backend not in valid_backends:
-        raise HTTPException(status_code=400,
-                            detail=f"TTS backend must be one of: {', '.join(sorted(valid_backends))}")
-
-    await settings_dao.set_setting("pipecat_tts_backend", request.tts_backend, "voice")
-
-    if request.tts_voice:
-        await settings_dao.set_setting("pipecat_tts_voice", request.tts_voice, "voice")
-
-    if request.tts_speed is not None:
-        speed = max(0.5, min(2.0, request.tts_speed))
-        await settings_dao.set_setting("pipecat_tts_speed", str(speed), "voice")
-
-    # Reset the cached agent so the new settings take effect
-    try:
-        from .agent_factory import reset_voice_agent
-        reset_voice_agent()
-    except Exception:
-        pass
-
-    await analytics_dao.log_activity(
-        "voice", "pipecat_tts",
-        f"Pipecat TTS set to {request.tts_backend} (voice={request.tts_voice}, speed={request.tts_speed})"
-    )
-
-    return {
-        "status": "set",
-        "tts_backend": request.tts_backend,
-        "tts_voice": request.tts_voice or "default",
-        "tts_speed": request.tts_speed or 1.0,
-        "note": "Will take effect on next wake word trigger",
-    }
 
 
 class STTBackendRequest(BaseModel):
@@ -1166,7 +1095,7 @@ async def get_stt_backend():
     except Exception:
         active_backend = "deepgram"
 
-    backends = ["deepgram_agent", "pipecat_local"]
+    backends = ["deepgram_agent"]
 
     return {
         "backend": speech_processor.stt_backend,
@@ -1180,9 +1109,9 @@ async def get_stt_backend():
 @router.post("/stt-backend")
 async def set_stt_backend(request: STTBackendRequest):
     """STT backend selection."""
-    valid_backends = {"deepgram_agent", "pipecat_local"}
+    valid_backends = {"deepgram_agent"}
     if request.backend not in valid_backends:
-        raise HTTPException(status_code=400, detail=f"Backend must be one of: {', '.join(sorted(valid_backends))}")
+        raise HTTPException(status_code=400, detail=f"Backend must be: {', '.join(sorted(valid_backends))}")
 
     speech_processor.stt_backend = request.backend
     await settings_dao.set_setting("stt_backend", request.backend, "voice")
@@ -1192,7 +1121,7 @@ async def set_stt_backend(request: STTBackendRequest):
 
 
 class VoiceBackendRequest(BaseModel):
-    backend: str  # "deepgram" or "pipecat"
+    backend: str  # "deepgram" or "gemini"
 
 
 @router.get("/backends")
@@ -1220,19 +1149,20 @@ async def get_voice_backend():
     active = await get_backend_from_db()
     return {
         "backend": active,
-        "available": ["deepgram", "pipecat"],
+        "available": ["deepgram", "gemini"],
     }
 
 
 @router.post("/backend")
 async def set_voice_backend(request: VoiceBackendRequest):
-    """Switch the voice agent backend between deepgram and pipecat.
+    """Switch the voice agent backend between deepgram and gemini.
 
     If a conversation is active, it will be stopped and the new backend
-    will be used for the next wake word trigger.
+    will be used immediately on the next wake word trigger.  The wake word
+    detector is cleanly restarted so the pipeline resets to listening mode.
     """
-    if request.backend not in ("deepgram", "pipecat"):
-        raise HTTPException(status_code=400, detail="Backend must be 'deepgram' or 'pipecat'")
+    if request.backend not in ("deepgram", "gemini"):
+        raise HTTPException(status_code=400, detail="Backend must be 'deepgram' or 'gemini'")
 
     # If conversation is active, stop it
     if conversation_listener.is_active:
@@ -1246,6 +1176,31 @@ async def set_voice_backend(request: VoiceBackendRequest):
     # Persist to DB
     await settings_dao.set_setting("voice_agent_backend", request.backend, "voice")
 
+    # ── Reset voice pipeline to wake word listening mode ────────────────
+    # Stop the current wake word detector, then restart it so the
+    # pipeline is cleanly reset with the new backend.
+    global wake_word_detector
+    if wake_word_detector is not None:
+        try:
+            wake_word_detector.stop()
+            print("[Voice] Wake word detector stopped for backend switch")
+        except Exception as e:
+            print(f"[Voice] Error stopping wake word detector: {e}")
+
+    # Create fresh detector with new backend
+    try:
+        # Reset the global to force a fresh instance
+        wake_word_detector = None
+        detector = get_wake_word_detector()
+        if detector.model is not None:
+            detector.set_sensitivity(_sensitivity)
+            detector.start()
+            print(f"[Voice] Wake word detector restarted (backend: {request.backend})")
+        else:
+            print("[Voice] Wake word detector not restarted — Vosk model not loaded")
+    except Exception as e:
+        print(f"[Voice] Error restarting wake word detector: {e}")
+
     print(f"[Voice] Voice agent backend switched to: {request.backend}")
 
     await analytics_dao.log_activity(
@@ -1256,7 +1211,7 @@ async def set_voice_backend(request: VoiceBackendRequest):
     return {
         "status": "set",
         "backend": request.backend,
-        "note": "Will take effect on next wake word trigger",
+        "note": "Voice pipeline reset — wake word listening",
     }
 
 
@@ -1283,12 +1238,11 @@ async def set_agent_mode(request: VoiceAgentModeRequest):
     """Enable or disable Voice Agent mode.
 
     When enabled, the wake word triggers the configured voice agent
-    (Deepgram or Pipecat) which handles STT + LLM + TTS.
+    (Deepgram or Gemini) which handles STT + LLM + TTS.
     When disabled, BARQ uses its local non-streaming pipeline.
     """
     if request.enabled and not get_settings().deepgram_api_key:
-        # Only warn about missing Deepgram key — Pipecat doesn't need it
-        print("[Voice] Voice Agent enabled but DEEPGRAM_API_KEY is not set — Pipecat will try to connect")
+        print("[Voice] Voice Agent enabled but DEEPGRAM_API_KEY is not set")
 
     # If conversation is active, stop and restart
     if conversation_listener.is_active:

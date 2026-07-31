@@ -135,7 +135,7 @@ function teardownTestEnv() {
  *  The real WebSocket lives in VoiceProvider, which tests don't render. */
 function ensureMockWs(): void {
   if (!mockWs) {
-    new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+    new TestWebSocket('ws://127.0.0.1:8956/voice/ws/status')
   }
   // Ensure event handlers exist so tests can call openWebSocket/sendStatus
   if (!mockWs!.onopen) mockWs!.onopen = (() => {}) as ((event: Event) => void)
@@ -310,17 +310,17 @@ describe('DashboardPage WebSocket lifecycle', () => {
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
     // VoiceProvider creates WebSocket in its useEffect — should be set now
     if (!mockWs) {
-      new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+      new TestWebSocket('ws://127.0.0.1:8956/voice/ws/status')
     }
     expect(mockWs).not.toBeNull()
-    expect(mockWs!.url).toBe('ws://127.0.0.1:8970/voice/ws/status')
+    expect(mockWs!.url).toBe('ws://127.0.0.1:8956/voice/ws/status')
   })
 
   it('closes the WebSocket on unmount', async () => {
     renderWithProvider()
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
     if (!mockWs) {
-      new TestWebSocket('ws://127.0.0.1:8970/voice/ws/status')
+      new TestWebSocket('ws://127.0.0.1:8956/voice/ws/status')
     }
     await openWebSocket()
     const closeSpy = mockWs!.close

@@ -751,6 +751,314 @@ def _lock_screen() -> dict[str, Any]:
             return {"status": "error", "detail": "Screen lock tools not found. Install: gnome-screensaver, xscreensaver, or xdg-utils"}
 
 
+# ─── Mouse & Keyboard Control Functions (like Mark-L's computer_control.py) ─
+# Requires: pip install pyautogui
+
+
+def _mouse_click(
+    x: int | None = None,
+    y: int | None = None,
+    button: str = "left",
+    clicks: int = 1,
+) -> dict[str, Any]:
+    """Click at specified screen coordinates or current cursor position.
+
+    Args:
+        x: Optional X coordinate. If omitted, clicks at current position.
+        y: Optional Y coordinate. If omitted, clicks at current position.
+        button: "left", "right", or "middle". Default "left".
+        clicks: Number of clicks (1=single, 2=double). Default 1.
+
+    Returns:
+        Dict with click result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.PAUSE = 0.05
+
+        if x is not None and y is not None:
+            pyautogui.click(x, y, button=button, clicks=clicks)
+            label = "Double-clicked" if clicks == 2 else "Clicked"
+            return {"status": "success", "detail": f"{label} ({x}, {y}) [{button}]"}
+        else:
+            pyautogui.click(button=button, clicks=clicks)
+            label = "Double-clicked" if clicks == 2 else "Clicked"
+            return {"status": "success", "detail": f"{label} at current position [{button}]"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Mouse click failed: {e}"}
+
+
+def _mouse_move(x: int, y: int, duration: float = 0.3) -> dict[str, Any]:
+    """Move the mouse cursor to absolute screen coordinates.
+
+    Args:
+        x: Target X coordinate.
+        y: Target Y coordinate.
+        duration: Animation duration in seconds. Default 0.3.
+
+    Returns:
+        Dict with move result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.moveTo(x, y, duration=duration)
+        return {"status": "success", "detail": f"Mouse moved to ({x}, {y})"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Mouse move failed: {e}"}
+
+
+def _mouse_drag(
+    x1: int, y1: int, x2: int, y2: int, duration: float = 0.5,
+) -> dict[str, Any]:
+    """Click-drag from one point to another.
+
+    Args:
+        x1: Starting X coordinate.
+        y1: Starting Y coordinate.
+        x2: Ending X coordinate.
+        y2: Ending Y coordinate.
+        duration: Drag duration in seconds. Default 0.5.
+
+    Returns:
+        Dict with drag result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.moveTo(x1, y1, duration=0.2)
+        pyautogui.dragTo(x2, y2, duration=duration, button="left")
+        return {"status": "success", "detail": f"Dragged from ({x1},{y1}) to ({x2},{y2})"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Mouse drag failed: {e}"}
+
+
+def _mouse_scroll(direction: str = "down", amount: int = 3) -> dict[str, Any]:
+    """Scroll the mouse wheel.
+
+    Args:
+        direction: "up", "down", "left", or "right".
+        amount: Number of scroll clicks. Default 3.
+
+    Returns:
+        Dict with scroll result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+
+        vertical = direction in ("up", "down")
+        clicks = amount if direction in ("up", "right") else -amount
+
+        if vertical:
+            pyautogui.scroll(clicks)
+        else:
+            pyautogui.hscroll(clicks)
+
+        return {"status": "success", "detail": f"Scrolled {direction} x{amount}"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Scroll failed: {e}"}
+
+
+def _keyboard_type(text: str, interval: float = 0.03) -> dict[str, Any]:
+    """Type text at the current cursor position.
+
+    Args:
+        text: The text to type.
+        interval: Seconds between keystrokes. Default 0.03.
+
+    Returns:
+        Dict with type result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.typewrite(text, interval=interval)
+        truncated = text[:60] + "..." if len(text) > 60 else text
+        return {"status": "success", "detail": f"Typed: {truncated}"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Keyboard type failed: {e}"}
+
+
+def _keyboard_smart_type(text: str, clear_first: bool = True) -> dict[str, Any]:
+    """Type text smartly — clear the field first, then type via clipboard paste for long text.
+
+    For longer text (>20 chars), uses clipboard paste which is faster and more
+    reliable than individual keystrokes.
+
+    Args:
+        text: The text to type.
+        clear_first: Whether to select-all + delete first. Default True.
+
+    Returns:
+        Dict with type result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.PAUSE = 0.05
+
+        if clear_first:
+            modifier = "command" if IS_MACOS else "ctrl"
+            pyautogui.hotkey(modifier, "a")
+            pyautogui.press("delete")
+
+        if len(text) > 20:
+            # Use clipboard paste for long text (faster, fewer key events)
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+                modifier = "command" if IS_MACOS else "ctrl"
+                pyautogui.hotkey(modifier, "v")
+                truncated = text[:60] + "..." if len(text) > 60 else text
+                return {"status": "success", "detail": f"Smart-typed (clipboard): {truncated}"}
+            except ImportError:
+                pass  # Fall through to regular typewrite
+
+        pyautogui.typewrite(text, interval=0.04)
+        truncated = text[:60] + "..." if len(text) > 60 else text
+        return {"status": "success", "detail": f"Smart-typed: {truncated}"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Smart type failed: {e}"}
+
+
+def _keyboard_hotkey(keys: list[str]) -> dict[str, Any]:
+    """Press a keyboard shortcut (e.g. ctrl+c, alt+tab, ctrl+shift+esc).
+
+    Args:
+        keys: List of key names like ["ctrl", "c"] for copy, ["alt", "tab"] for window switch.
+
+    Returns:
+        Dict with hotkey result.
+    """
+    if not keys:
+        return {"status": "error", "detail": "At least one key is required"}
+    key_list = keys if isinstance(keys, (list, tuple)) else [keys]
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.hotkey(*key_list)
+        return {"status": "success", "detail": f"Hotkey: {'+'.join(key_list)}"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Hotkey failed: {e}"}
+
+
+def _keyboard_press(key: str = "enter") -> dict[str, Any]:
+    """Press a single keyboard key (e.g. enter, tab, escape, space, backspace).
+
+    Args:
+        key: Name of the key to press. Default "enter".
+
+    Returns:
+        Dict with keypress result.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        pyautogui.press(key)
+        return {"status": "success", "detail": f"Pressed: {key}"}
+    except ImportError:
+        return {"status": "error", "detail": "PyAutoGUI not installed. Install with: pip install pyautogui"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Keypress failed: {e}"}
+
+
+def _screen_find(description: str) -> dict[str, Any]:
+    """Find a UI element's coordinates on screen using Gemini vision.
+
+    Takes a screenshot and asks Gemini to locate the described element.
+    Returns the center coordinates (x, y) if found.
+
+    Args:
+        description: Natural language description of the element (e.g. "the search button", "the login input field").
+
+    Returns:
+        Dict with coordinates if found, or a NOT_FOUND status.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        w, h = pyautogui.size()
+
+        screenshot = pyautogui.screenshot()
+        import io
+        buf = io.BytesIO()
+        screenshot.save(buf, format="PNG")
+        image_bytes = buf.getvalue()
+
+        from agent.vision import analyze_image_with_gemini
+
+        analysis_prompt = (
+            f"This is a screenshot of a {w}x{h} pixel screen. "
+            f"Locate the UI element described as: '{description}'. "
+            f"Reply with ONLY the center coordinates as: x,y "
+            f"If the element is not visible, reply: NOT_FOUND"
+        )
+
+        import re
+        text = _run_async(
+            analyze_image_with_gemini(image_bytes, "image/png", prompt=analysis_prompt)
+        )
+
+        text = (text or "").strip()
+        if "NOT_FOUND" in text.upper():
+            return {"status": "not_found", "detail": f"Element '{description}' not found on screen"}
+
+        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
+        if match:
+            x, y = int(match.group(1)), int(match.group(2))
+            return {
+                "status": "success",
+                "x": x,
+                "y": y,
+                "detail": f"Found '{description}' at ({x}, {y})",
+            }
+        return {"status": "error", "detail": f"Could not parse coordinates from Gemini response: {text[:100]}"}
+
+    except ImportError as e:
+        return {"status": "error", "detail": f"Screen find dependencies missing: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Screen find failed: {e}"}
+
+
+def _screen_click(description: str) -> dict[str, Any]:
+    """Find a UI element by description and click it (screen_find + click).
+
+    Args:
+        description: Natural language description of the element to click.
+
+    Returns:
+        Dict with click result.
+    """
+    try:
+        result = _screen_find(description)
+        if result.get("status") == "success":
+            x, y = result["x"], result["y"]
+            import pyautogui
+            pyautogui.click(x, y)
+            return {"status": "success", "detail": f"Clicked '{description}' at ({x}, {y})"}
+        elif result.get("status") == "not_found":
+            return result
+        return {"status": "error", "detail": result.get("detail", "Unknown error finding element")}
+    except Exception as e:
+        return {"status": "error", "detail": f"Screen click failed: {e}"}
+
+
 # ─── Vision / Screen Analysis Functions (like Mark-L) ───────────────────
 
 def _run_async(coro):
@@ -1292,6 +1600,75 @@ def _check_game_updates() -> dict[str, Any]:
         return {"status": "error", "detail": str(e)}
 
 
+# ─── File Processor Functions (Universal file processing) ──────────────
+
+def _process_file(
+    file_path: str = "",
+    action: str = "",
+    instruction: str = "",
+    save: bool = True,
+    **kwargs,
+) -> dict[str, Any]:
+    """Process any file type with AI-powered analysis and transformations.
+
+    Automatically detects file type and dispatches to the right handler.
+    Supports: images (describe/ocr/resize/convert/compress), PDFs (summarize/extract),
+    documents (summarize/word_count), data files (analyze/filter/sort/convert),
+    JSON (validate/format/analyze), code (explain/review/fix), audio (transcribe),
+    video (info/compress/trim), archives (list/extract), presentations (summarize).
+
+    Args:
+        file_path: Path to the file (required).
+        action: Action to perform (type-dependent).
+        instruction: Custom instruction for AI analysis.
+        save: Whether to save long results to disk (default: True).
+        **kwargs: Extra params (width, height, quality, format, etc.).
+
+    Returns:
+        Dict with status and detail.
+    """
+    try:
+        from actions.file_processor import process_file as _do_process
+        result = _do_process(
+            file_path=file_path,
+            action=action,
+            instruction=instruction,
+            save=save,
+            **kwargs,
+        )
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": f"File processing failed: {e}"}
+
+
+# ─── Messaging Functions (Desktop Automation) ──────────────────────────
+
+def _send_message(
+    platform: str = "whatsapp",
+    receiver: str = "",
+    message_text: str = "",
+) -> dict[str, Any]:
+    """Send a message via desktop automation (WhatsApp, Telegram, Discord, etc.).
+
+    Opens the native messaging app, searches for the contact, pastes the
+    message, and presses Enter.
+
+    Args:
+        platform: Platform name (whatsapp, telegram, signal, discord, messenger, instagram, slack).
+        receiver: Contact name, phone, or username.
+        message_text: Message content to send.
+
+    Returns:
+        Dict with send result.
+    """
+    try:
+        from actions.send_message import send_message as _do_send
+        result = _do_send(platform=platform, receiver=receiver, message_text=message_text)
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": f"Messaging failed: {e}"}
+
+
 # ─── Reminder Functions ───────────────────────────────────────────────
 
 def _set_reminder(title: str, message: str = "", delay_minutes: int = 5) -> dict[str, Any]:
@@ -1422,6 +1799,17 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "media_control": _media_control,
     "empty_trash": _empty_trash,
     "lock_screen": _lock_screen,
+    # Mouse & Keyboard control (PyAutoGUI)
+    "mouse_click": _mouse_click,
+    "mouse_move": _mouse_move,
+    "mouse_drag": _mouse_drag,
+    "mouse_scroll": _mouse_scroll,
+    "keyboard_type": _keyboard_type,
+    "keyboard_smart_type": _keyboard_smart_type,
+    "keyboard_hotkey": _keyboard_hotkey,
+    "keyboard_press": _keyboard_press,
+    "screen_find": _screen_find,
+    "screen_click": _screen_click,
     "analyze_screen": _analyze_screen,
     "analyze_camera": _analyze_camera,
     "analyze_file": _analyze_file,
@@ -1465,6 +1853,10 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "set_reminder": _set_reminder,
     "list_reminders": _list_reminders,
     "dismiss_reminder": _dismiss_reminder,
+    # Messaging (Desktop automation: WhatsApp, Telegram, Discord, etc.)
+    # File Processor (AI-powered file analysis & transformation)
+    "process_file": _process_file,
+    "send_message": _send_message,
 }
 
 
@@ -1728,6 +2120,130 @@ def get_function_schemas() -> list[dict]:
             "parameters": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+        # ── Mouse & Keyboard Control (PyAutoGUI) ───────────────────────────
+        {
+            "name": "mouse_click",
+            "description": "Clicks at specified screen coordinates or current cursor position. Supports left, right, and middle buttons. Use double_click by setting clicks=2.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "Optional X coordinate. If omitted, clicks at current cursor position."},
+                    "y": {"type": "integer", "description": "Optional Y coordinate. If omitted, clicks at current cursor position."},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button. Default: left."},
+                    "clicks": {"type": "integer", "description": "Number of clicks. 1=single, 2=double. Default: 1."},
+                },
+            },
+        },
+        {
+            "name": "mouse_move",
+            "description": "Moves the mouse cursor to absolute screen coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "Target X coordinate (required)."},
+                    "y": {"type": "integer", "description": "Target Y coordinate (required)."},
+                    "duration": {"type": "number", "description": "Animation duration in seconds. Default: 0.3."},
+                },
+                "required": ["x", "y"],
+            },
+        },
+        {
+            "name": "mouse_drag",
+            "description": "Click-drags from one point to another. Useful for selecting text, moving windows, or drawing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x1": {"type": "integer", "description": "Starting X coordinate (required)."},
+                    "y1": {"type": "integer", "description": "Starting Y coordinate (required)."},
+                    "x2": {"type": "integer", "description": "Ending X coordinate (required)."},
+                    "y2": {"type": "integer", "description": "Ending Y coordinate (required)."},
+                    "duration": {"type": "number", "description": "Drag duration in seconds. Default: 0.5."},
+                },
+                "required": ["x1", "y1", "x2", "y2"],
+            },
+        },
+        {
+            "name": "mouse_scroll",
+            "description": "Scrolls the mouse wheel in any direction. Use for scrolling web pages, documents, or lists.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction. Default: down."},
+                    "amount": {"type": "integer", "description": "Number of scroll clicks. Default: 3."},
+                },
+            },
+        },
+        {
+            "name": "keyboard_type",
+            "description": "Types text at the current cursor position, character by character.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to type (required)."},
+                    "interval": {"type": "number", "description": "Seconds between keystrokes. Default: 0.03."},
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "keyboard_smart_type",
+            "description": "Types text using clipboard paste for longer text (>20 chars). Faster and more reliable than character-by-character typing. Can clear the field first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to type (required)."},
+                    "clear_first": {"type": "boolean", "description": "Select-all and delete first. Default: true."},
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "keyboard_hotkey",
+            "description": "Presses a keyboard shortcut / combination (e.g. ctrl+c, alt+tab, ctrl+shift+esc).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of key names to press together, e.g. ['ctrl', 'c'] for copy, ['alt', 'tab'] for window switch.",
+                    },
+                },
+                "required": ["keys"],
+            },
+        },
+        {
+            "name": "keyboard_press",
+            "description": "Presses a single keyboard key (e.g. enter, tab, escape, space, backspace, arrow keys).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Name of the key to press (e.g. 'enter', 'tab', 'escape', 'space'). Default: enter."},
+                },
+            },
+        },
+        {
+            "name": "screen_find",
+            "description": "Finds a UI element on screen by describing it in natural language. Uses AI vision to locate buttons, text fields, icons, or any visible element. Returns the center coordinates (x, y).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Natural language description of the element to find, e.g. 'the search button', 'the login input field', 'the submit button with text Send'."},
+                },
+                "required": ["description"],
+            },
+        },
+        {
+            "name": "screen_click",
+            "description": "Finds a UI element by description and clicks it. Combines screen_find + click in one step.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Natural language description of the element to click."},
+                },
+                "required": ["description"],
             },
         },
         # ── Browser Control Functions (Playwright) ────────────────────────
@@ -2181,6 +2697,106 @@ def get_function_schemas() -> list[dict]:
             "parameters": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+        # ── Messaging (Desktop Automation) ─────────────────────────────────
+        {
+            "name": "send_message",
+            "description": "Sends a message to a contact via a desktop messaging app. Opens the app, searches for the recipient, and sends the text. Supports WhatsApp, Telegram, Signal, Discord, Messenger, Instagram, and Slack.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "enum": ["whatsapp", "telegram", "signal", "discord", "messenger", "instagram", "slack"],
+                        "description": "Messaging platform to use. Supports: whatsapp, telegram, signal, discord, messenger, instagram, slack. Default: whatsapp.",
+                    },
+                    "receiver": {
+                        "type": "string",
+                        "description": "Contact name, phone number, or username to send the message to (required).",
+                    },
+                    "message_text": {
+                        "type": "string",
+                        "description": "The text content of the message to send (required).",
+                    },
+                },
+                "required": ["receiver", "message_text"],
+            },
+        },
+        # ── File Processor (AI-powered file analysis) ──────────────────────
+        {
+            "name": "process_file",
+            "description": "Processes any file type with AI-powered analysis and transformations. Automatically detects file type. Supports: images (describe, ocr, resize, convert, compress), PDFs (summarize, extract_text, to_word), documents (summarize, word_count, reformat), data files (analyze, filter, sort, convert), JSON (validate, format, analyze), code (explain, review, fix, optimize, document, run), audio (transcribe, info, convert, trim), video (info, extract_audio, trim, compress, transcribe), archives (list, extract), presentations (summarize, extract_text). Requires optional libraries: Pillow, pdfplumber, python-docx, pandas, openpyxl, pydub, python-pptx, ffmpeg.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file (required).",
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform. Type-dependent: image(describe, ocr, resize, convert, compress, info), pdf(summarize, extract_text, info, to_word), docx(summarize, extract_text, word_count), csv/excel(analyze, info, stats, filter, sort, convert), json(validate, format, analyze, to_csv), code(explain, review, fix, optimize, document, run, info), audio(transcribe, info, convert, trim), video(info, extract_audio, trim, extract_frame, compress, transcribe, convert), archive(list, extract), pptx(summarize, extract_text, analyze).",
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "Custom instruction override for AI analysis. Use this to ask specific questions about the file content.",
+                    },
+                    "save": {
+                        "type": "boolean",
+                        "description": "Whether to save long AI responses to disk (.txt file). Default: true.",
+                    },
+                    "width": {
+                        "type": "integer",
+                        "description": "Target width for image resize action.",
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Target height for image resize action.",
+                    },
+                    "scale": {
+                        "type": "number",
+                        "description": "Scale factor for image resize (e.g. 0.5 for half size).",
+                    },
+                    "quality": {
+                        "type": "integer",
+                        "description": "Compression quality 1-100. Default: 70 for images, 28 (CRF) for video.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Target format for convert action. Image: png, jpg, webp. Audio: mp3, wav. Video: mp4, avi, mov.",
+                    },
+                    "column": {
+                        "type": "string",
+                        "description": "Column name for data file filter/sort operations.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Value to filter by.",
+                    },
+                    "condition": {
+                        "type": "string",
+                        "enum": ["equals", "contains", "gt", "lt"],
+                        "description": "Filter condition: equals, contains, gt (greater than), lt (less than).",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "Start time for trim operations (e.g. '00:00:05' or seconds as number).",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End time for trim operations.",
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "description": "Timestamp for video frame extraction (e.g. '00:00:01').",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Extraction destination directory path for archives.",
+                    },
+                },
+                "required": ["file_path"],
             },
         },
     ]

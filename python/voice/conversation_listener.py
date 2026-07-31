@@ -214,6 +214,61 @@ class ConversationListener:
                 agent.on_audio_chunk = self._on_agent_audio_chunk
 
                 self.responder.is_speaking_event.set()
+
+                # ── Dynamic wake greeting with context ──────────────────
+                # Build a time-aware, name-aware greeting with weather/news
+                # context (like Mark-L's two-phase briefing), so each wake
+                # feels natural and informed rather than a hardcoded phrase.
+                try:
+                    # Read user name from DB for personalized greeting
+                    user_name = None
+                    try:
+                        from database.settings_dao import settings_dao
+                        name_val = await settings_dao.get_setting("user_name", "core")
+                        if name_val and name_val.strip():
+                            user_name = name_val.strip()
+                    except Exception:
+                        pass
+
+                    # Read weather city from DB for context
+                    # NOTE: No namespace passed — matches the convention in
+                    # routes.py's _gather_background_info() which also reads
+                    # weather_city without a namespace.
+                    weather_city = None
+                    try:
+                        city_val = await settings_dao.get_setting("weather_city")
+                        if city_val and city_val.strip():
+                            weather_city = city_val.strip()
+                    except Exception:
+                        pass
+
+                    # Fetch weather + news context in parallel (fast, non-blocking)
+                    # This runs before the greeting TTS so the greeting can include
+                    # "Looks like rain in Lucknow" — like Mark-L's Phase 2 briefing
+                    # folded directly into the greeting.
+                    context_phrase = None
+                    try:
+                        from .greeting_context import fetch_greeting_context
+                        ctx = await fetch_greeting_context(
+                            city=weather_city,
+                            include_news=True,
+                        )
+                        if ctx:
+                            context_phrase = ctx
+                            print(f"[VoiceAgent] Greeting context: '{ctx}'")
+                    except Exception:
+                        pass
+
+                    from .greeting_engine import build_wake_greeting
+                    greeting = build_wake_greeting(
+                        user_name=user_name,
+                        context_phrase=context_phrase,
+                    )
+                    print(f"[VoiceAgent] Greeting: '{greeting}'")
+                    await agent.speak_text(greeting)
+                except Exception as e:
+                    print(f"[VoiceAgent] Greeting TTS error (non-fatal): {e}")
+
                 await agent.start_conversation()
 
                 print(f"[VoiceAgent] Conversation active ({backend}, attempt {attempt}/{max_retries})")

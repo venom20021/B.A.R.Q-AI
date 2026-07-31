@@ -548,6 +548,7 @@ async def seed_defaults(db):
         ("theme", "dark", "appearance"),
         ("wake_greeting_enabled", "true", "voice"),
         ("animations_enabled", "true", "appearance"),
+        ("voice_agent_backend", "gemini", "voice"),
     ]
 
     for key, value, category in default_settings:

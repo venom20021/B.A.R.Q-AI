@@ -707,7 +707,7 @@ class PythonSidecar {
         const response = await fetch(`${SIDECAR_URL}/health`, { signal: AbortSignal.timeout(2000) })
         if (response.ok) {
           const body = await response.json()
-          if (body && typeof body === 'object' && body.status === 'ok') {
+          if (body && typeof body === 'object' && (body as { status?: string }).status === 'ok') {
             console.log('[PythonSidecar] Local health check passed')
             return
           }

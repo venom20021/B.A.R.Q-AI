@@ -6,14 +6,16 @@ the React force-directed graph frontend expects.
 
 import pytest
 
-# Ensure a fresh graph for each test module invocation
-from graph_brain import graph_brain as _gb
+# The /api/brain/visualize endpoint reads the NEW multi_brain_manager
+# (legacy graph_brain was migrated to domain-specific brains in an earlier
+# commit). These tests must target the same manager the endpoint uses.
+from memory_knowledge.multi_brain import multi_brain_manager
 
 
 @pytest.fixture(autouse=True)
 def _reset_graph():
-    """Clear the shared graph singleton before each test so tests are isolated."""
-    _gb.clear()
+    """Clear the 'general' brain before each test so tests are isolated."""
+    multi_brain_manager.clear_brain("general")
     yield
 
 
@@ -52,7 +54,7 @@ async def test_empty_graph_returns_valid_structure(client):
 @pytest.mark.asyncio
 async def test_graph_with_single_triplet(client):
     """A single triplet should appear as two nodes and one link."""
-    _gb.add_triplet("python", "USED_FOR", "data science")
+    multi_brain_manager.add_triplet("general", "python", "USED_FOR", "data science")
 
     resp = await client.get("/api/brain/visualize")
     assert resp.status_code == 200
@@ -77,9 +79,9 @@ async def test_graph_with_single_triplet(client):
 @pytest.mark.asyncio
 async def test_graph_with_multiple_triplets(client):
     """Multiple overlapping triplets produce correct node/link counts."""
-    _gb.add_triplet("python", "USED_FOR", "data science")
-    _gb.add_triplet("python", "USED_AT", "google")
-    _gb.add_triplet("data science", "REQUIRES", "statistics")
+    multi_brain_manager.add_triplet("general", "python", "USED_FOR", "data science")
+    multi_brain_manager.add_triplet("general", "python", "USED_AT", "google")
+    multi_brain_manager.add_triplet("general", "data science", "REQUIRES", "statistics")
 
     resp = await client.get("/api/brain/visualize")
     assert resp.status_code == 200
@@ -104,7 +106,7 @@ async def test_graph_with_multiple_triplets(client):
 @pytest.mark.asyncio
 async def test_node_attributes_include_label(client):
     """Nodes should have a 'label' attribute matching their id."""
-    _gb.add_triplet("react", "IS_A", "frontend framework")
+    multi_brain_manager.add_triplet("general", "react", "IS_A", "frontend framework")
 
     resp = await client.get("/api/brain/visualize")
     data = resp.json()
@@ -120,8 +122,8 @@ async def test_node_attributes_include_label(client):
 @pytest.mark.asyncio
 async def test_duplicate_triplet_increments_weight(client):
     """Adding the same triplet twice should increment the edge weight."""
-    _gb.add_triplet("a", "RELATED_TO", "b")
-    _gb.add_triplet("a", "RELATED_TO", "b")
+    multi_brain_manager.add_triplet("general", "a", "RELATED_TO", "b")
+    multi_brain_manager.add_triplet("general", "a", "RELATED_TO", "b")
 
     resp = await client.get("/api/brain/visualize")
     data = resp.json()
@@ -137,7 +139,7 @@ async def test_many_entities(client):
     """A larger graph should still produce the correct counts."""
     entities = [f"entity_{i}" for i in range(50)]
     for i in range(49):
-        _gb.add_triplet(entities[i], "LINKS_TO", entities[i + 1])
+        multi_brain_manager.add_triplet("general", entities[i], "LINKS_TO", entities[i + 1])
 
     resp = await client.get("/api/brain/visualize")
     data = resp.json()
@@ -154,7 +156,7 @@ async def test_many_entities(client):
 @pytest.mark.asyncio
 async def test_link_structure_uses_source_target_keys(client):
     """Every link must have 'source' and 'target' as strings (this is what react-force-graph-2d expects)."""
-    _gb.add_triplet("machine learning", "REQUIRES", "data")
+    multi_brain_manager.add_triplet("general", "machine learning", "REQUIRES", "data")
 
     resp = await client.get("/api/brain/visualize")
     data = resp.json()
@@ -170,8 +172,8 @@ async def test_link_structure_uses_source_target_keys(client):
 @pytest.mark.asyncio
 async def test_node_ids_are_unique(client):
     """No duplicate node ids in the response."""
-    _gb.add_triplet("x", "RELATED_TO", "y")
-    _gb.add_triplet("x", "RELATED_TO", "z")  # 'x' already exists
+    multi_brain_manager.add_triplet("general", "x", "RELATED_TO", "y")
+    multi_brain_manager.add_triplet("general", "x", "RELATED_TO", "z")  # 'x' already exists
 
     resp = await client.get("/api/brain/visualize")
     data = resp.json()

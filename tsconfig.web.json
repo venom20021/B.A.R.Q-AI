@@ -17,9 +17,10 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "baseUrl": ".",
+    // baseUrl is deprecated in TS 6.0+ — paths resolve relative to this
+    // tsconfig file without it (TS 4.1+ behavior).
     "paths": {
-      "@/*": ["src/renderer/src/*"]
+      "@/*": ["./src/renderer/src/*"]
     }
   },
   "include": [
