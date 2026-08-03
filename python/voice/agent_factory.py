@@ -119,6 +119,17 @@ async def get_voice_agent_async(backend: Optional[str] = None):
     return _voice_agent_instance
 
 
+def get_cached_voice_agent():
+    """Return the cached voice agent instance WITHOUT creating one.
+
+    Returns ``None`` if no agent has been instantiated yet.  Useful for
+    live-config updates (e.g. the mic RMS energy threshold) that should
+    only be applied to an already-running agent — new agents load their
+    own settings from the DB on ``connect()``.
+    """
+    return _voice_agent_instance
+
+
 def reset_voice_agent():
     """Clear the cached agent instance.  Call before creating a new one
     with a different backend."""

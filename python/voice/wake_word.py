@@ -20,6 +20,13 @@ from typing import Callable, Optional
 from config import get_settings
 from utils.callback_guards import SyncCallback
 
+from .noise_floor import (
+    MIN_STAGING_SAMPLES,
+    AmbientNoiseTracker,
+    compute_rms,
+    set_pending_adaptive_threshold,
+)
+
 # Electron wake receiver endpoint — spawned as a lightweight HTTP server
 ELECTRON_WAKE_URL = "http://127.0.0.1:8112/wake"
 
@@ -249,6 +256,11 @@ class WakeWordDetector:
         self._last_vosk_confidence = 0.0
         self._rec_needs_rebuild = False  # Signal to recreate recognizer in listen loop
 
+        # Ambient noise-floor tracker for adaptive RMS energy thresholding.
+        # Fed one RMS value per mic chunk; on wake, the floor is used to
+        # stage an adaptive energy threshold (~3x floor) for the voice agent.
+        self._noise_tracker = AmbientNoiseTracker()
+
         # Pause/resume — used to release the mic stream before STT opens its own
         self._paused = False
         # Threading.Event for clean mic handoff: set when stream is fully released.
@@ -462,6 +474,39 @@ class WakeWordDetector:
             self._wake_phrases = self._sensitivity_phrases[level]
         print(f"[WakeWord] Sensitivity changed: {old_level} -> {level}")
 
+    def _stage_adaptive_threshold(self) -> None:
+        """Compute and stage the adaptive RMS energy threshold for the voice agent.
+
+        Uses the ambient noise floor sampled during wake-word listening:
+        threshold = ~3x the floor (via ``suggested_threshold()``), staged in
+        the ``noise_floor`` module for the voice agent to consume on connect.
+
+        If fewer than ``MIN_STAGING_SAMPLES`` ambient samples have been
+        collected (e.g. the very first wake after startup), no threshold is
+        staged — with zero samples the floor is 0 and the threshold would
+        clamp to 50 (max sensitivity), risking echo misfires.
+
+        Never raises: failures here must not block wake handling.
+        """
+        try:
+            if self._noise_tracker.count >= MIN_STAGING_SAMPLES:
+                floor = self._noise_tracker.noise_floor()
+                threshold = self._noise_tracker.suggested_threshold()
+                set_pending_adaptive_threshold(threshold)
+                print(
+                    f"[WakeWord] Ambient noise floor RMS={floor:.0f} "
+                    f"→ adaptive energy threshold={threshold}"
+                )
+            else:
+                set_pending_adaptive_threshold(None)
+                print(
+                    f"[WakeWord] Skipping adaptive threshold — "
+                    f"only {self._noise_tracker.count}/{MIN_STAGING_SAMPLES} "
+                    f"ambient samples collected"
+                )
+        except Exception as e:
+            print(f"[WakeWord] Adaptive threshold error (non-fatal): {e}")
+
     def get_mic_level(self) -> float:
         """Get the current microphone audio level (0.0-1.0)."""
         return self._last_mic_level if self._running else 0.0
@@ -627,10 +672,12 @@ class WakeWordDetector:
                     self._rec_needs_rebuild = False
                     print(f"[WakeWord] Recognizer rebuilt for {self._language}")
 
-                # Compute RMS mic level using numpy
+                # Compute RMS mic level using numpy and feed the ambient
+                # noise-floor tracker (one sample per chunk).
                 try:
-                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    rms = compute_rms(data)
                     self._last_mic_level = min(1.0, rms / 10000.0)
+                    self._noise_tracker.add(rms)
                 except Exception:
                     self._last_mic_level = 0.0
 
@@ -656,6 +703,12 @@ class WakeWordDetector:
                                 # Store the full utterance so downstream can extract
                                 # the command portion (text after the wake word).
                                 self._last_utterance = text
+
+                                # Stage an adaptive RMS energy threshold (~3x the
+                                # sampled ambient noise floor) for the voice agent
+                                # to consume on connect().  Best-effort: any failure
+                                # here must not block wake handling.
+                                self._stage_adaptive_threshold()
 
                                 play_wake_sound()
                                 _send_wake_signal()

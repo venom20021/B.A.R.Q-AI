@@ -138,7 +138,7 @@ class ConversationListener:
             except Exception as e:
                 print(f"[Conversation] on_stop callback error: {e}")
 
-        print("[Conversation] Conversation ended — back to wake word standby")
+        print("[Conversation] Conversation ended - back to wake word standby")
 
     # ── Voice Agent loop ─────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ class ConversationListener:
                         await asyncio.sleep(wait)
                         continue
                     else:
-                        print("[VoiceAgent] All connection attempts failed — ending conversation")
+                        print("[VoiceAgent] All connection attempts failed - ending conversation")
                         self._conversation_active = False
                         return
 
@@ -290,7 +290,7 @@ class ConversationListener:
                         reset_voice_agent()
                         continue
                     else:
-                        print("[VoiceAgent] Max retries reached — ending conversation")
+                        print("[VoiceAgent] Max retries reached - ending conversation")
                         break
 
             except Exception as e:
@@ -316,7 +316,7 @@ class ConversationListener:
         }))
 
         if self._is_exit_command(text):
-            print("[VoiceAgent] Exit command detected — stopping conversation")
+            print("[VoiceAgent] Exit command detected - stopping conversation")
             asyncio.create_task(self.stop_conversation())
 
     def _on_agent_audio_chunk(self, pcm_array, sample_rate: int):

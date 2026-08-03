@@ -35,6 +35,17 @@ MIC_CHUNK_SIZE = 1024       # ~64 ms at 16 kHz
 OUTPUT_BLOCK_SIZE = 2400    # ~50 ms at 24 kHz — fast barge-in
 
 
+class _ConnectionClosed(Exception):
+    """Internal signal: the Gemini Live WebSocket is dead and unrecoverable.
+
+    Raised by the send/receive loops when a connection-closed error is
+    detected (e.g. 1011 keepalive ping timeout).  It propagates out of
+    the TaskGroup so ``start_conversation()`` returns, which sets
+    ``_running = False`` and lets the ConversationListener's retry logic
+    reconnect instead of hammering a dead socket forever.
+    """
+
+
 class GeminiVoiceAgent(VoiceAgentBase):
     """Voice agent using Gemini Live Audio WebSocket.
 
@@ -66,6 +77,19 @@ class GeminiVoiceAgent(VoiceAgentBase):
         self._speaking_lock = threading.Lock()
         self._turn_done_event: Optional[asyncio.Event] = None
         self._started_event = asyncio.Event()   # set after start_conversation()
+
+        # Safety net for the "mic stays muted after greeting" bug:
+        # track when agent audio was last received so the play loop can
+        # reopen the mic after a short idle gap even if the turn_complete
+        # event never arrives (which would otherwise mute BARQ forever).
+        self._last_audio_at: float = 0.0
+        # How long after the last agent audio chunk before the mic reopens.
+        self._mic_reopen_delay: float = 1.2
+
+        # Consecutive non-connection errors in the receive loop.  After 3
+        # in a row we treat the session as unrecoverable and reconnect
+        # rather than spinning on errors forever.
+        self._receive_error_streak = 0
 
         # Callbacks (wired by ConversationListener)
         self.on_interim_transcript = None
@@ -164,6 +188,10 @@ class GeminiVoiceAgent(VoiceAgentBase):
                 tg.create_task(self._send_mic_loop(audio_device))
                 tg.create_task(self._play_audio_loop())
                 tg.create_task(self._receive_loop())
+        except _ConnectionClosed as e:
+            # The WebSocket died (keepalive ping timeout etc.).  The
+            # listener will detect is_running == False and reconnect.
+            print(f"[GeminiAgent] [!!] Connection closed - will reconnect ({e})")
         except Exception as e:
             print(f"[GeminiAgent] Conversation error: {e}")
         finally:
@@ -286,6 +314,60 @@ class GeminiVoiceAgent(VoiceAgentBase):
             f"{session_clause}"
         )
 
+    def _enqueue_mic_audio(self, item: dict) -> None:
+        """Thread-safe enqueue of a mic chunk (runs on the event loop).
+
+        Wraps ``put_nowait`` so a full queue drops the frame silently
+        instead of raising ``QueueFull`` inside an event-loop callback.
+        (A try/except around ``call_soon_threadsafe`` cannot catch it —
+        the callback runs later, on the loop thread, and would spam
+        "Exception in callback Queue.put_nowait()" on stderr.)
+        """
+        try:
+            self._audio_out_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass  # mic produces faster than the WS can send — drop
+
+    async def _receive_stream(self):
+        """Continuously yield Gemini Live server messages across turns.
+
+        ``LiveSession.receive()`` yields messages for exactly ONE complete
+        turn and then returns (the SDK breaks after ``turn_complete``), so
+        a multi-turn conversation must re-enter it.  This generator loops
+        for as long as the agent is running, re-entering ``receive()``
+        after each finished turn.
+
+        A genuine connection drop surfaces as an exception
+        (``websockets.ConnectionClosed`` wrapped as ``APIError``) and is
+        re-raised as ``_ConnectionClosed`` so the listener reconnects.
+        Transient non-connection errors are logged and retried (up to 3 in
+        a row, then treated as unrecoverable) instead of killing the
+        conversation on a single hiccup.
+        """
+        while self._running:
+            try:
+                async for msg in self._session.receive():
+                    self._receive_error_streak = 0
+                    yield msg
+            except asyncio.CancelledError:
+                raise
+            except _ConnectionClosed:
+                raise
+            except Exception as e:
+                if not self._running:
+                    return  # intentional shutdown — the WS may be mid-close
+                if self._is_connection_closed_error(e):
+                    # Connection died (and we're not shutting down) — let
+                    # the listener reconnect.
+                    print(f"[GeminiAgent] [!!] Receive failed - connection dead ({e})")
+                    raise _ConnectionClosed(str(e)) from e
+                self._receive_error_streak += 1
+                if self._receive_error_streak >= 3:
+                    print(f"[GeminiAgent] [!!] Repeated receive errors ({self._receive_error_streak}) - treating as dead")
+                    raise _ConnectionClosed(str(e)) from e
+                print(f"[GeminiAgent] [XX] Receive error: {e}")
+                await asyncio.sleep(0.5)
+
     async def _send_mic_loop(self, device: Optional[int] = None):
         """Continuously stream mic audio frames to Gemini Live."""
         loop = self._loop or asyncio.get_event_loop()
@@ -298,13 +380,16 @@ class GeminiVoiceAgent(VoiceAgentBase):
                 speaking = self._is_speaking
             if not speaking:
                 data = indata.tobytes()
-                try:
-                    loop.call_soon_threadsafe(
-                        self._audio_out_queue.put_nowait,
-                        {"data": data, "mime_type": "audio/pcm"},
-                    )
-                except asyncio.QueueFull:
-                    pass  # drop oldest frame, keep moving
+                # Cheap pre-check (races are fine — _enqueue_mic_audio
+                # swallows QueueFull on the loop thread).
+                if not self._audio_out_queue.full():
+                    try:
+                        loop.call_soon_threadsafe(
+                            self._enqueue_mic_audio,
+                            {"data": data, "mime_type": "audio/pcm"},
+                        )
+                    except RuntimeError:
+                        pass  # event loop shut down — stream is closing
 
         try:
             # Resolve output device
@@ -338,11 +423,31 @@ class GeminiVoiceAgent(VoiceAgentBase):
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
+                    if self._running and self._is_connection_closed_error(e):
+                        # Socket is dead (and we're not shutting down) — stop
+                        # spamming and let the listener reconnect.  When
+                        # stopping normally, _running is already False, so we
+                        # just log and exit.
+                        print(f"[GeminiAgent] [!!] Send failed - connection dead ({e})")
+                        raise _ConnectionClosed(str(e)) from e
                     print(f"[GeminiAgent] Send error: {e}")
 
         except Exception as e:
             print(f"[GeminiAgent] [XX] Mic error: {e}")
             raise
+        finally:
+            # Always release the mic stream.  If the TaskGroup tears down
+            # (dead connection / cancel), the sounddevice callback thread
+            # would otherwise keep firing into a queue nothing drains,
+            # spamming "Exception in callback Queue.put_nowait()" on
+            # stderr until stop() eventually runs.
+            if self._input_stream is not None:
+                try:
+                    self._input_stream.stop()
+                    self._input_stream.close()
+                except Exception:
+                    pass
+                self._input_stream = None
 
     async def _play_audio_loop(self):
         """Read PCM audio from Gemini and play through speakers.
@@ -383,8 +488,15 @@ class GeminiVoiceAgent(VoiceAgentBase):
                     ):
                         self._set_speaking(False)
                         self._turn_done_event.clear()
+                    elif self._mic_reopen_needed():
+                        # Safety net: no agent audio for >1.2s — assume the
+                        # turn ended even without a turn_complete event, so
+                        # the mic reopens and BARQ can hear the user again.
+                        print("[GeminiAgent] Mic reopened via idle safety net")
+                        self._set_speaking(False)
                     continue
 
+                self._last_audio_at = time.time()
                 self._set_speaking(True)
 
                 # Batch up to ~200 ms of audio for smooth writes
@@ -397,13 +509,29 @@ class GeminiVoiceAgent(VoiceAgentBase):
 
                 try:
                     await asyncio.to_thread(self._output_stream.write, bytes(batch))
-                except (RuntimeError, asyncio.CancelledError):
+                except RuntimeError:
                     break
+                except asyncio.CancelledError:
+                    # Never swallow cancellation — the TaskGroup needs it to
+                    # tear down promptly when a sibling detects a dead
+                    # connection.  Swallowing it here would make the play
+                    # loop spin on `while self._running` (still True until
+                    # start_conversation's finally runs) and deadlock the
+                    # TaskGroup indefinitely.
+                    raise
 
         except Exception as e:
             print(f"[GeminiAgent] [XX] Play error: {e}")
         finally:
             self._set_speaking(False)
+            # Always release the output stream (see _send_mic_loop finally).
+            if self._output_stream is not None:
+                try:
+                    self._output_stream.stop()
+                    self._output_stream.close()
+                except Exception:
+                    pass
+                self._output_stream = None
 
     async def _receive_loop(self):
         """Receive streaming responses from Gemini Live.
@@ -413,11 +541,20 @@ class GeminiVoiceAgent(VoiceAgentBase):
           - Output transcription → on_agent_text callback
           - Turn-complete events → _turn_done_event
           - Tool calls → logged for future integration
+
+        ``LiveSession.receive()`` yields messages for ONE complete turn
+        and then returns (the SDK breaks after ``turn_complete``), so this
+        iterates over ``_receive_stream()`` which re-enters ``receive()``
+        for every turn — a clean turn end is NORMAL, not a disconnect.
+        A genuine connection drop surfaces as an exception
+        (``websockets.ConnectionClosed`` wrapped as ``APIError``); we
+        detect it and raise ``_ConnectionClosed`` so the listener
+        reconnects.
         """
         out_buf: list[str] = []
 
         try:
-            async for response in self._session.receive():
+            async for response in self._receive_stream():
                 if not self._running:
                     break
 
@@ -507,8 +644,58 @@ class GeminiVoiceAgent(VoiceAgentBase):
                             function_responses=fn_responses
                         )
 
+        except _ConnectionClosed:
+            raise
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
+            # Errors raised while processing a message (callbacks, tool
+            # responses).  Stream errors are handled inside _receive_stream.
+            if not self._running:
+                return
+            if self._is_connection_closed_error(e):
+                print(f"[GeminiAgent] [!!] Receive failed - connection dead ({e})")
+                raise _ConnectionClosed(str(e)) from e
             print(f"[GeminiAgent] [XX] Receive error: {e}")
+
+    def _is_connection_closed_error(self, exc: Exception) -> bool:
+        """Heuristic: does this exception mean the WebSocket is dead?
+
+        Matches the messages the google-genai client surfaces when the
+        Gemini Live WebSocket is dropped (1011 keepalive ping timeout,
+        no close frame, connection reset, etc.) so we stop retrying a
+        dead socket and let the listener reconnect.
+        """
+        if exc is None:
+            return False
+        name = type(exc).__name__
+        if "ConnectionClosed" in name or name in (
+            "ConnectionResetError", "ConnectionAbortedError", "BrokenPipeError",
+        ):
+            return True
+        msg = str(exc).lower()
+        dead_tokens = (
+            "keepalive", "ping timeout", "no close frame", "1011",
+            "connection reset", "broken pipe", "connection closed",
+            "websocket is closed", "closed connection", "connection is closed",
+            "abnormal closure", "close code", "1006", "1000", "1001",
+            "1002", "1003", "1007", "1008", "1009", "1010", "1012",
+            "1013", "1014", "1015",
+        )
+        return any(token in msg for token in dead_tokens)
+
+    def _mic_reopen_needed(self) -> bool:
+        """Whether the mic should reopen due to the idle safety net.
+
+        True when the agent appears to have stopped speaking (no audio
+        received for longer than ``_mic_reopen_delay``) and the output
+        queue is drained — even if no turn_complete event was received.
+        """
+        return (
+            self._is_speaking
+            and (time.time() - self._last_audio_at) > self._mic_reopen_delay
+            and self._audio_in_queue.empty()
+        )
 
     def _set_speaking(self, value: bool):
         with self._speaking_lock:

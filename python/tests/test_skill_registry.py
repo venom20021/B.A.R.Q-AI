@@ -236,7 +236,7 @@ class TestRegisterBuiltinSkills:
 
     def test_registers_all_builtins(self, clean_registry):
         register_builtin_skills(clean_registry)
-        assert clean_registry.count() == 15
+        assert clean_registry.count() == 17
 
     def test_includes_expected_tools(self, clean_registry):
         register_builtin_skills(clean_registry)
@@ -245,6 +245,7 @@ class TestRegisterBuiltinSkills:
             "web_search", "launch_app", "system_command", "create_file",
             "read_file", "get_weather", "browse_url", "send_message", "check_trends",
             "respond", "deep_research",
+            "code_helper", "dev_agent",
             "recruitment_extract", "recruitment_match", "recruitment_write",
             "recruitment_pipeline",
         }
@@ -276,18 +277,20 @@ class TestRegisterBuiltinSkills:
         assert "recruitment_match" in skiplist
         assert "recruitment_write" in skiplist
         assert "recruitment_pipeline" in skiplist
+        assert "code_helper" in skiplist
+        assert "dev_agent" in skiplist
         # Critical tools
         assert "web_search" not in skiplist
         assert "launch_app" not in skiplist
         assert "system_command" not in skiplist
         assert "create_file" not in skiplist
-        assert len(skiplist) == 11
+        assert len(skiplist) == 13
 
     def test_idempotent(self, clean_registry):
         register_builtin_skills(clean_registry)
         register_builtin_skills(clean_registry)
-        # Should still be 15, not 30 (duplicates silently ignored)
-        assert clean_registry.count() == 15
+        # Should still be 17, not 34 (duplicates silently ignored)
+        assert clean_registry.count() == 17
 
 
 # ─── create_skill_from_handler ──────────────────────────────────────────────

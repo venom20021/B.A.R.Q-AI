@@ -199,6 +199,10 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         # Mic cooldown task
         self._mic_cooldown_task: Optional[asyncio.Task] = None
 
+        # Mic tail-timer delay — the mic reopens this long after the agent's
+        # audio stops flowing (even if AgentAudioDone never arrives).
+        self._mic_tail_delay: float = 1.2
+
         # Install the benign error suppressor once (class-level guard)
         if not DeepgramVoiceAgent._loop_ex_handler_installed:
             try:
@@ -214,6 +218,53 @@ class DeepgramVoiceAgent(VoiceAgentBase):
     @property
     def is_running(self) -> bool:
         return self._running
+
+    # ── Mic Energy Threshold (RMS voice-activity gate) ──────────────
+
+    def set_energy_threshold(self, value: int) -> None:
+        """Update the mic RMS energy gate threshold at runtime.
+
+        Clamped to the supported [50, 2000] range. Takes effect on the
+        next audio callback — no reconnect needed.
+        """
+        clamped = max(50, min(2000, int(value)))
+        self._energy_threshold = clamped
+        print(f"[DeepgramAgent] Mic RMS energy threshold set to {clamped}")
+
+    async def _load_energy_threshold(self) -> None:
+        """Load the mic RMS energy threshold on connect.
+
+        Priority:
+            1. Adaptive threshold staged at wake (noise_floor module)
+            2. DB setting (vad_energy_threshold)
+            3. Env var VAD_ENERGY_THRESHOLD
+            4. Default 250.
+        """
+        # Highest priority: adaptive threshold staged by the wake word
+        # detector (~3x the sampled ambient noise floor).  Consumed once.
+        try:
+            from .noise_floor import consume_pending_adaptive_threshold
+            pending = consume_pending_adaptive_threshold()
+            if pending is not None:
+                self.set_energy_threshold(pending)
+                print(f"[DeepgramAgent] Applied wake-time adaptive threshold {pending}")
+                return
+        except Exception as e:
+            print(f"[DeepgramAgent] Adaptive threshold consume failed (non-fatal): {e}")
+
+        try:
+            from database import settings_dao
+            raw = await settings_dao.get_setting("vad_energy_threshold")
+        except Exception:
+            raw = None
+        if raw is None:
+            import os as _os
+            raw = _os.getenv("VAD_ENERGY_THRESHOLD", "")
+        if raw:
+            try:
+                self.set_energy_threshold(int(float(raw)))
+            except (TypeError, ValueError):
+                pass
 
     async def _validate_api_key(self) -> bool:
         """Validate the Deepgram API key via REST API before WebSocket connection.
@@ -298,6 +349,12 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         # backoff (1s + 3s + 9s + 27s + 81s = 121s).
         if self._auth_failure:
             return False
+
+        # ── Load mic RMS energy threshold (DB/env) before streaming ──
+        try:
+            await self._load_energy_threshold()
+        except Exception as e:
+            print(f"[DeepgramAgent] Energy threshold load failed (non-fatal): {e}")
 
         # Ensure the benign error suppressor is installed (in case __init__
         # was called before the event loop existed)
@@ -484,10 +541,8 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         self._pending_function_calls.clear()
         self._flush_audio_queue("stop")
         self._agent_is_speaking = False
-        # Cancel any pending mic cooldown resume
-        if self._mic_cooldown_task and not self._mic_cooldown_task.done():
-            self._mic_cooldown_task.cancel()
-            self._mic_cooldown_task = None
+        # Cancel any pending mic tail-timer
+        self._cancel_mic_tail_timer()
         print("[DeepgramAgent] Disconnected")
 
     # ── Queue Management ────────────────────────────────────────────
@@ -752,6 +807,12 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         # mic data is stale echo that should not be sent to Deepgram.
         self._flush_audio_queue("audio arriving")
 
+        # Restart the mic tail-timer: reopen the mic shortly after the
+        # agent's audio stops flowing, even if AgentAudioDone never fires.
+        # (Without this, a missing AgentAudioDone would leave the mic muted
+        # forever → BARQ "stops listening" after the greeting.)
+        self._restart_mic_tail_timer()
+
         # Convert bytes to float32 numpy array
         raw_samples = np.frombuffer(audio_bytes, dtype=np.int16)
         actual_samples = len(raw_samples)
@@ -824,6 +885,14 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         elif msg_type == "UserStartedSpeaking":
             now = time.time()
 
+            # ── Mic reopen: Deepgram's server-side VAD confirms the user
+            # is speaking RIGHT NOW.  Cancel any mic tail-timer and reopen
+            # the mic immediately so the user's words are heard — regardless
+            # of the barge-in bookkeeping below.  This is the primary fix
+            # for "BARQ stops listening after the greeting".
+            self._cancel_mic_tail_timer()
+            self._agent_is_speaking = False
+
             # ── Post-speech lockout: ignore for 1.5s after agent finished ──
             # Prevents residual speaker audio from triggering false barge-in
             seconds_since_agent_done = now - self._last_agent_done_speaking_at
@@ -887,25 +956,21 @@ class DeepgramVoiceAgent(VoiceAgentBase):
             # UserStartedSpeaking if sent later after cooldown.
             self._flush_audio_queue("agent started")
             self._agent_is_speaking = True
-            if self._mic_cooldown_task and not self._mic_cooldown_task.done():
-                self._mic_cooldown_task.cancel()
-                self._mic_cooldown_task = None
+            self._cancel_mic_tail_timer()
             if self.on_agent_speaking:
                 self.on_agent_speaking()
 
         elif msg_type == "AgentAudioDone":
-            print("[DeepgramAgent] Agent finished speaking — mic cooldown started (6s)")
+            print(f"[DeepgramAgent] Agent finished speaking — mic tail-timer started ({self._mic_tail_delay}s)")
             self._last_agent_done_speaking_at = time.time()
             if not self._can_send_audio.is_set():
                 self._can_send_audio.set()
             if self.on_agent_done_speaking:
                 self.on_agent_done_speaking()
-            # Keep mic paused for 6s after agent finishes to let speaker
-            # audio fully decay before reopening. This prevents residual
-            # room echo from triggering a false barge-in loop.
-            self._mic_cooldown_task = asyncio.create_task(
-                self._delayed_mic_resume(6.0)
-            )
+            # Short tail: reopen the mic ~1.2s after the agent finishes so
+            # speaker audio can decay while the user's next words stay
+            # audible.  A fixed 6s mute would drop the user's first reply.
+            self._restart_mic_tail_timer()
 
         elif msg_type == "ConversationText":
             # Greeting or agent response text.
@@ -1035,26 +1100,58 @@ class DeepgramVoiceAgent(VoiceAgentBase):
         else:
             print("[DeepgramAgent] WebSocket closed — cannot send FunctionCallResponse")
 
+    def _cancel_mic_tail_timer(self) -> None:
+        """Cancel any pending mic tail-timer and clear the reference.
+
+        Consumes the cancelled task's result so asyncio doesn't warn about
+        a pending task that was never awaited.
+        """
+        old = self._mic_cooldown_task
+        self._mic_cooldown_task = None
+        if old is not None and not old.done():
+            old.cancel()
+            old.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() else None
+            )
+
+    def _restart_mic_tail_timer(self, delay: Optional[float] = None) -> None:
+        """(Re)start the mic tail-timer.
+
+        After the agent's audio stops flowing, the mic reopens once this
+        timer elapses.  Restarted on every incoming audio chunk so the mic
+        stays muted only while agent audio is actively arriving.
+
+        Args:
+            delay: Seconds to wait before reopening the mic.  Defaults to
+                   ``self._mic_tail_delay`` (1.2s).
+        """
+        if delay is None:
+            delay = self._mic_tail_delay
+        self._cancel_mic_tail_timer()
+        self._mic_cooldown_task = asyncio.create_task(
+            self._delayed_mic_resume(delay)
+        )
+
     async def _delayed_mic_resume(self, delay: float):
         """Wait for `delay` seconds, then resume mic audio.
 
-        This is the mic cooldown: after the agent finishes speaking, we keep
-        `_agent_is_speaking = True` for `delay` seconds to let residual speaker
-        audio in the room decay naturally. Once the timer expires, the mic
-        reopens and the user's voice can be heard again.
+        This is the mic tail-timer: while the agent is speaking we keep
+        `_agent_is_speaking = True` so the mic drops echo audio.  Once the
+        timer expires (shortly after audio stops), the mic reopens and the
+        user's voice can be heard again.
 
         Args:
-            delay: Seconds to wait before resuming mic (typically 2-3s).
+            delay: Seconds to wait before resuming mic (default 1.2s).
         """
         try:
             await asyncio.sleep(delay)
             self._agent_is_speaking = False
-            print("[DeepgramAgent] Mic cooldown complete — mic audio resumed")
+            print("[DeepgramAgent] Mic tail-timer complete — mic audio resumed")
             # Set the barge-in debounce so the first echo after cooldown
             # doesn't immediately trigger a new cycle
             self._last_user_spoke_at = time.time()
         except asyncio.CancelledError:
-            # Cooldown was cancelled (stop() called, new speech started)
+            # Timer was cancelled (new audio arrived, stop() called, etc.)
             pass
 
     @property

@@ -647,6 +647,21 @@ async def load_sound_settings():
             pass
     else:
         print(f"[Voice] No saved VAD timeout in DB, using default: {_vad_silence_timeout}s")
+
+    # Load VAD energy threshold from DB and apply to the voice agent
+    energy_val = await settings_dao.get_setting("vad_energy_threshold")
+    if energy_val is not None:
+        try:
+            global _energy_threshold
+            _energy_threshold = float(energy_val)
+            if _energy_threshold < 50 or _energy_threshold > 2000:
+                _energy_threshold = 250.0
+            print(f"[Voice] VAD energy threshold loaded from DB: {_energy_threshold}")
+            await _apply_energy_threshold(_energy_threshold)
+        except (ValueError, TypeError):
+            pass
+    else:
+        print(f"[Voice] No saved VAD energy threshold in DB, using default: {_energy_threshold}")
     # Load saved sensitivity level from DB
     sens_val = await settings_dao.get_setting("wake_word_sensitivity")
     if sens_val is not None and sens_val.lower() in ("low", "medium", "high"):
@@ -701,9 +716,31 @@ _last_detected_at: str = ""  # ISO timestamp of last auto-detection
 _hands_free_mode: bool = True  # Alexa/Gemini-style hands-free conversation mode
 _wake_greeting_enabled: bool = True  # Speak greeting when wake word is detected (separate from hands-free)
 _vad_silence_timeout: float = 0.4  # VAD endpointing silence threshold in seconds (300-500ms range)
-_energy_threshold: float = 300.0   # RMS energy threshold for voice activity detection
+_energy_threshold: float = 250.0   # RMS energy threshold for voice activity detection
 # Conversation manager is now managed by the shared responder instance
 # _responder and conversation_listener are the canonical singletons above
+
+
+async def _apply_energy_threshold(value: float) -> None:
+    """Push the RMS energy threshold to the live voice agent (if any).
+
+    Applies the threshold to the currently cached voice agent instance
+    so the change takes effect immediately without a reconnect.  If no
+    agent has been instantiated yet, the value is simply persisted and
+    the next agent picks it up from the DB on ``connect()`` — we do NOT
+    create an agent just to set a threshold (avoids eager init side
+    effects at startup).
+    """
+    try:
+        from .agent_factory import get_cached_voice_agent
+        agent = get_cached_voice_agent()
+        setter = getattr(agent, "set_energy_threshold", None) if agent is not None else None
+        if setter is not None:
+            setter(int(value))
+            print(f"[Voice] Applied energy_threshold={int(value)} to live voice agent")
+    except Exception as e:
+        print(f"[Voice] Could not apply energy threshold to live agent (non-fatal): {e}")
+
 
 # ─── Pending command approval state ────────────────────────────────
 # Stores the command + tier awaiting voice confirmation (yes/no).
@@ -1515,7 +1552,7 @@ async def set_voice_settings(request: VoiceSettingsRequest):
 
     changes = []
 
-    # ── Update VAD silence timeout (stored but not used by Voice Agent) ──
+    # ── Update VAD silence timeout (stored for reference) ──
     if request.vad_silence_timeout is not None:
         if request.vad_silence_timeout < 0.1 or request.vad_silence_timeout > 3.0:
             raise HTTPException(status_code=400, detail="vad_silence_timeout must be between 0.1 and 3.0")
@@ -1524,14 +1561,15 @@ async def set_voice_settings(request: VoiceSettingsRequest):
         changes.append(f"vad_silence_timeout={_vad_silence_timeout}s")
         print(f"[Voice] VAD silence timeout stored: {_vad_silence_timeout}s (Voice Agent handles VAD)")
 
-    # ── Update energy threshold (stored but not used by Voice Agent) ──
+    # ── Update energy threshold (applied live to the voice agent) ──
     if request.energy_threshold is not None:
         if request.energy_threshold < 50 or request.energy_threshold > 2000:
             raise HTTPException(status_code=400, detail="energy_threshold must be between 50 and 2000")
         _energy_threshold = request.energy_threshold
         await settings_dao.set_setting("vad_energy_threshold", str(_energy_threshold), "voice")
         changes.append(f"energy_threshold={_energy_threshold}")
-        print(f"[Voice] VAD energy threshold stored: {_energy_threshold} (Voice Agent handles VAD)")
+        await _apply_energy_threshold(_energy_threshold)
+        print(f"[Voice] VAD energy threshold stored + applied: {_energy_threshold}")
 
     # ── Update language ────────────────────────────────────────────────
     if request.language is not None:

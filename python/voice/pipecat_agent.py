@@ -218,6 +218,9 @@ class PipecatVoiceAgent(VoiceAgentBase):
         # Energy gate logging rate-limiter
         self._energy_log_timer: float = 0.0
 
+        # Mic RMS energy threshold (loaded from DB/env on connect)
+        self._energy_threshold: int = ENERGY_THRESHOLD
+
         # Rate-limiter for ring buffer full log
         self._output_log_timer: float = 0.0
 
@@ -250,6 +253,53 @@ class PipecatVoiceAgent(VoiceAgentBase):
             print("[PipecatAgent] faster-whisper not installed. Install with: pip install faster-whisper")
             raise
 
+    # ── Mic Energy Threshold (RMS voice-activity gate) ──────────────
+
+    def set_energy_threshold(self, value: int) -> None:
+        """Update the mic RMS energy gate threshold at runtime.
+
+        Clamped to the supported [50, 2000] range. Takes effect on the
+        next audio callback — no reconnect needed.
+        """
+        clamped = max(50, min(2000, int(value)))
+        self._energy_threshold = clamped
+        print(f"[PipecatAgent] Mic RMS energy threshold set to {clamped}")
+
+    async def _load_energy_threshold(self) -> None:
+        """Load the mic RMS energy threshold on connect.
+
+        Priority:
+            1. Adaptive threshold staged at wake (noise_floor module)
+            2. DB setting (vad_energy_threshold)
+            3. Env var VAD_ENERGY_THRESHOLD
+            4. Default 250.
+        """
+        # Highest priority: adaptive threshold staged by the wake word
+        # detector (~3x the sampled ambient noise floor).  Consumed once.
+        try:
+            from .noise_floor import consume_pending_adaptive_threshold
+            pending = consume_pending_adaptive_threshold()
+            if pending is not None:
+                self.set_energy_threshold(pending)
+                print(f"[PipecatAgent] Applied wake-time adaptive threshold {pending}")
+                return
+        except Exception as e:
+            print(f"[PipecatAgent] Adaptive threshold consume failed (non-fatal): {e}")
+
+        try:
+            from database import settings_dao
+            raw = await settings_dao.get_setting("vad_energy_threshold")
+        except Exception:
+            raw = None
+        if raw is None:
+            import os as _os
+            raw = _os.getenv("VAD_ENERGY_THRESHOLD", "")
+        if raw:
+            try:
+                self.set_energy_threshold(int(float(raw)))
+            except (TypeError, ValueError):
+                pass
+
     async def connect(self) -> bool:
         """Initialize models and verify Ollama is reachable.
 
@@ -261,6 +311,12 @@ class PipecatVoiceAgent(VoiceAgentBase):
         ``ollama.AsyncClient`` to avoid aiohttp event loop conflicts
         that cause "Cannot enter into task" RuntimeErrors.
         """
+        # Load mic RMS energy threshold from DB/env before streaming
+        try:
+            await self._load_energy_threshold()
+        except Exception as e:
+            print(f"[PipecatAgent] Energy threshold load failed (non-fatal): {e}")
+
         # Load Whisper model
         try:
             await self._load_whisper()
@@ -423,7 +479,7 @@ class PipecatVoiceAgent(VoiceAgentBase):
 
         # Energy gate
         rms = int(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
-        if rms < ENERGY_THRESHOLD:
+        if rms < self._energy_threshold:
             now = time.time()
             if now - self._energy_log_timer > 2.0:
                 self._energy_log_timer = now
