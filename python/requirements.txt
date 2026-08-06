@@ -20,7 +20,7 @@ python-jobspy>=1.1.0   # Stealth job scraper (LinkedIn, Indeed, Glassdoor, ZipRe
 # Data Processing
 pydantic>=2.9.0
 pydantic-settings>=2.4.0
-python-multipart>=0.0.9
+python-multipart>=0.0.32
 
 # SQLite (async)
 aiosqlite>=0.20.0
