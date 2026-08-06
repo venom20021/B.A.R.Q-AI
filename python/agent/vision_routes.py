@@ -280,6 +280,15 @@ async def analyze_via_stream(request: StreamAnalyzeRequest):
             image_bytes, mime_type, prompt=request.prompt
         )
 
+        # Best-effort: consume this image's stream transcript so the FIFO
+        # stays aligned for synchronous consumers (e.g. the Gemini voice
+        # agent's vision_stream_analyze tool).
+        if ok:
+            try:
+                await session.await_next_transcript(timeout=1.5)
+            except Exception:
+                pass
+
         return {
             "status": "queued" if ok else "error",
             "source": source,

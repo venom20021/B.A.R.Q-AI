@@ -4,6 +4,7 @@ Supports real-time progress tracking for frontend status bar.
 """
 
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -73,6 +74,7 @@ JOB_BOARDS = {
     "glassdoor": "https://www.glassdoor.com/Job",
     "monster": "https://www.monster.com/jobs",
     "ziprecruiter": "https://www.ziprecruiter.com/candidate/search",
+    "google": "https://www.google.com/search",                  # Google for Jobs (via JobSpy)
     "remotive": "https://remotive.com/api/remote-jobs",          # Free API, no key needed
     "remoteok": "https://remoteok.com/api",                       # Free API, no key needed
     "hn_algolia": "https://hn.algolia.com/api/v1/search",        # HN "Who is Hiring" threads
@@ -94,6 +96,104 @@ JOB_BOARDS = {
     "relocateme": "https://relocate.me/search",                     # Relocate.me — relocation jobs
     "hnhiring": "https://hnhiring.com",                            # HN "Who's Hiring" aggregator
 }
+
+# ─── JobSpy adapter ───────────────────────────────────────────────────────
+# JobSpy (pip install python-jobspy) wraps Playwright with stealth settings
+# and maintains up-to-date selectors for anti-bot-heavy boards (LinkedIn,
+# Indeed, Glassdoor, ZipRecruiter, Google for Jobs).  These boards are routed
+# through it in _scan_board; if the library is missing they fall back to the
+# legacy Playwright/HTTP scrapers.  Resulting jobs feed the exact same
+# evaluation + dedup pipeline as every other board.
+JOBSPY_SITES = ("linkedin", "indeed", "glassdoor", "ziprecruiter", "google")
+
+# JobSpy site identifiers differ slightly from our board keys
+_JOBSPY_SITE_NAMES = {
+    "linkedin": "linkedin",
+    "indeed": "indeed",
+    "glassdoor": "glassdoor",
+    "ziprecruiter": "zip_recruiter",
+    "google": "google",
+}
+
+JOBSPY_RESULTS_PER_SITE = 20      # jobs per board per scan (keeps requests light)
+JOBSPY_HOURS_OLD = 72             # only jobs posted within this window
+JOBSPY_SEARCH_TERM_MAX = 3        # max keywords sent as the search term
+# Indeed/Glassdoor country (required by JobSpy). Override via JOBSPY_COUNTRY
+# env var (e.g. USA, UK, Canada) — default matches the VM's India deployment.
+JOBSPY_COUNTRY = os.getenv("JOBSPY_COUNTRY", "India")
+
+
+def _jobspy_search_term(keywords: list[str]) -> str:
+    """Build the JobSpy search term from the first few keywords.
+
+    JobSpy sends the term to the board's own search box, so a long skill
+    list would over-constrain the query.  We send a short primary term and
+    let the keyword filter (_matches_any_keyword) do the rest.
+    """
+    kws = [k.strip() for k in keywords if k and k.strip()]
+    return " ".join(kws[:JOBSPY_SEARCH_TERM_MAX])
+
+
+def _matches_any_keyword(job: dict[str, Any], keywords: list[str]) -> bool:
+    """True when the job title or description mentions any keyword."""
+    kws = [k.lower() for k in keywords if k]
+    if not kws:
+        return True
+    haystack = f"{job.get('title', '')} {job.get('description', '')}".lower()
+    return any(k in haystack for k in kws)
+
+
+def _clean_str(value: Any) -> str:
+    """Coerce a JobSpy cell to a clean string (None/NaN → '')."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value != value:  # NaN
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def _jobspy_row_to_job(row: dict[str, Any], site: str) -> dict[str, Any] | None:
+    """Map a JobSpy result row (pandas Series / dict) into BARQ's job dict."""
+    title = _clean_str(row.get("title"))
+    if not title:
+        return None
+
+    location_parts = [
+        p for p in (_clean_str(row.get("city")), _clean_str(row.get("state"))) if p
+    ]
+    country = _clean_str(row.get("country"))
+    if country and country not in location_parts:
+        location_parts.append(country)
+
+    def _to_int(value: Any) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    posted = row.get("date_posted")
+    if isinstance(posted, datetime):
+        posted_str = posted.strftime("%Y-%m-%d")
+    elif posted is not None:
+        posted_str = _clean_str(posted)[:10]
+    else:
+        posted_str = ""
+
+    return {
+        "title": title,
+        "company": _clean_str(row.get("company")),
+        "location": ", ".join(location_parts),
+        "description": _clean_str(row.get("description"))[:2000],
+        "url": _clean_str(row.get("job_url")),
+        "salary_min": _to_int(row.get("min_amount")),
+        "salary_max": _to_int(row.get("max_amount")),
+        "source_board": site,
+        "posted_date": posted_str,
+        "employment_type": _clean_str(row.get("job_type")).lower() or "fulltime",
+        "remote_status": "remote" if row.get("is_remote") else "unknown",
+    }
+
 
 # Progress tracking — module-level singleton so routes can share state
 # Asyncio event for SSE real-time notifications
@@ -230,9 +330,12 @@ class JobScanner:
             """
             async with _sem:
                 try:
+                    # JobSpy boards launch a Playwright browser — give them
+                    # more room (30s is too tight for LinkedIn/Glassdoor).
+                    _timeout = 90.0 if board in JOBSPY_SITES else 30.0
                     jobs = await asyncio.wait_for(
                         self._scan_board(board, _kw, _loc),
-                        timeout=30.0,  # per-board timeout — 30s max
+                        timeout=_timeout,
                     )
                     return (board, jobs, None)
                 except asyncio.TimeoutError:
@@ -1787,6 +1890,18 @@ class JobScanner:
 
     async def _scan_board(self, board: str, keywords: list[str], location: str) -> list[dict[str, Any]]:
         """Dispatch to the appropriate scraper based on board name."""
+        # JobSpy-backed boards (LinkedIn, Indeed, Glassdoor, ZipRecruiter,
+        # Google for Jobs) — stealth scraping maintained by the jobspy library.
+        # Falls back to the legacy Playwright/HTTP scraper when unavailable.
+        if board in JOBSPY_SITES:
+            jobspy_jobs = await self._scan_jobspy_board(board, keywords, location)
+            if jobspy_jobs:
+                return jobspy_jobs
+            if board == "google":
+                # Google for Jobs returns nothing from datacenter IPs and has
+                # no useful legacy fallback (generic SERP parsing is junk).
+                return []
+
         url = JOB_BOARDS.get(board)
         if not url:
             return []
@@ -1842,6 +1957,68 @@ class JobScanner:
 
         # HTTP fallback
         return await self._scan_with_http(board, keywords, location)
+
+    async def _scan_jobspy_board(self, board: str, keywords: list[str], location: str) -> list[dict[str, Any]]:
+        """Scan an anti-bot-heavy board via the `jobspy` library.
+
+        JobSpy wraps Playwright with stealth and maintains the selectors for
+        LinkedIn, Indeed, Glassdoor, ZipRecruiter & Google for Jobs.  Returns
+        [] on any failure so _scan_board falls back to the legacy scraper —
+        this adapter never breaks a scan, it only makes it stronger.
+
+        Returns:
+            List of normalized job listings (source_board = board key).
+        """
+        try:
+            from jobspy import scrape_jobs
+        except ImportError:
+            print(f"[Scanner] {board}: jobspy not installed — using legacy scraper")
+            return []
+
+        try:
+            kwargs: dict[str, Any] = {
+                "site_name": [_JOBSPY_SITE_NAMES[board]],
+                "results_wanted": JOBSPY_RESULTS_PER_SITE,
+                "hours_old": JOBSPY_HOURS_OLD,
+                "verbose": 0,
+                "description_format": "markdown",
+            }
+            search_term = _jobspy_search_term(keywords)
+            if board == "google":
+                # Google for Jobs uses its own search-box query ("since
+                # yesterday" was too restrictive — it needs the exact
+                # syntax Google's jobs widget expects)
+                kwargs["google_search_term"] = f"{search_term} jobs"
+            else:
+                kwargs["search_term"] = search_term
+                if location and location.strip().lower() not in ("", "global"):
+                    kwargs["location"] = location
+                if board in ("indeed", "glassdoor"):
+                    kwargs["country_indeed"] = JOBSPY_COUNTRY
+                if board == "linkedin":
+                    kwargs["linkedin_fetch_description"] = True  # fuller data, direct URLs
+
+            # scrape_jobs is synchronous (Playwright under the hood) — run it
+            # off the event loop, capped by the same browser-concurrency
+            # semaphore the legacy Playwright scrapers use.
+            sem = await self._get_playwright_sem()
+            async with sem:
+                df = await asyncio.to_thread(scrape_jobs, **kwargs)
+            if df is None or len(df) == 0:
+                print(f"[Scanner] {board}: JobSpy returned 0 jobs")
+                return []
+        except Exception as e:
+            print(f"[Scanner] {board}: JobSpy error: {e}")
+            return []
+
+        jobs: list[dict[str, Any]] = []
+        for record in df.to_dict("records"):
+            job = _jobspy_row_to_job(record, board)
+            if job and _matches_any_keyword(job, keywords):
+                jobs.append(job)
+
+        print(f"[Scanner] {board}: {len(jobs)} jobs (JobSpy)")
+        return jobs
 
     # Playwright concurrency semaphore — limit to 2 concurrent browser instances
     _playwright_sem: asyncio.Semaphore | None = None

@@ -136,6 +136,19 @@ async def test_get_top_matches():
 
 
 @pytest.mark.asyncio
+async def test_top_matches_deduped_to_latest_evaluation():
+    """A listing with several old evaluations appears once, with the latest."""
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Re-scanned Job", "company": "R", "source_board": "linkedin"}))
+    await jobs_dao.insert_evaluation({"job_listing_id": j1, "overall_score": 3.0, "match_percentage": 60.0, "reasoning": "old"})
+    await jobs_dao.insert_evaluation({"job_listing_id": j1, "overall_score": 4.5, "match_percentage": 90.0, "reasoning": "latest"})
+
+    top = await jobs_dao.get_top_matches(min_score=3.0)
+    rows = [t for t in top if t["title"] == "Re-scanned Job"]
+    assert len(rows) == 1, f"should appear once, got {len(rows)}"
+    assert rows[0]["reasoning"] == "latest"
+
+
+@pytest.mark.asyncio
 async def test_get_applications_by_status():
     """Test filtering applications by status."""
     j1 = int(await jobs_dao.insert_job_listing({"title": "Job", "company": "C", "source_board": "linkedin"}))
@@ -145,6 +158,21 @@ async def test_get_applications_by_status():
     submitted = await jobs_dao.get_applications_by_status("submitted")
     assert len(submitted) >= 1
     assert all(a["status"] == "submitted" for a in submitted)
+
+
+@pytest.mark.asyncio
+async def test_get_applications_by_status_excludes_notified():
+    """exclude_notified=True skips applications that were already notified."""
+    j1 = int(await jobs_dao.insert_job_listing({"title": "Job", "company": "C", "source_board": "linkedin"}))
+    app1 = int(await jobs_dao.insert_application({"job_listing_id": j1, "status": "ready_for_review"}))
+    app2 = int(await jobs_dao.insert_application({"job_listing_id": j1, "status": "ready_for_review"}))
+
+    await jobs_dao.update_application_status(app1, "ready_for_review", notified_at="2026-08-06T00:00:00Z")
+
+    unnotified = await jobs_dao.get_applications_by_status("ready_for_review", exclude_notified=True)
+    ids = [int(a["id"]) for a in unnotified]
+    assert app2 in ids
+    assert app1 not in ids
 
 
 @pytest.mark.asyncio
@@ -180,15 +208,76 @@ async def test_application_count_by_status():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_insert():
-    """Test that duplicate inserts create separate rows (no unique constraint on most fields)."""
+async def test_duplicate_insert_is_deduped():
+    """Re-inserting the same job returns the existing row instead of a duplicate."""
     data = {"title": "Duplicate Job", "company": "F", "source_board": "linkedin"}
-    id1 = await jobs_dao.insert_job_listing(data)
-    id2 = await jobs_dao.insert_job_listing(data)
+    id1 = int(await jobs_dao.insert_job_listing(data))
+    id2 = int(await jobs_dao.insert_job_listing(data))
 
-    assert int(id2) > int(id1)
+    assert id1 == id2
     jobs = await jobs_dao.search_jobs("Duplicate Job")
-    assert len(jobs) >= 2
+    assert len(jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_insert_job_listing_if_new():
+    """Already-known jobs return None; genuinely new jobs return their id."""
+    job = {"title": "Fresh Role", "company": "NewCo", "source_board": "linkedin"}
+    new_id = int(await jobs_dao.insert_job_listing_if_new(job))
+    assert new_id > 0
+
+    again = await jobs_dao.insert_job_listing_if_new(job)
+    assert again is None
+
+    # find-or-insert still returns the existing row
+    same = int(await jobs_dao.insert_job_listing(job))
+    assert same == new_id
+
+
+@pytest.mark.asyncio
+async def test_dedup_by_external_id():
+    """Same board + external_id maps to the same listing id."""
+    job = {"title": "Ext Job", "company": "ExtCo", "source_board": "linkedin", "external_id": "abc-123"}
+    id1 = int(await jobs_dao.insert_job_listing(job))
+    id2 = int(await jobs_dao.insert_job_listing(job))
+    assert id1 == id2
+
+
+@pytest.mark.asyncio
+async def test_dedup_by_source_url():
+    """Same source_url maps to the same listing id, even from a different board."""
+    job1 = {"title": "URL Job", "company": "UrlCo", "source_board": "linkedin", "source_url": "https://x.com/j/1"}
+    job2 = {"title": "URL Job", "company": "UrlCo", "source_board": "indeed", "source_url": "https://x.com/j/1"}
+    id1 = int(await jobs_dao.insert_job_listing(job1))
+    id2 = int(await jobs_dao.insert_job_listing(job2))
+    assert id1 == id2
+
+
+@pytest.mark.asyncio
+async def test_dedup_by_fingerprint_without_ids():
+    """No id/url: same title + company + location collapses to one row."""
+    base = {"title": "Full Stack Developer", "company": "Acme", "location": "Remote"}
+    id1 = int(await jobs_dao.insert_job_listing({**base, "source_board": "linkedin"}))
+    id2 = int(await jobs_dao.insert_job_listing({**base, "source_board": "indeed"}))
+    assert id1 == id2
+
+
+@pytest.mark.asyncio
+async def test_same_title_different_location_not_deduped():
+    """Location is part of the fingerprint — different locations stay separate."""
+    base = {"title": "Backend Engineer", "company": "Acme", "source_board": "linkedin"}
+    id1 = int(await jobs_dao.insert_job_listing({**base, "location": "London"}))
+    id2 = int(await jobs_dao.insert_job_listing({**base, "location": "Berlin"}))
+    assert id1 != id2
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_normalization():
+    """Fingerprint ignores case/punctuation so near-identical titles match."""
+    from database.jobs_dao import _job_fingerprint
+    a = _job_fingerprint({"title": "Full-Stack Developer!", "company": "Acme, Inc.", "location": "Remote (EU)"})
+    b = _job_fingerprint({"title": "full stack developer", "company": "Acme Inc", "location": "remote eu"})
+    assert a == b
 
 
 @pytest.mark.asyncio

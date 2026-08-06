@@ -665,6 +665,69 @@ class MultiBrainManager:
         logger.info("Brain '%s' cleared", brain_type)
         return True
 
+    def remove_entity(self, brain_type: str, entity: str) -> dict[str, Any]:
+        """Remove a single entity node and all of its incident edges from a brain.
+
+        ``nx.Graph.remove_node`` drops every edge touching the node, so the
+        graph stays consistent.  Timeline entries that referenced the removed
+        entity are also stripped so the Timeline view never shows ghost
+        connections to a node that no longer exists.
+
+        Args:
+            brain_type: Which brain to edit.
+            entity: The entity name (normalised on lookup).
+
+        Returns:
+            Dict with keys ``found``, ``entity``, ``removed_edges`` and
+            ``removed_timeline_entries``.
+
+        Raises:
+            KeyError: If *brain_type* is not registered.
+        """
+        if brain_type not in self.brains:
+            raise KeyError(
+                f"Unknown brain type '{brain_type}'. "
+                f"Available: {', '.join(self.brains.keys())}"
+            )
+        graph = self.brains[brain_type]
+        lock = self._locks[brain_type]
+        name = entity.strip().lower()[:80]
+
+        with lock:
+            if name not in graph:
+                return {
+                    "found": False,
+                    "entity": name,
+                    "removed_edges": 0,
+                    "removed_timeline_entries": 0,
+                }
+            removed_edges = int(graph.degree(name))
+            graph.remove_node(name)  # also removes all incident edges
+
+        # Strip timeline entries referencing the entity in this brain
+        removed_timeline_entries = 0
+        with self._timeline_lock:
+            before = len(self._timeline)
+            self._timeline = [
+                e for e in self._timeline
+                if not (
+                    e.get("brain_type") == brain_type
+                    and (e.get("subject") == name or e.get("object_") == name)
+                )
+            ]
+            removed_timeline_entries = before - len(self._timeline)
+
+        logger.info(
+            "Entity '%s' removed from brain '%s' (%d edges)",
+            name, brain_type, removed_edges,
+        )
+        return {
+            "found": True,
+            "entity": name,
+            "removed_edges": removed_edges,
+            "removed_timeline_entries": removed_timeline_entries,
+        }
+
     def get_statistics(self, brain_type: str) -> dict[str, Any]:
         """Return aggregate statistics for a specific brain.
 
@@ -705,6 +768,71 @@ class MultiBrainManager:
             "top_entities": [
                 {"entity": e, "centrality": round(c, 6)} for e, c in top
             ],
+        }
+
+    def get_node_details(self, brain_type: str, entity: str) -> dict[str, Any]:
+        """Return a single node's neighbours and connectivity stats.
+
+        Powers the Knowledge Graph details panel that opens when a node is
+        clicked — showing who/what the entity is connected to, with relation
+        types and edge weights.
+
+        Args:
+            brain_type: Which brain to inspect.
+            entity: The entity name (normalised on lookup).
+
+        Returns:
+            Dict with keys: ``found``, ``entity``, ``degree``, ``weight_sum``,
+            ``neighbors`` (list of ``{"entity", "relation", "weight"}`` dicts
+            sorted by weight desc), and ``top_relations``.
+        """
+        graph = self.get_brain(brain_type)
+        lock = self._locks[brain_type]
+        name = entity.strip().lower()[:80]
+
+        with lock:
+            if name not in graph:
+                return {
+                    "found": False,
+                    "entity": name,
+                    "degree": 0,
+                    "weight_sum": 0,
+                    "neighbors": [],
+                    "top_relations": [],
+                }
+
+            degree = int(graph.degree(name))
+            neighbors: list[dict[str, Any]] = []
+            relation_counts: dict[str, int] = {}
+            weight_sum = 0
+            for nb in graph.neighbors(name):
+                edge = graph.edges[name, nb]
+                rel = edge.get("relation", "RELATED_TO")
+                weight = int(edge.get("weight", 1))
+                neighbors.append({
+                    "entity": nb,
+                    "relation": rel,
+                    "weight": weight,
+                })
+                relation_counts[rel] = relation_counts.get(rel, 0) + 1
+                weight_sum += weight
+
+        neighbors.sort(key=lambda n: (-n["weight"], n["entity"]))
+        # Sort relation types by count (explicit tuple typing avoids dict-widening)
+        top_items: list[tuple[str, int]] = sorted(
+            relation_counts.items(), key=lambda rc: -rc[1]
+        )[:5]
+        top_relations = [
+            {"relation": r, "count": c} for r, c in top_items
+        ]
+
+        return {
+            "found": True,
+            "entity": name,
+            "degree": degree,
+            "weight_sum": weight_sum,
+            "neighbors": neighbors,
+            "top_relations": top_relations,
         }
 
 

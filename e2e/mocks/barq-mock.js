@@ -462,6 +462,86 @@ function handleBrainRequest(endpoint) {
     return Promise.resolve(JSON.parse(JSON.stringify(MOCK_TIMELINE_GENERAL)))
   }
 
+  // /api/brain/{type}/node/{entity}/remove — must come BEFORE the generic
+  // node route so '/node/python/remove' isn't captured as entity 'python/remove'.
+  var removeMatch = endpoint.match(/^\/api\/brain\/([\w-]+)\/node\/(.+)\/remove$/)
+  if (removeMatch) {
+    var removeBrainType = removeMatch[1]
+    var removeEntity = decodeURIComponent(removeMatch[2]).toLowerCase()
+    var removeGraph = MOCK_BRAIN_GRAPHS[removeBrainType]
+    if (!removeGraph) {
+      return Promise.resolve({
+        found: false, entity: removeEntity, removed_edges: 0,
+        removed_timeline_entries: 0, nodes: 0, edges: 0,
+      })
+    }
+    var foundNode = removeGraph.nodes.some(function (n) {
+      return n.id.toLowerCase() === removeEntity
+    })
+    var removedEdges = 0
+    if (foundNode) {
+      removeGraph.nodes = removeGraph.nodes.filter(function (n) {
+        return n.id.toLowerCase() !== removeEntity
+      })
+      removeGraph.links = removeGraph.links.filter(function (link) {
+        var src = (typeof link.source === 'object' ? link.source.id : link.source).toLowerCase()
+        var tgt = (typeof link.target === 'object' ? link.target.id : link.target).toLowerCase()
+        var touching = src === removeEntity || tgt === removeEntity
+        if (touching) removedEdges++
+        return !touching
+      })
+      if (removeGraph._meta) {
+        removeGraph._meta.nodes = removeGraph.nodes.length
+        removeGraph._meta.edges = removeGraph.links.length
+      }
+    }
+    return Promise.resolve({
+      found: foundNode,
+      entity: removeEntity,
+      removed_edges: removedEdges,
+      removed_timeline_entries: 0,
+      nodes: removeGraph.nodes.length,
+      edges: removeGraph.links.length,
+    })
+  }
+
+  // /api/brain/{type}/node/{entity}
+  var nodeMatch = endpoint.match(/^\/api\/brain\/([\w-]+)\/node\/(.+)$/)
+  if (nodeMatch) {
+    var nodeBrainType = nodeMatch[1]
+    var nodeEntity = decodeURIComponent(nodeMatch[2]).toLowerCase()
+    var nodeGraph = MOCK_BRAIN_GRAPHS[nodeBrainType]
+    if (!nodeGraph) {
+      return Promise.resolve({
+        found: false, entity: nodeEntity, degree: 0, weight_sum: 0, neighbors: [], top_relations: [],
+      })
+    }
+    var nodeIds = new Set(nodeGraph.nodes.map(function (n) { return n.id.toLowerCase() }))
+    if (!nodeIds.has(nodeEntity)) {
+      return Promise.resolve({
+        found: false, entity: nodeEntity, degree: 0, weight_sum: 0, neighbors: [], top_relations: [],
+      })
+    }
+    var neighbors = []
+    nodeGraph.links.forEach(function (link) {
+      var src = (typeof link.source === 'object' ? link.source.id : link.source).toLowerCase()
+      var tgt = (typeof link.target === 'object' ? link.target.id : link.target).toLowerCase()
+      if (src === nodeEntity) {
+        neighbors.push({ entity: tgt, relation: link.relation || 'RELATED_TO', weight: 1 })
+      } else if (tgt === nodeEntity) {
+        neighbors.push({ entity: src, relation: link.relation || 'RELATED_TO', weight: 1 })
+      }
+    })
+    return Promise.resolve({
+      found: true,
+      entity: nodeEntity,
+      degree: neighbors.length,
+      weight_sum: neighbors.length,
+      neighbors: neighbors,
+      top_relations: [{ relation: 'RELATED_TO', count: neighbors.length }],
+    })
+  }
+
   return null
 }
 

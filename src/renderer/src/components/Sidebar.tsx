@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Video, BarChart3, Settings,
   FolderOpen, Terminal, Monitor, Globe, Smartphone, Search,
   FileText, MessageSquare, Palette, PanelRightOpen,
-  Cpu, Eye, Zap, BookOpen, GitBranch, Activity,
+  Cpu, Eye, Zap, BookOpen, GitBranch, Activity, Workflow,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NotificationCenter } from './NotificationCenter'
@@ -45,6 +45,7 @@ const navSections: { label: string; items: NavItemDef[] }[] = [
     items: [
       { path: '/jobs', label: 'Jobs', icon: Briefcase },
       { path: '/content', label: 'Social', icon: Video },
+      { path: '/workflows', label: 'Workflows', icon: Workflow },
     ],
   },
   {

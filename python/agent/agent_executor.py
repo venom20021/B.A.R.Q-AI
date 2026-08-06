@@ -45,6 +45,9 @@ class AgentExecutor:
         goal: str,
         speak: Optional[Callable] = None,
         cancel_flag: Optional[asyncio.Event] = None,
+        task_id: Optional[str] = None,
+        resume_from: Optional[str] = None,
+        checkpoint: bool = True,
     ) -> str:
         """Execute a goal by planning, running steps, and recovering from errors.
 
@@ -52,16 +55,48 @@ class AgentExecutor:
             goal: The user's high-level goal.
             speak: Optional async callable to speak status updates.
             cancel_flag: Optional event to cancel execution.
+            task_id: Optional checkpoint key suffix (auto-generated if omitted).
+            resume_from: Optional checkpoint key to resume a previous run.
+            checkpoint: Whether to persist progress between steps (default True).
 
         Returns:
             A summary string of what was accomplished.
         """
         print(f"\n[AgentExecutor] >> Goal: {goal}")
 
+        checkpoint_key = task_id or resume_from or (
+            f"agent:{''.join(c if c.isalnum() else '_' for c in goal)[:40].lower()}"
+        )
+
         replan_attempts = 0
         completed_steps: list[dict] = []
         step_results: dict[str, str] = {}
-        plan = await create_plan(goal)
+        completed_nums: set[str] = set()
+        plan: dict = {}
+
+        # ── Resume from checkpoint (survives restarts) ───────────────
+        if resume_from:
+            try:
+                from .checkpoint_store import get_checkpoint_store
+                state = await get_checkpoint_store().load(resume_from)
+                if state:
+                    goal = state.get("goal", goal)
+                    completed_steps = state.get("completed_steps", [])
+                    step_results = state.get("step_results", {})
+                    replan_attempts = state.get("replan_attempts", 0)
+                    completed_nums = {str(s.get("step")) for s in completed_steps}
+                    plan = state.get("plan") or {}
+                    print(f"[AgentExecutor] RESUMED '{resume_from}' — "
+                          f"{len(completed_steps)} step(s) already done")
+            except Exception as e:
+                print(f"[AgentExecutor] WARN Checkpoint restore failed: {e}")
+
+        if not plan:
+            plan = await create_plan(goal)
+            if checkpoint and not resume_from:
+                await self._save_checkpoint(
+                    checkpoint_key, goal, plan, completed_steps, step_results, replan_attempts
+                )
 
         while True:
             steps = plan.get("steps", [])
@@ -87,6 +122,10 @@ class AgentExecutor:
                 desc = step.get("description", "")
                 params = step.get("parameters", {})
 
+                # Skip steps already completed in a resumed run
+                if str(step_num) in completed_nums:
+                    continue
+
                 # Inject context from previous step results
                 params = await self._inject_context(params, tool, step_results, goal)
 
@@ -104,6 +143,10 @@ class AgentExecutor:
                         completed_steps.append(step)
                         print(f"[AgentExecutor] OK Step {step_num} done: {str(result)[:100]}")
                         step_ok = True
+                        if checkpoint:
+                            await self._save_checkpoint(
+                                checkpoint_key, goal, plan, completed_steps, step_results, replan_attempts
+                            )
                         break
 
                     except Exception as e:
@@ -161,6 +204,12 @@ class AgentExecutor:
                     break
 
             if success:
+                if checkpoint:
+                    try:
+                        from .checkpoint_store import get_checkpoint_store
+                        await get_checkpoint_store().mark_complete(checkpoint_key)
+                    except Exception:
+                        pass
                 return await self._summarize(goal, completed_steps, step_results)
 
             if replan_attempts >= self.MAX_REPLAN_ATTEMPTS:
@@ -174,6 +223,10 @@ class AgentExecutor:
 
             replan_attempts += 1
             plan = await replan(goal, completed_steps, failed_step, failed_error)
+            if checkpoint:
+                await self._save_checkpoint(
+                    checkpoint_key, goal, plan, completed_steps, step_results, replan_attempts
+                )
 
     async def _call_tool(self, tool: str, parameters: dict) -> str:
         """Execute a single tool call by dispatching to the SkillRegistry.
@@ -282,3 +335,29 @@ class AgentExecutor:
                         return val[:500]
 
             return f"Completed {len(completed_steps)} steps for: {goal[:60]}."
+
+    async def _save_checkpoint(
+        self,
+        key: str,
+        goal: str,
+        plan: dict,
+        completed_steps: list[dict],
+        step_results: dict[str, str],
+        replan_attempts: int,
+    ) -> None:
+        """Persist current execution state (best-effort, never blocks the flow)."""
+        try:
+            from .checkpoint_store import get_checkpoint_store
+            await get_checkpoint_store().save(
+                key,
+                {
+                    "goal": goal,
+                    "plan": plan,
+                    "completed_steps": completed_steps,
+                    "step_results": step_results,
+                    "replan_attempts": replan_attempts,
+                },
+                agent_type="agent",
+            )
+        except Exception as e:
+            print(f"[AgentExecutor] WARN Checkpoint save failed: {e}")

@@ -298,6 +298,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -436,6 +437,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -581,6 +583,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -735,6 +738,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -876,6 +880,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1018,6 +1023,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1167,6 +1173,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1372,6 +1379,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1505,6 +1513,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1644,6 +1653,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1783,6 +1793,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -1976,6 +1987,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -2123,6 +2135,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -2352,6 +2365,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -2539,6 +2553,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -2695,6 +2710,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -2906,6 +2922,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -3096,6 +3113,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -3287,6 +3305,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -3516,6 +3535,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -3809,6 +3829,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -4029,6 +4050,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -4221,6 +4243,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -4421,6 +4444,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page
@@ -4597,6 +4621,7 @@ async def browser_action(request: BrowserActionRequest):
     - ``get_text``: Get visible text from the current page
     - ``get_url``: Get the current page URL
     - ``get_title``: Get the current page title
+    - ``observe``: Self-verification snapshot (URL + title + visible text excerpt)
     - ``back``: Navigate back
     - ``forward``: Navigate forward
     - ``reload``: Reload the current page

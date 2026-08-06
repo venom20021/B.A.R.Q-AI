@@ -30,6 +30,11 @@ class AssistantCustomizationRequest(BaseModel):
     accent_color: str = "cyan"
 
 
+class BriefingSettingsRequest(BaseModel):
+    enabled: bool = True
+    time: str = "08:00"  # 24h HH:MM
+
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -57,6 +62,37 @@ async def save_assistant_customization(request: AssistantCustomizationRequest):
         await settings_dao.set_setting("user_name", request.user_name.strip(), "general")
         await settings_dao.set_setting("accent_color", request.accent_color.strip() or "cyan", "general")
         return {"status": "saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Morning Briefing ──────────────────────────────────────────────────────────
+
+
+@router.get("/settings/briefing", summary="Get morning briefing settings")
+async def get_briefing_settings():
+    """Get briefing preferences plus its scheduled-task registration status."""
+    try:
+        from .briefing import get_briefing_config
+        cfg = await get_briefing_config()
+        task = await settings_dao.get_scheduled_task("Morning Briefing")
+        return {
+            "enabled": cfg["enabled"],
+            "time": cfg["time"],
+            "scheduled": bool(task),
+            "cron": task["cron_expression"] if task else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settings/briefing", summary="Save morning briefing settings")
+async def save_briefing_settings(request: BriefingSettingsRequest):
+    """Persist briefing preferences and register the scheduled task."""
+    try:
+        from .briefing import save_briefing_config
+        result = await save_briefing_config(request.enabled, request.time)
+        return {"status": "saved", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

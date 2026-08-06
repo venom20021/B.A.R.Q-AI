@@ -57,9 +57,16 @@ async def _run_scan():
             location="global",  # Global scan: Italy, Luxembourg, Middle East, UK, US, Canada, India
         )
         count = 0
+        new_boards: set[str] = set()
         for job in jobs[:50]:
-            # Insert job listing
-            listing_id = await jobs_dao.insert_job_listing(job)
+            # Insert the listing — already-known jobs are skipped entirely so
+            # they never get re-counted, re-evaluated, or re-notified.
+            listing_id = await jobs_dao.insert_job_listing_if_new(job)
+            if listing_id is None:
+                continue
+            board_name = job.get("source_board", "") or job.get("source", "")
+            if board_name:
+                new_boards.add(board_name)
             # Insert evaluation data if the scanner already evaluated it
             if "overall_score" in job:
                 try:
@@ -76,10 +83,7 @@ async def _run_scan():
                     print(f"[Scan] Failed to insert evaluation for job #{listing_id}: {eval_err}")
             count += 1
 
-        source_boards = len(set(
-            j.get("source_board", "") or j.get("source", "")
-            for j in jobs if j.get("source_board") or j.get("source")
-        ))
+        source_boards = len(new_boards)
         await analytics_dao.log_activity(
             "job", "scan",
             f"Scanned {count} new job listings from {source_boards} boards"
@@ -246,6 +250,70 @@ async def approve_application(request: ApproveRequest):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid job_id: must be an integer")
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{job_id}/apply/preview", summary="Safe-mode: fill a job application form and screenshot WITHOUT submitting")
+async def preview_application(job_id: int):
+    """Safe-mode auto-apply v1: fill the application form and capture a screenshot,
+    but NEVER submit.
+
+    Uses the user's real browser profile (Playwright) to navigate to the job's
+    source URL, detect the ATS platform, fill the form fields from the parsed
+    resume, and return a screenshot + filled-fields summary for human review.
+
+    This is the "human-confirm before submit" gate — callers review the result
+    and only then decide to apply (POST /jobs/{job_id}/apply).
+    """
+    try:
+        job = await jobs_dao.get_job_listing(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job #{job_id} not found")
+
+        job_url = (job.get("source_url", "") or job.get("url", "") or "").strip()
+        if not job_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="Job has no usable web application URL")
+
+        from .resume_parser import parse_resume
+        resume = parse_resume()
+        user_profile = {
+            "full_name": resume.get("full_name", ""),
+            "email": resume.get("email", ""),
+            "phone": resume.get("phone", ""),
+            "linkedin_url": resume.get("linkedin_url", ""),
+            "github_url": resume.get("github_url", ""),
+            "portfolio_url": resume.get("portfolio_url", ""),
+            "skills": resume.get("skills", []),
+        }
+
+        result = await applier.auto_fill_application(
+            job_url=job_url,
+            user_profile=user_profile,
+            resume_path=None,
+        )
+
+        await analytics_dao.log_activity(
+            "job", "apply_preview",
+            f"Safe-mode form preview for #{job_id}: {job.get('title', '')} — {result.get('status')}"
+        )
+
+        return {
+            "job_id": job_id,
+            "title": job.get("title", ""),
+            "company": job.get("company", ""),
+            **result,
+            "next": {
+                "action": "apply",
+                "endpoint": f"/jobs/{job_id}/apply",
+                "note": "Review the screenshot, then POST to apply to submit the real application.",
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await analytics_dao.log_activity(
+            "job", "apply_preview_error", str(e), severity="error"
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

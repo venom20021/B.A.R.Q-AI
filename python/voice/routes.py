@@ -586,6 +586,9 @@ async def _lightweight_wake_greeting(command_text: str = ""):
     # ═══ Step 4: Process command text via Deepgram Voice Agent ═══
     try:
         if command_text:
+            # Persist the wake-and-command utterance to agent_chat_history
+            from .agent_history_sync import persist_voice_utterance
+            await persist_voice_utterance(command_text)
             print(f"[Voice] Processing wake command: '{command_text}' via Voice Agent")
             try:
                 responder.is_speaking_event.set()
@@ -1007,6 +1010,20 @@ async def chat_text_only(request: ChatRequest):
     """Quick text-only chat (no audio generation)."""
     try:
         text = await responder.respond_text_only(request.message)
+
+        # ── W5: Conversation Memory (fire-and-forget, non-blocking) ──
+        # Extracts action items / facts / entities into the memory bus.
+        # Fully guarded: a failure here NEVER affects the chat response.
+        try:
+            from config import get_settings
+            if get_settings().conversation_memory_enabled:
+                from agent.workflows.conversation_memory import process_conversation_turn
+                asyncio.create_task(
+                    process_conversation_turn(request.message, str(text))
+                )
+        except Exception as mem_err:
+            print(f"[Voice] Conversation memory hook error (non-fatal): {mem_err}")
+
         return {"text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1382,6 +1399,10 @@ async def process_command(request: CommandRequest):
         "action": "processed",
         "processed": True,
     })
+
+    # Persist to agent_chat_history so spoken commands feed the ai_chats graph
+    from .agent_history_sync import persist_voice_utterance
+    await persist_voice_utterance(command)
 
     # Determine last intent from history
     last_intent = None

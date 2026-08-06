@@ -26,6 +26,7 @@ class DeepResearchRequest(BaseModel):
     topic: str
     depth: str = "standard"  # basic, standard, deep
     save_as_note: bool = False
+    extract_to_brain: bool = True  # W6: auto-extract report triplets into the knowledge graph
 
 
 @router.post("/deep", summary="Start a deep research session")
@@ -72,6 +73,20 @@ async def start_deep_research(request: DeepResearchRequest):
 
         response = result.to_dict()
         response["note_id"] = note_id
+
+        # ── W6: Research → Brain (fire-and-forget, never blocks response) ──
+        if request.extract_to_brain and result.report:
+            try:
+                import asyncio
+                from agent.workflows.research_to_brain import extract_research_to_brain
+                from config import get_settings
+                if get_settings().research_to_brain_enabled:
+                    asyncio.create_task(
+                        extract_research_to_brain(request.topic, result.report)
+                    )
+            except Exception as e:
+                print(f"[Research] Research-to-brain hook error (non-fatal): {e}")
+
         return response
 
     except Exception as e:

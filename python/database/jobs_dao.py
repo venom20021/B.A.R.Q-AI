@@ -3,6 +3,9 @@ Data access layer for job search module.
 Handles CRUD for job listings, evaluations, and applications.
 """
 
+import hashlib
+import re
+
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -25,10 +28,9 @@ def _sanitize_url(url: str) -> str:
         return url
 
     # Reject Windows paths (B:/, C:\\, etc.) or pure numbers/symbols
-    import re as _re
-    if _re.match(r'^[A-Za-z]:\\', url) or _re.match(r'^[A-Za-z]:/', url):
+    if re.match(r'^[A-Za-z]:\\', url) or re.match(r'^[A-Za-z]:/', url):
         return ""
-    if not _re.match(r'^[\w\-./:?#\[\]@!$&\'()*+,;=~%]+$', url):
+    if not re.match(r'^[\w\-./:?#\[\]@!$&\'()*+,;=~%]+$', url):
         return ""
 
     # Bare domain or path: prepend https://
@@ -41,22 +43,93 @@ def _sanitize_url(url: str) -> str:
     return ""
 
 
+def _normalize_text(value: Any) -> str:
+    """Lowercase, strip punctuation, and collapse whitespace for fingerprinting."""
+    text = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _job_fingerprint(job: dict[str, Any]) -> str:
+    """Stable dedup fingerprint for a job lacking a stable external id / URL.
+
+    Built from normalized title + company + location so the same posting seen
+    on multiple scans (or from boards that omit URLs) maps to one row.
+    Returns an empty string when there is nothing to fingerprint.
+    """
+    parts = [
+        _normalize_text(job.get("title", "")),
+        _normalize_text(job.get("company", "")),
+        _normalize_text(job.get("location", "")),
+    ]
+    raw = "|".join(p for p in parts if p)
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 class JobsDAO:
     """DAO for job-related database operations."""
 
     # ─── Job Listings ──────────────────────────────────────────────────────
 
-    async def insert_job_listing(self, job: dict[str, Any]) -> int:
-        """Insert a new job listing."""
+    async def _find_existing_listing_id(self, job: dict[str, Any]) -> Optional[int]:
+        """Locate an existing listing matching this job (dedup lookup).
+
+        Deduplication keys (first match wins):
+          1. (source_board, external_id) when the board supplies a stable id
+          2. source_url when present
+          3. fingerprint of normalized title + company + location (boards that
+             omit ids/urls — e.g. BambooHR, Workday — still collapse to one row)
+        """
+        board = (job.get("source_board") or job.get("source") or "").strip()
+        external_id = (job.get("external_id") or job.get("listing_id") or "").strip()
+        source_url = _sanitize_url(job.get("source_url") or job.get("url") or "")
+        fingerprint = _job_fingerprint(job)
+
+        if board and external_id:
+            row = await db_connection.fetch_one(
+                "SELECT id FROM job_listings "
+                "WHERE source_board = ? AND external_id = ? AND external_id != '' LIMIT 1",
+                (board, external_id),
+            )
+            if row:
+                return row["id"]
+
+        if source_url:
+            row = await db_connection.fetch_one(
+                "SELECT id FROM job_listings "
+                "WHERE source_url = ? AND source_url != '' LIMIT 1",
+                (source_url,),
+            )
+            if row:
+                return row["id"]
+
+        if fingerprint:
+            row = await db_connection.fetch_one(
+                "SELECT id FROM job_listings "
+                "WHERE fingerprint = ? AND fingerprint != '' LIMIT 1",
+                (fingerprint,),
+            )
+            if row:
+                return row["id"]
+
+        return None
+
+    async def _insert_listing_row(self, job: dict[str, Any]) -> int:
+        """Insert the row, resolving the surviving id when a concurrent scan wins."""
+        board = (job.get("source_board") or job.get("source") or "").strip()
+        source_url = _sanitize_url(job.get("source_url") or job.get("url") or "")
+        fingerprint = _job_fingerprint(job)
+
         sql = """
-            INSERT INTO job_listings (
+            INSERT OR IGNORE INTO job_listings (
                 external_id, title, company, location, description,
                 salary_min, salary_max, salary_currency, salary_period,
                 employment_type, remote_status, source_board, source_url,
-                posted_date, company_rating, skills_required
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                posted_date, company_rating, skills_required, fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        return await db_connection.insert(sql, (
+        inserted_id = await db_connection.insert(sql, (
             job.get("external_id", ""),
             job.get("title", ""),
             job.get("company", ""),
@@ -68,12 +141,45 @@ class JobsDAO:
             job.get("salary_period", "yearly"),
             job.get("employment_type", "full_time"),
             job.get("remote_status", "unknown"),
-            job.get("source_board", ""),
-            _sanitize_url(job.get("source_url", "") or job.get("url", "")),
+            board,
+            source_url,
             job.get("posted_date", datetime.now(timezone.utc).isoformat()),
             job.get("company_rating", 0.0),
             job.get("skills_required", "[]"),
+            fingerprint,
         ))
+        # A concurrent scan may have inserted the same job between our SELECT
+        # and this INSERT — OR IGNORE silently skipped it and inserted_id is
+        # stale. Resolve the winner by fingerprint (jobs always carry one
+        # here; fingerprint-less rows aren't covered by the unique indexes).
+        if fingerprint:
+            row = await db_connection.fetch_one(
+                "SELECT id FROM job_listings "
+                "WHERE fingerprint = ? AND fingerprint != '' LIMIT 1",
+                (fingerprint,),
+            )
+            if row:
+                return row["id"]
+        return inserted_id
+
+    async def insert_job_listing(self, job: dict[str, Any]) -> int:
+        """Find-or-insert a job listing, returning the id of the existing or new row."""
+        existing = await self._find_existing_listing_id(job)
+        if existing is not None:
+            return existing
+        return await self._insert_listing_row(job)
+
+    async def insert_job_listing_if_new(self, job: dict[str, Any]) -> Optional[int]:
+        """Insert only genuinely new jobs.
+
+        Returns the new listing id, or ``None`` when a matching listing already
+        exists (dedup by board+external_id, source_url, or fingerprint). Scan
+        flows use this so already-known jobs are never re-counted, re-evaluated,
+        or re-notified.
+        """
+        if await self._find_existing_listing_id(job) is not None:
+            return None
+        return await self._insert_listing_row(job)
 
     async def get_job_listing(self, job_id: int) -> Optional[dict]:
         """Get a job listing by ID."""
@@ -155,12 +261,17 @@ class JobsDAO:
         )
 
     async def get_top_matches(self, min_score: float = 3.0, limit: int = 20) -> list[dict]:
-        """Get top-scoring job matches."""
+        """Get top-scoring job matches — one row per listing (latest evaluation)."""
         sql = """
             SELECT j.*, e.overall_score, e.match_percentage, e.reasoning,
                    e.pros, e.cons, e.role_fit_score, e.culture_score,
                    e.compensation_score, e.growth_score
-            FROM job_evaluations e
+            FROM (
+                SELECT * FROM job_evaluations
+                WHERE id IN (
+                    SELECT MAX(id) FROM job_evaluations GROUP BY job_listing_id
+                )
+            ) e
             JOIN job_listings j ON j.id = e.job_listing_id
             WHERE e.overall_score >= ? AND j.is_active = 1
             ORDER BY e.overall_score DESC, e.match_percentage DESC
@@ -195,13 +306,21 @@ class JobsDAO:
         """
         return await db_connection.fetch_one(sql, (app_id,))
 
-    async def get_applications_by_status(self, status: str, limit: int = 50) -> list[dict]:
-        """Get applications filtered by status."""
-        sql = """
+    async def get_applications_by_status(
+        self, status: str, limit: int = 50, exclude_notified: bool = False
+    ) -> list[dict]:
+        """Get applications filtered by status.
+
+        When ``exclude_notified`` is set, applications that already have a
+        ``notified_at`` timestamp are skipped, so pipeline runs don't
+        re-notify (or re-generate documents for) known jobs.
+        """
+        notified_filter = "AND a.notified_at IS NULL " if exclude_notified else ""
+        sql = f"""
             SELECT a.*, j.title, j.company, j.location, j.salary_min, j.salary_max
             FROM applications a
             JOIN job_listings j ON j.id = a.job_listing_id
-            WHERE a.status = ?
+            WHERE a.status = ? {notified_filter}
             ORDER BY a.updated_at DESC
             LIMIT ?
         """
@@ -219,7 +338,7 @@ class JobsDAO:
         params = [status]
 
         for field, value in kwargs.items():
-            if field in ("submitted_at", "response_received_at", "interview_date"):
+            if field in ("submitted_at", "response_received_at", "interview_date", "notified_at"):
                 sets.append(f"{field} = ?")
                 params.append(value)
             elif field in ("response_type", "rejection_reason", "offer_details", "notes", "score"):

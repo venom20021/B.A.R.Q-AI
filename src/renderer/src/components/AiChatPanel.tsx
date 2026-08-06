@@ -4,12 +4,44 @@ import { Mic, Send, MessageSquare, X, Volume2, VolumeX } from 'lucide-react'
 import { AudioWaveform } from './AudioWaveform'
 import { useMicrophoneAnalyser } from '../hooks/useMicrophoneAnalyser'
 import { useStreamingChat } from '../hooks/useStreamingChat'
+import { fetchAgentHistory, pushAgentHistory, type AgentHistoryMessage } from '../utils/agentHistory'
 
 interface Message {
   id: string
   role: 'user' | 'ai'
   text: string
   timestamp: number
+}
+
+// ─── Persistence: backend agent_chat_history sync ───────────────────────
+// This panel's thread is mirrored to the backend's ``agent_chat_history``
+// (POST /api/memory/agent-history) under its own agent key so the brain
+// re-import can feed the ``ai_chats`` knowledge graph from Jarvis/AiChat
+// conversations too.
+
+const PANEL_AGENT_KEY = 'aichat_panel'
+// Debounce window for backend sync (avoid a POST per message).
+const SYNC_DEBOUNCE_MS = 600
+
+// Backend messages use { role, content, timestamp } with 'user'/'model'
+// roles; this panel uses { id, role: 'user'|'ai', text, timestamp }.
+function toPanelBackend(msg: Message): AgentHistoryMessage {
+  return {
+    role: msg.role === 'user' ? 'user' : 'model',
+    content: msg.text,
+    timestamp: msg.timestamp,
+  }
+}
+
+function fromPanelBackend(msg: AgentHistoryMessage): Message | null {
+  const text = typeof msg?.content === 'string' ? msg.content.trim() : ''
+  if (!text) return null
+  return {
+    id: `hist-${msg.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+    role: msg.role === 'user' ? 'user' : 'ai',
+    text,
+    timestamp: typeof msg.timestamp === 'number' && Number.isFinite(msg.timestamp) ? msg.timestamp : Date.now(),
+  }
 }
 
 interface AiChatPanelProps {
@@ -37,6 +69,14 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const [speechSupported] = useState(() => !!(window.SpeechRecognition || window.webkitSpeechRecognition))
   const micAnalyser = useMicrophoneAnalyser()
+
+  // ── Backend sync (feeds the ai_chats knowledge graph) ───────────────
+  const [backendSynced, setBackendSynced] = useState(true)
+  const [backendSyncing, setBackendSyncing] = useState(false)
+  // State (not a ref) so the push effect re-runs when hydration completes —
+  // otherwise a message sent before the mount GET resolves would never flush.
+  const [hydrated, setHydrated] = useState(false)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Keep a ref to the audio element for playing TTS responses
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -113,6 +153,55 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
     return () => { stream.cancel() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.cancel])
+
+  // ── Persist this panel's conversation to agent_chat_history ──────────
+  // Restore past Jarvis/AiChat conversations from the backend on mount so
+  // the panel isn't blank after a restart. Backend wins; only hydrate a
+  // pristine panel (welcome message only) so a live conversation is never
+  // clobbered if the fetch resolves late.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const backend = await fetchAgentHistory(PANEL_AGENT_KEY)
+      if (cancelled) return
+      const restored = backend.map(fromPanelBackend).filter((m): m is Message => m !== null)
+      setMessages((prev) => {
+        // Only hydrate a pristine panel (welcome message only). If the user
+        // already started a conversation, the live thread wins and the next
+        // debounced push overwrites this key with it (intentional).
+        const pristine = prev.length === 1 && prev[0]?.id === 'welcome'
+        return pristine && restored.length > 0 ? restored : prev
+      })
+      setHydrated(true)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Debounced backend push whenever the conversation changes (after
+  // hydration). setState happens only inside the timeout callback, keeping
+  // the effect body pure for the lint rule.
+  useEffect(() => {
+    if (!hydrated) return
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    // Skip the welcome-only thread — nothing real to persist.
+    const real = messages.filter((m) => m.id !== 'welcome')
+    if (real.length === 0) return
+    syncTimerRef.current = setTimeout(() => {
+      setBackendSyncing(true)
+      void (async () => {
+        const ok = await pushAgentHistory(PANEL_AGENT_KEY, real.slice(-100).map(toPanelBackend))
+        setBackendSyncing(false)
+        setBackendSynced(ok)
+      })()
+    }, SYNC_DEBOUNCE_MS)
+  }, [messages, hydrated])
+
+  // Flush pending sync + clear timers on unmount.
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    }
+  }, [])
 
   // Cancel audio when muted
   useEffect(() => {
@@ -243,6 +332,12 @@ export function AiChatPanel({ isMuted = false, onMuteToggle }: AiChatPanelProps)
                 <span className="text-xs font-rajdhani font-semibold text-[#E2E8F0]/80 tracking-wider uppercase">AI Interface</span>
               </div>
               <div className="flex items-center gap-1.5">
+                {/* Sync status — conversation feeds the ai_chats knowledge graph */}
+                <span
+                  className="w-1.5 h-1.5 rounded-full"
+                  title={backendSyncing ? 'Syncing conversation to the knowledge graph…' : backendSynced ? 'Conversation synced to the knowledge graph' : 'Backend offline — conversation not synced'}
+                  style={{ backgroundColor: backendSyncing ? '#fbbf24' : backendSynced ? '#34d399' : '#f87171' }}
+                />
                 {/* Mute button for TTS responses */}
                 <button
                   onClick={onMuteToggle}

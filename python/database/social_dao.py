@@ -55,8 +55,9 @@ class SocialDAO:
             INSERT INTO content_scripts (
                 trend_id, title, topic, format, tone,
                 estimated_duration_seconds, script_content, sections,
-                visual_cues, status, score, generated_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                visual_cues, status, score, revised, gate_iterations,
+                generated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         return await db_connection.insert(sql, (
             script.get("trend_id"),
@@ -70,6 +71,8 @@ class SocialDAO:
             script.get("visual_cues", "[]"),
             script.get("status", "draft"),
             script.get("score", 0),
+            script.get("revised", 0),
+            script.get("gate_iterations", 0),
             script.get("generated_by", "llm"),
         ))
 
@@ -92,6 +95,37 @@ class SocialDAO:
             "UPDATE content_scripts SET status = ?, updated_at = datetime('now') WHERE id = ?",
             (status, script_id),
         )
+
+    async def update_script_quality(
+        self,
+        script_id: int,
+        score: float,
+        revised: int,
+        gate_iterations: int,
+        script_content: Optional[str] = None,
+        visual_cues: Optional[str] = None,
+    ) -> int:
+        """Persist a W7 quality-gate verdict on an existing script.
+
+        Also updates ``script_content``/``visual_cues`` when the critic produced a
+        revised draft, so a re-run critic can upgrade the stored draft in place.
+        """
+        sets = [
+            "score = ?",
+            "revised = ?",
+            "gate_iterations = ?",
+            "updated_at = datetime('now')",
+        ]
+        params: list[Any] = [score, revised, gate_iterations]
+        if script_content is not None:
+            sets.append("script_content = ?")
+            params.append(script_content)
+        if visual_cues is not None:
+            sets.append("visual_cues = ?")
+            params.append(visual_cues)
+        params.append(script_id)
+        sql = f"UPDATE content_scripts SET {', '.join(sets)} WHERE id = ?"
+        return await db_connection.update(sql, tuple(params))
 
     # ─── Videos ────────────────────────────────────────────────────────────
 

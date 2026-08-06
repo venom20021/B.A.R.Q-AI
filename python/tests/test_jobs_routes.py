@@ -137,6 +137,95 @@ async def test_approve_nonexistent_job(client):
     assert response.status_code == 500  # FK constraint fails
 
 
+# ─── Apply Preview (Phase 1c safe mode) ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_apply_preview_nonexistent_job(client):
+    """POST /{job_id}/apply/preview on a missing job should return 404."""
+    response = await client.post("/99999/apply/preview")
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_apply_preview_job_without_url(client):
+    """A job with no usable URL cannot be previewed — 400."""
+    job_id = int(await jobs_dao.insert_job_listing({
+        "title": "No URL Role", "company": "NoUrl Co", "source_board": "linkedin",
+    }))
+    response = await client.post(f"/{job_id}/apply/preview")
+    assert response.status_code == 400
+    assert "no usable web application URL" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_apply_preview_success(client):
+    """Safe-mode preview fills the form (never submits) and returns the
+    screenshot + filled-fields summary plus the human-confirm hint."""
+    from unittest.mock import AsyncMock, patch
+
+    from jobs import routes
+
+    job_id = int(await jobs_dao.insert_job_listing({
+        "title": "Previewable Role",
+        "company": "Preview Co",
+        "source_board": "greenhouse",
+        "url": "https://boards.greenhouse.io/jobs/4242",
+    }))
+
+    fake_fill = {
+        "status": "filled",
+        "detected_platform": "greenhouse",
+        "filled_fields": {"email": "me@example.com", "phone": "+1 555 0100"},
+        "screenshot_path": "/tmp/preview_4242.png",
+        "message": "Form filled — NOT submitted (safe mode)",
+    }
+
+    with patch.object(routes.applier, "auto_fill_application",
+                      new_callable=AsyncMock, return_value=fake_fill):
+        response = await client.post(f"/{job_id}/apply/preview")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job_id"] == job_id
+    assert data["title"] == "Previewable Role"
+    assert data["company"] == "Preview Co"
+    # The applier result is surfaced verbatim for human review
+    assert data["status"] == "filled"
+    assert data["detected_platform"] == "greenhouse"
+    assert data["filled_fields"] == {"email": "me@example.com", "phone": "+1 555 0100"}
+    assert data["screenshot_path"] == "/tmp/preview_4242.png"
+    # Human-confirm gate: next points at the real apply endpoint
+    assert data["next"]["action"] == "apply"
+    assert data["next"]["endpoint"] == f"/jobs/{job_id}/apply"
+    assert "Review the screenshot" in data["next"]["note"]
+
+
+@pytest.mark.asyncio
+async def test_apply_preview_records_activity(client):
+    """A successful preview should be logged to the activity feed."""
+    from unittest.mock import AsyncMock, patch
+
+    from database import analytics_dao
+    from jobs import routes
+
+    job_id = int(await jobs_dao.insert_job_listing({
+        "title": "Audited Role",
+        "company": "Audit Co",
+        "source_board": "linkedin",
+        "url": "https://linkedin.com/jobs/audit-1",
+    }))
+
+    with patch.object(routes.applier, "auto_fill_application",
+                      new_callable=AsyncMock,
+                      return_value={"status": "filled", "filled_fields": {}}):
+        await client.post(f"/{job_id}/apply/preview")
+
+    rows = await analytics_dao.get_recent_activity(limit=10)
+    actions = [r["action"] for r in rows]
+    assert "apply_preview" in actions
+
+
 # ─── Applications ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

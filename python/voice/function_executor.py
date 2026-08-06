@@ -1268,6 +1268,82 @@ def _vision_stream_status() -> dict[str, Any]:
         return {"status": "error", "detail": str(e)}
 
 
+def _vision_stream_analyze(
+    prompt: str = "What do you see on my screen? Be concise.",
+    source: str = "screen",
+) -> dict[str, Any]:
+    """Analyze the current screen or webcam through the persistent vision stream.
+
+    Routes a fresh capture through the warm, long-lived Gemini Live vision
+    stream for zero-latency analysis, returning the text description. Lets
+    the voice agent see screen changes mid-conversation: ``vision_stream_start``
+    once, then call this whenever the user asks what is on screen.
+
+    Falls back to a direct Gemini REST analysis if the stream is not ready,
+    so the tool always returns a description when vision is available.
+
+    Args:
+        prompt: The question or instruction about the screen content.
+        source: "screen" (default) captures the monitor; "camera" captures the webcam.
+
+    Returns:
+        Dict with the analysis text and the path used ("stream" or "rest").
+    """
+    try:
+        from agent.vision import (
+            analyze_image_with_gemini,
+            capture_camera,
+            capture_screen,
+            ensure_vision_stream,
+            get_vision_stream_session,
+        )
+
+        source = (source or "screen").lower()
+        if source not in ("screen", "camera"):
+            source = "screen"
+
+        # Best-effort: warm the persistent stream (short timeout so the
+        # voice round-trip never blocks for the full 25s start window).
+        stream_ok = ensure_vision_stream(timeout=12.0)
+
+        image_bytes, mime_type = (
+            capture_camera() if source == "camera" else capture_screen()
+        )
+
+        session = get_vision_stream_session() if stream_ok else None
+        if stream_ok and session is not None and session.is_ready:
+            try:
+                text = session.analyze_and_wait(
+                    image_bytes, mime_type, prompt, timeout=25.0
+                )
+                if text:
+                    return {
+                        "status": "success",
+                        "analysis": text,
+                        "source": source,
+                        "via": "stream",
+                        "image_size_bytes": len(image_bytes),
+                    }
+            except Exception as e:
+                print(f"[VisionStream] Stream analysis failed ({e}) — falling back to REST")
+
+        # Fallback: direct Gemini REST analysis (fresh connection).
+        text = _run_async(
+            analyze_image_with_gemini(image_bytes, mime_type, prompt=prompt)
+        )
+        return {
+            "status": "success",
+            "analysis": text,
+            "source": source,
+            "via": "rest",
+            "image_size_bytes": len(image_bytes),
+        }
+    except ImportError as e:
+        return {"status": "error", "detail": f"Vision dependencies not installed: {e}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Vision stream analysis failed: {e}"}
+
+
 # ─── Function Registry ─────────────────────────────────────────────────
 
 # ─── Browser Control Functions (Playwright) ────────────────────────────
@@ -1817,6 +1893,7 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "vision_stream_start": _vision_stream_start,
     "vision_stream_stop": _vision_stream_stop,
     "vision_stream_status": _vision_stream_status,
+    "vision_stream_analyze": _vision_stream_analyze,
     # Browser control
     "browser_go_to": _browser_go_to,
     "browser_search": _browser_search,
@@ -1858,6 +1935,17 @@ FUNCTION_REGISTRY: dict[str, Any] = {
     "process_file": _process_file,
     "send_message": _send_message,
 }
+
+# ─── BARQ Feature Bridge ────────────────────────────────────────────────
+# Voice access to every BARQ feature (jobs, social, memory, brain, workflows,
+# notifications, analytics, settings, agent skills, ...) via self-HTTP dispatch
+# and the SkillRegistry. See voice/feature_bridge.py for details.
+from .feature_bridge import (
+    FEATURE_FUNCTIONS as BARQ_FEATURE_FUNCTIONS,
+    FEATURE_SCHEMAS as BARQ_FEATURE_SCHEMAS,
+)
+
+FUNCTION_REGISTRY.update(BARQ_FEATURE_FUNCTIONS)
 
 
 def get_function_schemas() -> list[dict]:
@@ -2524,6 +2612,47 @@ def get_function_schemas() -> list[dict]:
                 "properties": {},
             },
         },
+        {
+            "name": "vision_stream_start",
+            "description": "Starts BARQ's persistent Gemini Live vision stream — a warm, long-lived connection for zero-latency screen/webcam analysis. Call once at the start of a conversation where the user may ask about the screen, then use vision_stream_analyze to see screen changes instantly.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "vision_stream_stop",
+            "description": "Stops the persistent Gemini Live vision stream and releases its connection.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "vision_stream_status",
+            "description": "Checks whether the persistent Gemini Live vision stream is connected and ready.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "vision_stream_analyze",
+            "description": "Analyzes the CURRENT screen (or webcam) through the warm persistent vision stream and returns a text description of what is on screen right now. Call when the user asks what is on their screen, what changed on screen, what you can see, or any question about live display content. Falls back to a direct analysis if the stream is not warm.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Question or instruction about the screen content. Default: 'What do you see on my screen? Be concise.'",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "'screen' (default) captures the monitor; 'camera' captures the webcam.",
+                    },
+                },
+            },
+        },
         # ── YouTube Functions ────────────────────────────────────────────
         {
             "name": "youtube_play",
@@ -2799,7 +2928,7 @@ def get_function_schemas() -> list[dict]:
                 "required": ["file_path"],
             },
         },
-    ]
+    ] + BARQ_FEATURE_SCHEMAS
 
 
 async def execute_function(function_name: str, arguments: dict) -> dict[str, Any]:

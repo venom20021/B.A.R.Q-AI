@@ -33,6 +33,7 @@ class ResumeOptimizer:
         resume_md: str,
         job: dict[str, Any],
         match_analysis: dict[str, Any] | None = None,
+        feedback: str | None = None,
     ) -> dict[str, Any]:
         """
         Optimize a resume for a specific job.
@@ -41,11 +42,12 @@ class ResumeOptimizer:
             resume_md: The original resume in markdown format
             job: Job listing dict with title, company, description
             match_analysis: Optional output from JobMatcher
+            feedback: Optional evaluator feedback for a revision pass.
 
         Returns:
             Dict with optimized_md, keywords_injected, changes_made
         """
-        prompt = self._build_prompt(resume_md, job, match_analysis)
+        prompt = self._build_prompt(resume_md, job, match_analysis, feedback=feedback)
 
         try:
             client = self._get_client()
@@ -84,6 +86,7 @@ class ResumeOptimizer:
         resume_md: str,
         job: dict[str, Any],
         match_analysis: dict[str, Any] | None = None,
+        feedback: str | None = None,
     ) -> dict[str, Any]:
         """
         Optimize a resume for a specific job, outputting structured JSON data.
@@ -106,7 +109,7 @@ class ResumeOptimizer:
         Returns:
             Dict with json_data (structured JSON), keywords_injected, changes_made, _mode
         """
-        prompt = self._build_latex_json_prompt(resume_md, job, match_analysis)
+        prompt = self._build_latex_json_prompt(resume_md, job, match_analysis, feedback=feedback)
 
         try:
             client = self._get_client()
@@ -170,12 +173,17 @@ class ResumeOptimizer:
         resume_md: str,
         job: dict[str, Any],
         match_analysis: dict[str, Any] | None,
+        feedback: str | None = None,
     ) -> str:
         missing = ""
         if match_analysis:
             ms = match_analysis.get("missing_skills", [])
             if ms:
                 missing = f"\nMissing Skills to weave in (if relevant): {', '.join(ms[:5])}"
+
+        feedback_block = ""
+        if feedback:
+            feedback_block = f"\nREVISION FEEDBACK (address every item):\n{feedback}"
 
         return f"""
 Job Title: {job.get('title', 'Unknown')}
@@ -186,6 +194,8 @@ Job Description:
 
 Original Resume:
 {resume_md}
+
+{feedback_block}
 
 Please create an optimized version of this resume that:
 
@@ -214,6 +224,7 @@ Format your response as:
         resume_md: str,
         job: dict[str, Any],
         match_analysis: dict[str, Any] | None,
+        feedback: str | None = None,
     ) -> str:
         """Build a prompt requesting ONLY a JSON object — no LaTeX, no markdown.
 
@@ -225,6 +236,10 @@ Format your response as:
             ms = match_analysis.get("missing_skills", [])
             if ms:
                 missing = f"\nMissing Skills to weave in (if relevant): {', '.join(ms[:5])}"
+
+        feedback_block = ""
+        if feedback:
+            feedback_block = f"\nREVISION FEEDBACK (address every item while keeping the JSON schema identical):\n{feedback}"
 
         return f"""Job Title: {job.get('title', 'Unknown')}
 Company: {job.get('company', 'Unknown')}
@@ -277,6 +292,8 @@ Do NOT output any LaTeX, markdown, code fences, or conversational text.
     }}
   ]
 }}
+
+{feedback_block}
 
 STRICT RULES:
 1. NEVER add skills, experience, or projects the candidate doesn't have.

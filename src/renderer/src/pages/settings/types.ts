@@ -1,4 +1,4 @@
-import { Settings, Mic, Volume2, Key, Cpu, Bell, Briefcase, Video, Shield, Terminal, User, Cloud, Palette } from 'lucide-react'
+import { Settings, Mic, Volume2, Key, Cpu, Bell, Briefcase, Video, Shield, Terminal, User, Cloud, Palette, Sunrise } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ export const sections: SettingsSection[] = [
   { id: 'sounds', label: 'Sounds', icon: Volume2, description: 'Preview and toggle audio profiles' },
   { id: 'api', label: 'API Keys', icon: Key, description: 'Connect your accounts and services' },
   { id: 'cloud-llm', label: 'Cloud LLM', icon: Cpu, description: 'Ollama fallback and cloud AI settings' },
+  { id: 'briefing', label: 'Morning Briefing', icon: Sunrise, description: 'Daily AI briefing schedule and delivery' },
   { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alerts and digest preferences' },
   { id: 'jobs', label: 'Job Search', icon: Briefcase, description: 'Job search preferences and filters' },
   { id: 'social', label: 'Social', icon: Video, description: 'Content creation and posting settings' },

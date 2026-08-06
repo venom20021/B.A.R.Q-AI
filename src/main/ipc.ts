@@ -146,6 +146,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // Re-run the W7 content critic on an existing draft (no regeneration)
+  ipcMain.handle('social:re-run-critic', async (_event, scriptId: string) => {
+    try {
+      const result = await pythonBridge.request(`/social/scripts/${scriptId}/re-critic`, {})
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // Post to platforms
   ipcMain.handle('social:post', async (_event, videoId: string, platforms: string[]) => {
     try {

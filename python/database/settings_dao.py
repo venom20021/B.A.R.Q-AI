@@ -55,6 +55,44 @@ class SettingsDAO:
             "DELETE FROM user_settings WHERE key = ?", (key,)
         )
 
+    # ─── Scheduled Tasks (scheduled_tasks table) ───────────────────────────
+
+    async def get_scheduled_task(self, name: str) -> Optional[dict]:
+        """Get a scheduled task by its name."""
+        return await db_connection.fetch_one(
+            "SELECT * FROM scheduled_tasks WHERE name = ?", (name,)
+        )
+
+    async def upsert_scheduled_task(
+        self,
+        name: str,
+        task_type: str,
+        cron_expression: str,
+        config: Optional[dict[str, Any]] = None,
+        enabled: bool = True,
+    ) -> int:
+        """Insert or update a scheduled task by name (idempotent).
+
+        Returns the task id.
+        """
+        import json
+        existing = await db_connection.fetch_one(
+            "SELECT id FROM scheduled_tasks WHERE name = ?", (name,)
+        )
+        config_json = json.dumps(config or {})
+        if existing:
+            await db_connection.update(
+                "UPDATE scheduled_tasks SET task_type = ?, config = ?, cron_expression = ?, "
+                "enabled = ?, updated_at = datetime('now') WHERE name = ?",
+                (task_type, config_json, cron_expression, 1 if enabled else 0, name),
+            )
+            return existing["id"]
+        return await db_connection.insert(
+            "INSERT INTO scheduled_tasks (task_type, name, config, cron_expression, enabled) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_type, name, config_json, cron_expression, 1 if enabled else 0),
+        )
+
     # ─── API Keys (stored in user_settings with encryption flag) ──────────
 
     async def set_api_key(self, service: str, api_key: str) -> int:

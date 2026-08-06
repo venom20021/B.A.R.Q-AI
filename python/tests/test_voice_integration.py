@@ -439,7 +439,7 @@ class TestVoicePipelineLifecycle:
 
         # Verify function schemas were injected
         functions = mock_server.received_settings.get("agent", {}).get("think", {}).get("functions", [])
-        assert len(functions) == 16, f"Expected 16 function schemas, got {len(functions)}"
+        assert len(functions) >= 60, f"Expected 60+ function schemas, got {len(functions)}"
         function_names = [f["name"] for f in functions]
         assert "minimize_window" in function_names
         assert "open_file" in function_names
@@ -452,6 +452,12 @@ class TestVoicePipelineLifecycle:
         assert "media_control" in function_names
         assert "empty_trash" in function_names
         assert "lock_screen" in function_names
+
+        # Feature bridge schemas should be injected too (voice can reach every feature)
+        assert "barq_api" in function_names
+        assert "barq_skill" in function_names
+        assert "barq_notify" in function_names
+        assert "barq_workflow_run" in function_names
 
         # Start conversation
         await agent.start_conversation()

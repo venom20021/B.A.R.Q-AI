@@ -222,7 +222,11 @@ async def search_jobs(request: SearchRequest, background_tasks: BackgroundTasks)
         # Store in database
         count = 0
         for job in results[:50]:
-            listing_id = await jobs_dao.insert_job_listing(job)
+            # Insert the listing — already-known jobs are skipped entirely so
+            # they never get re-counted, re-evaluated, or re-notified.
+            listing_id = await jobs_dao.insert_job_listing_if_new(job)
+            if listing_id is None:
+                continue
             # Insert evaluation if scanner already evaluated the job
             if "overall_score" in job:
                 try:

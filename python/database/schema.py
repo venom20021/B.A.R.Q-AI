@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS job_listings (
     company_logo_url TEXT NOT NULL DEFAULT '',
     company_rating REAL DEFAULT 0.0,
     skills_required TEXT NOT NULL DEFAULT '[]',   -- JSON array
+    fingerprint TEXT NOT NULL DEFAULT '',         -- dedup hash: normalized title|company|location
     is_active INTEGER NOT NULL DEFAULT 1,
     scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -131,6 +132,7 @@ CREATE TABLE IF NOT EXISTS applications (
     response_type TEXT
         CHECK (response_type IN ('interview', 'rejection', 'assessment', 'offer', 'none')),
     interview_date TEXT,
+    notified_at TEXT,                             -- when the last Telegram/notification was sent
     offer_details TEXT NOT NULL DEFAULT '{}',     -- JSON
     rejection_reason TEXT NOT NULL DEFAULT '',
     score REAL DEFAULT 0.0
@@ -198,6 +200,8 @@ CREATE TABLE IF NOT EXISTS content_scripts (
         CHECK (status IN ('draft', 'finalized', 'rendering', 'rendered', 'published')),
     score INTEGER DEFAULT 0
         CHECK (score >= 0 AND score <= 100),
+    revised INTEGER NOT NULL DEFAULT 0,        -- 1 when the W7 content critic revised the draft
+    gate_iterations INTEGER NOT NULL DEFAULT 0, -- how many critic revise cycles ran
     generated_by TEXT NOT NULL DEFAULT 'llm'
         CHECK (generated_by IN ('llm', 'template', 'manual')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -467,6 +471,32 @@ CREATE TABLE IF NOT EXISTS action_log (
 );
 """
 
+# ─── Agentic Workflows (v3.0) ───────────────────────────────────────────────
+
+CREATE_AGENT_CHECKPOINTS = """
+CREATE TABLE IF NOT EXISTS agent_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_key TEXT UNIQUE NOT NULL,        -- e.g. 'agent:<task_id>' or 'workflow:<run_id>'
+    agent_type TEXT NOT NULL DEFAULT 'agent',   -- 'agent' | 'workflow'
+    data TEXT NOT NULL DEFAULT '{}',            -- JSON payload (plan, steps, results)
+    status TEXT NOT NULL DEFAULT 'active',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_WORKFLOWS = """
+CREATE TABLE IF NOT EXISTS workflows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition TEXT NOT NULL DEFAULT '{}',      -- JSON workflow definition
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 # ─── Aggregate schema creation ───────────────────────────────────────────────
 
 ALL_TABLES = [
@@ -492,7 +522,83 @@ ALL_TABLES = [
     ("widgets", CREATE_WIDGETS),
     ("file_index", CREATE_FILE_INDEX),
     ("company_research", CREATE_COMPANY_RESEARCH),
+    ("agent_checkpoints", CREATE_AGENT_CHECKPOINTS),
+    ("workflows", CREATE_WORKFLOWS),
 ]
+
+
+# ─── In-place migrations ────────────────────────────────────────────────────
+# CREATE TABLE IF NOT EXISTS won't add columns to databases created before a
+# schema change, so older installs get an idempotent ALTER TABLE instead.
+
+SCHEMA_MIGRATIONS = [
+    # Applications: track when a job was last notified so pipeline runs skip
+    # already-notified applications (stops repeated Telegram alerts).
+    (
+        "applications",
+        "notified_at",
+        "ALTER TABLE applications ADD COLUMN notified_at TEXT",
+    ),
+    # Job dedup: fingerprint column so boards without stable ids/urls can be deduped
+    (
+        "job_listings",
+        "fingerprint",
+        "ALTER TABLE job_listings ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+    ),
+    # W7 quality gate: persist whether the content critic revised the draft
+    (
+        "content_scripts",
+        "revised",
+        "ALTER TABLE content_scripts ADD COLUMN revised INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "content_scripts",
+        "gate_iterations",
+        "ALTER TABLE content_scripts ADD COLUMN gate_iterations INTEGER NOT NULL DEFAULT 0",
+    ),
+]
+
+
+# ─── Job-listing dedup indexes (v2) ────────────────────────────────────────
+# Partial UNIQUE indexes so a job re-found on the next scan maps to the same
+# row. Partial (WHERE) keeps rows with empty keys from colliding with each
+# other. These can only be created once existing duplicates are collapsed —
+# run scripts/dedupe_jobs.py first if creation fails.
+
+JOB_LISTING_DEDUP_INDEXES = [
+    (
+        "uq_job_listings_board_external",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_listings_board_external "
+        "ON job_listings(source_board, external_id) WHERE external_id != ''",
+    ),
+    (
+        "uq_job_listings_source_url",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_listings_source_url "
+        "ON job_listings(source_url) WHERE source_url != ''",
+    ),
+    (
+        "uq_job_listings_fingerprint",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_listings_fingerprint "
+        "ON job_listings(fingerprint) WHERE fingerprint != ''",
+    ),
+]
+
+
+async def _ensure_column(db, table: str, column: str, ddl: str) -> None:
+    """Add a column to an existing table if it isn't already present."""
+    try:
+        cols = await db.fetch_all(f"PRAGMA table_info({table})")
+    except Exception as e:
+        print(f"[Schema] Could not inspect '{table}' columns: {e}")
+        return
+    if any(c.get("name") == column for c in cols):
+        return
+    try:
+        await db.execute(ddl)
+        await db.commit()
+        print(f"[Schema] Migration: added column '{column}' to '{table}'")
+    except Exception as e:
+        print(f"[Schema] Migration failed for '{table}.{column}': {e}")
 
 
 async def initialize_schema(db):
@@ -503,6 +609,20 @@ async def initialize_schema(db):
             print(f"[Schema] Table '{table_name}' ready")
         except Exception as e:
             print(f"[Schema] Error creating table '{table_name}': {e}")
+
+    # Apply in-place column migrations to existing databases
+    for table, column, ddl in SCHEMA_MIGRATIONS:
+        await _ensure_column(db, table, column, ddl)
+
+    # Create job-listing dedup indexes (partial UNIQUE indexes). These can
+    # fail on databases that already contain duplicates — run
+    # scripts/dedupe_jobs.py first. Failures are logged, not fatal.
+    for index_name, ddl in JOB_LISTING_DEDUP_INDEXES:
+        try:
+            await db.execute(ddl)
+            print(f"[Schema] Index '{index_name}' ready")
+        except Exception as e:
+            print(f"[Schema] Warning: index '{index_name}' not created: {e}")
 
     await db.commit()
     print(f"[Schema] All {len(ALL_TABLES)} tables initialized")

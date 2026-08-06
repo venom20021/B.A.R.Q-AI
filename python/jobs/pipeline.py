@@ -52,6 +52,11 @@ DEFAULT_SETTINGS = {
     "generate_pdf": True,       # Generate PDF copies of resume and cover letter
     "send_telegram": True,      # Send Telegram notification with job link + docs
     "min_match_score": 60,      # Minimum match percentage to process
+    # Evaluator-Optimizer gate (Reflection pattern) — evaluates generated
+    # resumes/cover letters against the JD and forces revisions below threshold.
+    "enable_evaluator": True,
+    "evaluator_threshold": 80,  # 0-100 match score required before PDF/Telegram
+    "evaluator_max_iterations": 2,
 }
 
 # ─── Pipeline State ─────────────────────────────────────────────────────────
@@ -157,12 +162,20 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
         _pipeline_state["message"] = "Fetching approved jobs from database..."
         await asyncio.sleep(0.2)
 
-        # Get jobs that are approved/queued AND have good match scores
-        queued = await jobs_dao.get_applications_by_status("queued", limit=cfg["max_per_run"])
-        approved = await jobs_dao.get_applications_by_status("approved", limit=cfg["max_per_run"])
+        # Get jobs that are approved/queued AND have good match scores.
+        # exclude_notified skips applications that were already notified so
+        # already-known high-match jobs don't re-trigger Telegram alerts.
+        queued = await jobs_dao.get_applications_by_status(
+            "queued", limit=cfg["max_per_run"], exclude_notified=True
+        )
+        approved = await jobs_dao.get_applications_by_status(
+            "approved", limit=cfg["max_per_run"], exclude_notified=True
+        )
 
         # Also get ready_for_review
-        review = await jobs_dao.get_applications_by_status("ready_for_review", limit=cfg["max_per_run"])
+        review = await jobs_dao.get_applications_by_status(
+            "ready_for_review", limit=cfg["max_per_run"], exclude_notified=True
+        )
 
         all_apps = queued + approved + review
 
@@ -292,6 +305,38 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 app_result["optimized_resume"] = optimized_md
                 app_result["llm_json_data"] = llm_json_data  # None if markdown fallback
 
+                # ── Evaluator-Optimizer Gate: Resume (Reflection pattern) ──
+                # A secondary LLM evaluates the tailored resume against the
+                # job description. Below the threshold, the optimizer is
+                # forced to revise with the evaluator's feedback (max N iters)
+                # BEFORE any PDF is compiled or Telegram message is sent.
+                eval_report: dict[str, Any] = {}
+                if cfg["enable_evaluator"]:
+                    try:
+                        from jobs.evaluator_agent import EvaluatorAgent
+
+                        evaluator = EvaluatorAgent(
+                            threshold=cfg.get("evaluator_threshold", 80),
+                            max_iterations=cfg.get("evaluator_max_iterations", 2),
+                        )
+                        if llm_json_data:
+                            json_eval = await evaluator.ensure_resume_json(
+                                llm_json_data, resume_md, job, optimizer, match_analysis
+                            )
+                            if json_eval.get("final_json"):
+                                llm_json_data = json_eval["final_json"]
+                            eval_report.update(json_eval)
+                            print(f"[Pipeline] 📋 Evaluator (JSON resume): score {json_eval.get('final_score')}, passed {json_eval.get('passed')} after {json_eval.get('iterations')} iteration(s)")
+                        else:
+                            md_eval = await evaluator.ensure_resume_markdown(
+                                optimized_md, resume_md, job, optimizer, match_analysis
+                            )
+                            optimized_md = md_eval.get("final_document", optimized_md)
+                            eval_report.update(md_eval)
+                            print(f"[Pipeline] 📋 Evaluator (markdown resume): score {md_eval.get('final_score')}, passed {md_eval.get('passed')} after {md_eval.get('iterations')} iteration(s)")
+                    except Exception as eval_err:
+                        print(f"[Pipeline] ⚠️ Evaluator gate error (continuing): {eval_err}")
+
                 # ── Phase 4: Generate Cover Letter ────────────────────
                 _pipeline_state["phase"] = PHASES[3]
                 _pipeline_state["phase_index"] = 3
@@ -307,6 +352,22 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                     print(f"[Pipeline] ⏱️ Cover letter generation timed out for {job_title} — skipping")
                     cover_letter = ""
                 app_result["cover_letter"] = cover_letter
+
+                # ── Evaluator-Optimizer Gate: Cover Letter ────────────
+                if cfg["enable_evaluator"] and cover_letter:
+                    try:
+                        from jobs.evaluator_agent import EvaluatorAgent
+
+                        evaluator = EvaluatorAgent(
+                            threshold=cfg.get("evaluator_threshold", 80),
+                            max_iterations=cfg.get("evaluator_max_iterations", 2),
+                        )
+                        cl_eval = await evaluator.ensure_cover_letter(cover_letter, job, resume)
+                        cover_letter = cl_eval.get("final_document", cover_letter)
+                        eval_report["cover_letter"] = cl_eval
+                        print(f"[Pipeline] 📋 Evaluator (cover letter): score {cl_eval.get('final_score')}, passed {cl_eval.get('passed')} after {cl_eval.get('iterations')} iteration(s)")
+                    except Exception as cl_err:
+                        print(f"[Pipeline] ⚠️ Cover letter evaluator error (continuing): {cl_err}")
 
                 # ── Phase 5: Generate PDFs (LaTeX when available) ─────
                 _pipeline_state["phase"] = PHASES[4]
@@ -411,6 +472,14 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                         "cover_letter_generated": bool(cover_letter),
                         "pdf_generated": bool(pdf_paths),
                         "match_percentage": match_pct,
+                        "evaluator": {
+                            "enabled": cfg["enable_evaluator"],
+                            "resume_score": eval_report.get("final_score"),
+                            "resume_passed": eval_report.get("passed"),
+                            "resume_iterations": eval_report.get("iterations", 0),
+                            "cover_letter_score": (eval_report.get("cover_letter") or {}).get("final_score"),
+                            "cover_letter_passed": (eval_report.get("cover_letter") or {}).get("passed"),
+                        },
                     }),
                 )
 
@@ -478,7 +547,10 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                     auto_applied = auto_apply_result.get("status") == "completed"
                     app_result["auto_apply_result"] = auto_apply_result
 
-                # Mark application as submitted or ready_for_review
+                # Mark application as submitted or ready_for_review.
+                # notified_at is stamped when a notification was actually sent
+                # — or when sending is disabled entirely — so genuine send
+                # failures are retried next run without re-processing forever.
                 if auto_applied:
                     await jobs_dao.update_application_status(
                         app["id"], "submitted",
@@ -487,10 +559,19 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                 elif telegram_sent:
                     await jobs_dao.update_application_status(
                         app["id"], "ready_for_review",
+                        notified_at=datetime.now(timezone.utc).isoformat(),
                     )
-                else:
+                elif cfg["send_telegram"]:
+                    # Attempted but failed — leave un-notified so the next run retries.
                     await jobs_dao.update_application_status(
                         app["id"], "ready_for_review",
+                    )
+                else:
+                    # Sending disabled — mark handled so the app isn't
+                    # re-processed (and documents regenerated) every run.
+                    await jobs_dao.update_application_status(
+                        app["id"], "ready_for_review",
+                        notified_at=datetime.now(timezone.utc).isoformat(),
                     )
 
                 app_result["status"] = "completed"

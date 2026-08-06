@@ -82,6 +82,8 @@ class Settings(BaseSettings):
 
     # Social Media
     trend_check_interval_hours: int = int(os.getenv("TREND_CHECK_INTERVAL_HOURS", "6"))
+    # Stock footage for video rendering (free Pexels API key — optional)
+    pexels_api_key: str = os.getenv("PEXELS_API_KEY", "")
 
     # Database
     database_url: str = os.getenv(
@@ -122,6 +124,32 @@ class Settings(BaseSettings):
     turso_enabled: bool = os.getenv("TURSO_ENABLED", "false").lower() == "true"
     turso_database_url: str = os.getenv("TURSO_DATABASE_URL", "")
     turso_auth_token: str = os.getenv("TURSO_AUTH_TOKEN", "")
+
+    # ── Agentic Workflows ────────────────────────────────────────────
+    # Morning briefing (W4)
+    briefing_enabled: bool = os.getenv("BRIEFING_ENABLED", "true").lower() == "true"
+    briefing_time: str = os.getenv("BRIEFING_TIME", "08:00")  # 24h HH:MM
+    # Conversation memory extraction (W5)
+    conversation_memory_enabled: bool = os.getenv("CONVERSATION_MEMORY_ENABLED", "true").lower() == "true"
+    # Research -> knowledge graph extraction (W6)
+    research_to_brain_enabled: bool = os.getenv("RESEARCH_TO_BRAIN_ENABLED", "true").lower() == "true"
+    # Evaluator-Optimizer gate in the jobs pipeline (Feature 2)
+    evaluator_enabled: bool = os.getenv("EVALUATOR_ENABLED", "true").lower() == "true"
+    evaluator_threshold: int = int(os.getenv("EVALUATOR_THRESHOLD", "80"))  # 0-100
+    evaluator_max_iterations: int = int(os.getenv("EVALUATOR_MAX_ITERATIONS", "2"))
+    # Content critic quality gate in the social pipeline (W7)
+    content_critic_enabled: bool = os.getenv("CONTENT_CRITIC_ENABLED", "true").lower() == "true"
+    content_critic_min_score: int = int(os.getenv("CONTENT_CRITIC_MIN_SCORE", "80"))  # 0-100
+    content_critic_max_iterations: int = int(os.getenv("CONTENT_CRITIC_MAX_ITERATIONS", "2"))
+    # Weekly review report (W11)
+    weekly_review_enabled: bool = os.getenv("WEEKLY_REVIEW_ENABLED", "true").lower() == "true"
+    weekly_review_time: str = os.getenv("WEEKLY_REVIEW_TIME", "09:00")  # 24h HH:MM
+    weekly_review_day: str = os.getenv("WEEKLY_REVIEW_DAY", "sunday")  # apscheduler day_of_week
+    # Periodic knowledge-graph re-import (notes / memory / jobs → brains)
+    brain_reimport_enabled: bool = os.getenv("BRAIN_REIMPORT_ENABLED", "true").lower() == "true"
+    brain_reimport_interval_hours: int = int(os.getenv("BRAIN_REIMPORT_INTERVAL_HOURS", "6"))
+    # SQL tool-use skill (Feature 1) — safety gate for write queries
+    sql_tool_readonly: bool = os.getenv("SQL_TOOL_READONLY", "true").lower() == "true"
 
     # Voice agent selection (deepgram or pipecat)
     voice_agent_backend: str = os.getenv("VOICE_AGENT_BACKEND", "pipecat")

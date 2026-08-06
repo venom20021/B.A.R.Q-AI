@@ -176,3 +176,56 @@ async def test_priority_ordering():
     # Urgent should come first
     assert unread[0]["title"] == "Urgent"
     assert unread[1]["title"] == "High"
+
+
+# ─── Scheduled Tasks ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_scheduled_task_insert():
+    """Inserting a new scheduled task creates a row and returns its id."""
+    task_id = await settings_dao.upsert_scheduled_task(
+        name="Test Task",
+        task_type="custom",
+        cron_expression="0 8 * * *",
+        config={"workflow": "test"},
+        enabled=True,
+    )
+    assert task_id > 0
+
+    row = await settings_dao.get_scheduled_task("Test Task")
+    assert row is not None
+    assert row["task_type"] == "custom"
+    assert row["cron_expression"] == "0 8 * * *"
+    assert row["enabled"] == 1
+    assert json.loads(row["config"]) == {"workflow": "test"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_scheduled_task_idempotent_update():
+    """Updating an existing task by name keeps the same id and refreshes fields."""
+    first_id = await settings_dao.upsert_scheduled_task(
+        name="Update Task",
+        task_type="custom",
+        cron_expression="0 8 * * *",
+        enabled=True,
+    )
+    second_id = await settings_dao.upsert_scheduled_task(
+        name="Update Task",
+        task_type="custom",
+        cron_expression="0 9 * * *",
+        config={"workflow": "updated"},
+        enabled=False,
+    )
+    assert second_id == first_id
+
+    row = await settings_dao.get_scheduled_task("Update Task")
+    assert row["cron_expression"] == "0 9 * * *"
+    assert row["enabled"] == 0
+    assert json.loads(row["config"]) == {"workflow": "updated"}
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_task_missing():
+    """Looking up a task that does not exist returns None."""
+    assert await settings_dao.get_scheduled_task("Does Not Exist") is None

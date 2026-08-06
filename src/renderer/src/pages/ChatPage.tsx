@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, startTransition } from 'react
 import { MessageSquare, Mic, MicOff, Send, Loader2, Trash2, User, Bot, Volume2, StopCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { api } from '../utils/api'
+import { fetchAgentHistory, pushAgentHistory, clearAgentHistoryKey, type AgentHistoryMessage } from '../utils/agentHistory'
 import { usePersistentState } from '../hooks/usePersistentState'
 import { useVoice } from '../contexts/VoiceContext'
 
@@ -13,9 +14,17 @@ interface ChatMessage {
   timestamp: number
 }
 
-// ─── LocalStorage persistence ──────────────────────────────────────────────
+// ─── Persistence: localStorage (fast cache) + backend (durable sync) ───────
+// Every text chat is mirrored to the backend's ``agent_chat_history``
+// (POST /api/memory/agent-history) so the brain re-import can feed the
+// ``ai_chats`` knowledge graph from real conversations — not just this page.
 
 const CHAT_HISTORY_KEY = 'barq_chat_history'
+// Key under which this page's messages are stored inside the backend history
+// dict (``{ [agent]: [{role, content, timestamp}] }``).
+const BACKEND_AGENT_KEY = 'chat_page'
+// Debounce window for backend sync (avoid a POST per message).
+const SYNC_DEBOUNCE_MS = 600
 
 function loadChatHistory(): ChatMessage[] {
   try {
@@ -34,6 +43,30 @@ function saveChatHistory(messages: ChatMessage[]): void {
     const trimmed = messages.length > 100 ? messages.slice(-100) : messages
     localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(trimmed))
   } catch { /* ignore */ }
+}
+
+// ── Backend shape conversion ───────────────────────────────────────────
+// Backend messages use { role, content, timestamp } with 'user'/'model'
+// roles; this page uses { role: 'user'|'barq', text, timestamp }. The actual
+// GET/merge/POST against /api/memory/agent-history lives in utils/agentHistory
+// and is shared with the Jarvis/AiChat panel.
+
+function toBackendMessage(msg: ChatMessage): AgentHistoryMessage {
+  return {
+    role: msg.role === 'user' ? 'user' : 'model',
+    content: msg.text,
+    timestamp: msg.timestamp,
+  }
+}
+
+function fromBackendMessage(msg: AgentHistoryMessage): ChatMessage | null {
+  const text = typeof msg?.content === 'string' ? msg.content.trim() : ''
+  if (!text) return null
+  return {
+    role: msg.role === 'user' ? 'user' : 'barq',
+    text,
+    timestamp: typeof msg.timestamp === 'number' && Number.isFinite(msg.timestamp) ? msg.timestamp : Date.now(),
+  }
 }
 
 // ─── Web Speech API hook ──────────────────────────────────────────────────
@@ -155,8 +188,67 @@ export function ChatPage(): JSX.Element {
   const { isListening, transcript, interimTranscript, startListening, stopListening, supported: voiceSupported } = useSpeechRecognition()
   const { speak, stop: stopTts, speaking: ttsSpeaking } = useTextToSpeech()
 
-  // Persist messages
-  useEffect(() => { saveChatHistory(messages) }, [messages])
+  // ── Backend sync (feeds the ai_chats knowledge graph) ─────────────────
+  const [backendSynced, setBackendSynced] = useState(true)
+  const [backendSyncing, setBackendSyncing] = useState(false)
+  // State (not a ref) so the push effect re-runs when hydration completes —
+  // otherwise a message sent before the mount GET resolves would never flush.
+  const [hydrated, setHydrated] = useState(false)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Hydrate from backend on mount — backend wins, localStorage is the
+  // offline fallback so an unreachable sidecar never blanks the page.
+  // Also migrates any pre-existing local-only history up to the backend so
+  // those chats start feeding the ai_chats graph too.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const backend = await fetchAgentHistory(BACKEND_AGENT_KEY)
+      if (cancelled) return
+      const restored = backend.map(fromBackendMessage).filter((m): m is ChatMessage => m !== null)
+      // Only hydrate when the user hasn't already started typing/sending —
+      // otherwise backend restore could clobber a just-sent message.
+      if (messages.length === 0 && restored.length > 0) {
+        setMessages(restored)
+      } else if (restored.length === 0 && messages.length > 0) {
+        // Backend empty but local history exists (first run after upgrade) —
+        // push it so the graph gets fed from the very first re-import.
+        void pushAgentHistory(BACKEND_AGENT_KEY, messages.slice(-100).map(toBackendMessage))
+      }
+      setHydrated(true)
+    })()
+    return () => { cancelled = true }
+    // `messages` is intentionally read once (initial localStorage value) to
+    // decide the one-time migration — not subscribed afterwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Debounced backend push whenever messages change (after hydration).
+  // Note: all setState calls happen inside the timeout callback (async),
+  // keeping the effect body side-effect free for the lint rule.
+  useEffect(() => {
+    if (!hydrated) return
+    saveChatHistory(messages)
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    // Skip the push on an empty thread — a "clear" is already handled by
+    // clearBackendHistory, and an empty-array overwrite would recreate the key.
+    if (messages.length === 0) return
+    syncTimerRef.current = setTimeout(() => {
+      setBackendSyncing(true)
+      void (async () => {
+        const ok = await pushAgentHistory(BACKEND_AGENT_KEY, messages.slice(-100).map(toBackendMessage))
+        setBackendSyncing(false)
+        setBackendSynced(ok)
+      })()
+    }, SYNC_DEBOUNCE_MS)
+  }, [messages, hydrated])
+
+  // Flush pending sync + clear timers on unmount.
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    }
+  }, [])
 
   // Auto-scroll
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, sending])
@@ -219,10 +311,14 @@ export function ChatPage(): JSX.Element {
     setSending(false)
   }, [input, speak])
 
-  // Clear history
+  // Clear history (localStorage + backend so the graph forgets it too)
   const clearHistory = useCallback(() => {
     setMessages([])
     localStorage.removeItem(CHAT_HISTORY_KEY)
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    setBackendSyncing(false)
+    setBackendSynced(true)
+    void clearAgentHistoryKey(BACKEND_AGENT_KEY)
   }, [])
 
   return (
@@ -249,6 +345,24 @@ export function ChatPage(): JSX.Element {
             )}
             <span className="px-3 py-1.5 rounded-lg bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 text-[10px] font-rajdhani font-semibold">
               {detectorRunning ? '🎤 Live' : '🎤 Check'}
+            </span>
+            {/* Backend sync status — chats feed the ai_chats knowledge graph */}
+            <span
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-rajdhani font-semibold transition-colors"
+              title="Chat history is synced to the backend so the AI Chat knowledge graph is fed from your conversations"
+              style={
+                backendSyncing
+                  ? { color: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.08)', borderColor: 'rgba(251,191,36,0.25)' }
+                  : backendSynced
+                    ? { color: '#34d399', backgroundColor: 'rgba(52,211,153,0.08)', borderColor: 'rgba(52,211,153,0.25)' }
+                    : { color: '#f87171', backgroundColor: 'rgba(248,113,113,0.08)', borderColor: 'rgba(248,113,113,0.25)' }
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${backendSyncing ? 'animate-pulse' : ''}`}
+                style={{ backgroundColor: backendSyncing ? '#fbbf24' : backendSynced ? '#34d399' : '#f87171' }}
+              />
+              {backendSyncing ? 'Syncing…' : backendSynced ? 'Graph synced' : 'Offline'}
             </span>
             <button onClick={clearHistory} disabled={messages.length === 0}
               className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"

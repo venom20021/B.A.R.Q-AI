@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('barq', {
     generateScript: (topic: string, format: string) =>
       ipcRenderer.invoke('social:generate-script', topic, format),
     renderVideo: (scriptId: string) => ipcRenderer.invoke('social:render-video', scriptId),
+    reRunCritic: (scriptId: string) => ipcRenderer.invoke('social:re-run-critic', scriptId),
     post: (videoId: string, platforms: string[]) =>
       ipcRenderer.invoke('social:post', videoId, platforms),
     calendarMonth: (year: number, month: number) =>

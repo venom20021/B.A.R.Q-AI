@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
+from config import get_settings
 from database import analytics_dao, social_dao
 
 from . import (
@@ -38,6 +39,22 @@ GENERATION_PHASES = [
     "Rendering video",
     "Posting content",
 ]
+
+# Map script formats to content-critic platform rules (W7 quality gate)
+SCRIPT_FORMAT_PLATFORM = {
+    "tiktok_short": "tiktok_short",
+    "youtube_shorts": "youtube_shorts",
+    "youtube_essay": "blog_post",
+    "instagram_reel": "instagram_reel",
+    "twitter_thread": "twitter_thread",
+}
+
+
+def _json_field(value: Any) -> str:
+    """Serialize list/dict values to a JSON string for TEXT column storage."""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return str(value) if value is not None else ""
 
 _generation_progress: dict[str, Any] = {
     "status": "idle",           # idle | scripting | rendering | posting | complete | error
@@ -117,7 +134,6 @@ class CalendarMonthRequest(BaseModel):
     month: int
 
 
-@router.get("")
 @router.get("/")
 async def social_root():
     """Social media module root — returns module status."""
@@ -172,9 +188,53 @@ async def generate_script(request: ScriptRequest, background_tasks: BackgroundTa
             tone=request.tone,
         )
 
+        # ── W7 Quality gate ────────────────────────────────────────────────
+        # Run the Content Critic on the raw draft so every script is critiqued
+        # (and revised when below threshold) before it can be rendered. The gate
+        # is best-effort: a critic failure never blocks script generation.
+        quality_gate = None
+        settings = get_settings()
+        raw_draft = script.get("script", "") or ""
+        # Skip the gate when generation itself failed (the script is an error
+        # string) — critiquing it could mask the underlying failure.
+        gate_eligible = (
+            settings.content_critic_enabled
+            and raw_draft.strip()
+            and not raw_draft.lstrip().startswith("Error generating script:")
+        )
+        if gate_eligible:
+            set_generation_progress("scripting", GENERATION_PHASES[1], 45, "Running content critic...")
+            try:
+                from agent.workflows.content_critic import ContentCritic
+                critic = ContentCritic(
+                    min_score=settings.content_critic_min_score,
+                    max_iterations=settings.content_critic_max_iterations,
+                )
+                gate = await critic.critique_and_improve(
+                    raw_draft,
+                    request.topic,
+                    SCRIPT_FORMAT_PLATFORM.get(request.format, "linkedin_post"),
+                )
+                # Store the quality-gated final draft (revised if the critic
+                # found issues) and keep visual cues in sync with the final text.
+                script["script"] = gate["final_draft"]
+                script["visual_cues"] = script_generator._extract_visual_cues(gate["final_draft"])
+                script["score"] = gate["final_score"]
+                quality_gate = {
+                    "passed": gate["passed"],
+                    "final_score": gate["final_score"],
+                    "iterations": gate["iterations"],
+                    "revised": gate["revised"],
+                    "threshold": settings.content_critic_min_score,
+                }
+            except Exception as e:
+                print(f"[Social] Content critic skipped ({request.format}): {e}")
+                quality_gate = {"passed": None, "error": str(e)}
+
         set_generation_progress("scripting", GENERATION_PHASES[1], 70, "Storing script to database...")
 
-        # Store in database
+        # Store in database — persist the quality-gate verdict alongside the
+        # final score so the UI can show whether the critic revised the draft.
         script_id = await social_dao.insert_script({
             "title": request.topic,
             "topic": request.topic,
@@ -182,8 +242,10 @@ async def generate_script(request: ScriptRequest, background_tasks: BackgroundTa
             "tone": request.tone,
             "script_content": script.get("script", ""),
             "sections": script.get("sections", "[]"),
-            "visual_cues": script.get("visual_cues", "[]"),
+            "visual_cues": _json_field(script.get("visual_cues", "[]")),
             "score": script.get("score", 0),
+            "revised": 1 if quality_gate and quality_gate.get("revised") else 0,
+            "gate_iterations": quality_gate.get("iterations", 0) if quality_gate else 0,
             "status": "draft",
         })
 
@@ -195,7 +257,7 @@ async def generate_script(request: ScriptRequest, background_tasks: BackgroundTa
             "content", "script_generated",
             f"Script for '{request.topic[:50]}' ({request.format})"
         )
-        return {"script_id": script_id, "script": script}
+        return {"script_id": script_id, "script": script, "quality_gate": quality_gate}
     except Exception as e:
         _generation_progress["status"] = "error"
         _generation_progress["message"] = str(e)
@@ -216,6 +278,77 @@ async def get_scripts(status: str = "", limit: int = 50):
         return {"scripts": scripts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/re-critic")
+async def re_run_critic(script_id: int):
+    """Re-run the W7 content critic on an existing draft without regenerating.
+
+    Loads the stored draft, critiques it against the platform rules for the
+    script's format, and — if the critic revises it — persists the upgraded
+    draft plus the new verdict (score / revised / gate_iterations).
+    """
+    script = await social_dao.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+
+    draft = script.get("script_content", "") or ""
+    # Skip the gate when there is nothing critiquable (empty or an error string)
+    # so a failed re-run never masks an underlying generation failure.
+    gate_eligible = draft.strip() and not draft.lstrip().startswith("Error generating script:")
+    if not gate_eligible:
+        return {
+            "script_id": script_id,
+            "quality_gate": {"passed": None, "error": "Script has no critiquable draft."},
+        }
+
+    topic = script.get("topic") or script.get("title") or ""
+    fmt = script.get("format") or "youtube_shorts"
+    quality_gate = None
+    revised_draft = None
+    try:
+        from agent.workflows.content_critic import ContentCritic
+        settings = get_settings()
+        critic = ContentCritic(
+            min_score=settings.content_critic_min_score,
+            max_iterations=settings.content_critic_max_iterations,
+        )
+        gate = await critic.critique_and_improve(
+            draft,
+            topic,
+            SCRIPT_FORMAT_PLATFORM.get(fmt, "linkedin_post"),
+        )
+        final_draft = gate["final_draft"]
+        revised_draft = final_draft if gate["revised"] else None
+        # Persist the verdict (and the upgraded draft) in place
+        await social_dao.update_script_quality(
+            script_id,
+            score=gate["final_score"],
+            revised=1 if gate["revised"] else 0,
+            gate_iterations=gate["iterations"],
+            script_content=final_draft,
+            visual_cues=_json_field(script_generator._extract_visual_cues(final_draft)),
+        )
+        quality_gate = {
+            "passed": gate["passed"],
+            "final_score": gate["final_score"],
+            "iterations": gate["iterations"],
+            "revised": gate["revised"],
+            "threshold": settings.content_critic_min_score,
+        }
+    except Exception as e:
+        print(f"[Social] Content critic re-run failed (script #{script_id}): {e}")
+        quality_gate = {"passed": None, "error": str(e)}
+
+    await analytics_dao.log_activity(
+        "content", "critic_rerun",
+        f"Re-ran critic on script #{script_id} ({fmt})",
+    )
+    return {
+        "script_id": script_id,
+        "quality_gate": quality_gate,
+        "revised_draft": revised_draft,
+    }
 
 
 @router.post("/render-video")

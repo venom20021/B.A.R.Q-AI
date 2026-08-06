@@ -5,6 +5,8 @@ import {
   Video, Lightbulb, FileText, Globe, Play, CheckCircle, Loader2,
   Calendar, TrendingUp, Clock, Plus, X, ChevronLeft, ChevronRight,
   ExternalLink, Twitter, MessageCircle, Hash, BarChart3,
+  ShieldCheck, RefreshCw, Youtube, Music2, Instagram, Film,
+  Image as ImageIcon,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -17,6 +19,17 @@ interface ContentIdea {
   format: string
   status: 'idea' | 'scripted' | 'rendering' | 'ready' | 'posted'
   score: number
+  revised: boolean
+  gate_iterations: number
+}
+
+interface QualityGate {
+  passed: boolean | null
+  final_score?: number
+  iterations?: number
+  revised?: boolean
+  threshold?: number
+  error?: string
 }
 
 interface Trend {
@@ -97,6 +110,51 @@ const PLATFORM_ICONS: Record<string, string> = {
   linkedin: 'in',
 }
 
+// Formats supported by the backend ScriptGenerator (social/script.py). Each
+// also maps to the Content Critic's platform rules (W7 quality gate).
+const FORMAT_OPTIONS: { id: string; label: string; icon: typeof Youtube; active: string; color: string; hint: string }[] = [
+  {
+    id: 'youtube_shorts',
+    label: 'YouTube Shorts',
+    icon: Youtube,
+    active: 'border-red-400/40 bg-red-500/10 text-red-400',
+    color: 'text-red-400',
+    hint: '60s vertical video · retention-focused hook',
+  },
+  {
+    id: 'tiktok_short',
+    label: 'TikTok',
+    icon: Music2,
+    active: 'border-pink-400/40 bg-pink-500/10 text-pink-400',
+    color: 'text-pink-400',
+    hint: '60s short · hook in first 3 seconds · trending audio',
+  },
+  {
+    id: 'instagram_reel',
+    label: 'Instagram',
+    icon: Instagram,
+    active: 'border-purple-400/40 bg-purple-500/10 text-purple-400',
+    color: 'text-purple-400',
+    hint: '90s reel · visual-first · trending audio',
+  },
+  {
+    id: 'twitter_thread',
+    label: 'Threads',
+    icon: Twitter,
+    active: 'border-sky-400/40 bg-sky-500/10 text-sky-400',
+    color: 'text-sky-400',
+    hint: 'X/Twitter thread · up to 20 tweets',
+  },
+  {
+    id: 'youtube_essay',
+    label: 'YouTube Essay',
+    icon: Film,
+    active: 'border-red-400/40 bg-red-500/10 text-red-400',
+    color: 'text-red-400',
+    hint: '10-min deep dive · long-form storytelling',
+  },
+]
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -172,6 +230,21 @@ export function ContentPage(): JSX.Element {
   const [scripts, setScripts] = usePersistentState<ContentIdea[]>('ContentPage.scripts', [])
   const [selectedIdea, setSelectedIdea] = usePersistentState<string | null>('ContentPage.selectedIdea', null)
 
+  // Quality gate (W7 content critic) result from the last generate-script call
+  const [qualityGate, setQualityGate] = useState<QualityGate | null>(null)
+
+  // Target format for generate-script — also selects the critic's platform rules
+  const [selectedFormat, setSelectedFormat] = usePersistentState<string>('ContentPage.selectedFormat', 'youtube_shorts')
+
+  // Script currently being re-critiqued (spinner state for the Re-run Critic button)
+  const [reCriticId, setReCriticId] = useState<string | null>(null)
+
+  // AI image generation (Phase 1d — post images, free no-key backend)
+  const [imagePrompt, setImagePrompt] = usePersistentState('ContentPage.imagePrompt', '')
+  const [generatingImage, setGeneratingImage] = useState(false)
+  const [generatedImage, setGeneratedImage] = usePersistentState<string | null>('ContentPage.generatedImage', null)
+  const [imageError, setImageError] = useState('')
+
   // Calendar state
   const [calendarYear, setCalendarYear] = usePersistentState('ContentPage.calendarYear', new Date().getFullYear())
   const [calendarMonth, setCalendarMonth] = usePersistentState('ContentPage.calendarMonth', new Date().getMonth() + 1)
@@ -214,6 +287,8 @@ export function ContentPage(): JSX.Element {
         format: String(s['format'] ?? 'Short'),
         status: (s['status'] === 'draft' ? 'scripted' : s['status'] === 'rendering' ? 'rendering' : s['status'] === 'rendered' ? 'ready' : 'idea') as ContentIdea['status'],
         score: Number(s['score'] ?? 0),
+        revised: Number(s['revised'] ?? 0) === 1,
+        gate_iterations: Number(s['gate_iterations'] ?? 0),
       })))
     } catch {
       setPipelineCounts({})
@@ -283,8 +358,28 @@ export function ContentPage(): JSX.Element {
   // ─── Actions ────────────────────────────────────────────────────────────
 
   const handleGenerateScript = async (topic: string): Promise<void> => {
-    await window.barq?.social.generateScript(topic, 'short')
+    const result = await window.barq?.social.generateScript(topic, selectedFormat)
+    // Surface the W7 quality gate verdict right after generate-script returns
+    const data = result?.success && result.data
+      ? (result.data as { quality_gate?: QualityGate | null } | undefined)
+      : undefined
+    setQualityGate(data?.quality_gate ?? null)
     await fetchPipeline()
+  }
+
+  const handleReRunCritic = async (scriptId: string): Promise<void> => {
+    setReCriticId(scriptId)
+    try {
+      const result = await window.barq?.social.reRunCritic(scriptId)
+      // Surface the fresh W7 verdict on the existing draft (no regeneration)
+      const data = result?.success && result.data
+        ? (result.data as { quality_gate?: QualityGate | null } | undefined)
+        : undefined
+      setQualityGate(data?.quality_gate ?? null)
+      await fetchPipeline()
+    } finally {
+      setReCriticId(null)
+    }
   }
 
   const handleRender = async (scriptId: string): Promise<void> => {
@@ -295,6 +390,28 @@ export function ContentPage(): JSX.Element {
   const handlePost = async (videoId: string): Promise<void> => {
     await window.barq?.social.post(videoId, ['youtube', 'tiktok', 'instagram'])
     await fetchPipeline()
+  }
+
+  const handleGenerateImage = async (): Promise<void> => {
+    if (!imagePrompt.trim()) {
+      setImageError('Enter a prompt first.')
+      return
+    }
+    setGeneratingImage(true)
+    setImageError('')
+    try {
+      const result = await window.barq?.web.generateImage(imagePrompt)
+      const data = result?.success ? result.data : undefined
+      const url = (data as { image_url?: string } | undefined)?.image_url
+      if (url) {
+        setGeneratedImage(url)
+      } else {
+        setImageError('Backend did not return an image URL.')
+      }
+    } catch (e) {
+      setImageError(String(e))
+    }
+    setGeneratingImage(false)
   }
 
   const handleSchedule = async (date: string): Promise<void> => {
@@ -349,6 +466,8 @@ export function ContentPage(): JSX.Element {
     { label: 'Published', icon: CheckCircle, key: 'posts_posted' },
   ]
 
+  const activeFormat = FORMAT_OPTIONS.find(f => f.id === selectedFormat) ?? FORMAT_OPTIONS[0]
+
   // ─── Render ─────────────────────────────────────────────────────────────
 
   return (
@@ -394,6 +513,235 @@ export function ContentPage(): JSX.Element {
       {/* ─── Pipeline Tab ────────────────────────────────────────────────── */}
       {activeTab === 'pipeline' && (
         <>
+          {/* Target Format Picker */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card p-4"
+          >
+            <div className="flex items-center justify-between mb-3 gap-4">
+              <div className="flex items-center gap-2 min-w-0">
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">
+                  TARGET FORMAT
+                </h3>
+                <span className="text-2xs font-rajdhani text-dim-500 hidden sm:inline-block truncate">
+                  where the next script — and its critic rules — target
+                </span>
+              </div>
+              <span className="text-2xs font-share-tech uppercase text-dim-500 shrink-0">
+                critic rules: <span className={activeFormat.color}>{activeFormat.label}</span>
+              </span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {FORMAT_OPTIONS.map(fmt => {
+                const FmtIcon = fmt.icon
+                const isActive = selectedFormat === fmt.id
+                return (
+                  <button
+                    key={fmt.id}
+                    onClick={() => setSelectedFormat(fmt.id)}
+                    title={fmt.hint}
+                    aria-pressed={isActive}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-rajdhani font-semibold transition-all duration-200 ${
+                      isActive
+                        ? fmt.active
+                        : 'border-dim-700/30 text-dim-400 hover:border-dim-500/50 hover:text-ghost'
+                    }`}
+                  >
+                    <FmtIcon className="w-4 h-4" />
+                    {fmt.label}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-2xs font-rajdhani text-dim-500 mt-2">
+              {activeFormat.hint}
+            </p>
+          </motion.div>
+
+          {/* Quality Gate Result (W7 content critic) */}
+          {qualityGate && (
+            <motion.div
+              key="quality-gate"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`glass-card p-4 border-l-2 ${
+                qualityGate.error || qualityGate.passed === null
+                  ? 'border-dim-500/40'
+                  : qualityGate.passed
+                    ? 'border-neural/50'
+                    : 'border-plasma/50'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className={`p-2 rounded-lg shrink-0 ${
+                    qualityGate.error || qualityGate.passed === null
+                      ? 'bg-dim-700/40'
+                      : qualityGate.passed
+                        ? 'bg-neural-500/10'
+                        : 'bg-plasma-500/10'
+                  }`}>
+                    <ShieldCheck className={`w-5 h-5 ${
+                      qualityGate.error || qualityGate.passed === null
+                        ? 'text-dim-400'
+                        : qualityGate.passed
+                          ? 'text-neural'
+                          : 'text-plasma'
+                    }`} />
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">
+                        QUALITY GATE
+                      </h3>
+                      {qualityGate.passed === true && (
+                        <span className="text-2xs font-share-tech uppercase px-2 py-0.5 rounded bg-green-500/10 text-green-400">
+                          Passed
+                        </span>
+                      )}
+                      {qualityGate.passed === false && (
+                        <span className="text-2xs font-share-tech uppercase px-2 py-0.5 rounded bg-plasma-500/10 text-plasma">
+                          Below threshold
+                        </span>
+                      )}
+                      {qualityGate.error && (
+                        <span className="text-2xs font-share-tech uppercase px-2 py-0.5 rounded bg-dim-700/40 text-dim-400">
+                          Critic unavailable
+                        </span>
+                      )}
+                      {qualityGate.revised && (
+                        <span className="text-2xs font-share-tech uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 flex items-center gap-1">
+                          <RefreshCw className="w-2.5 h-2.5" />
+                          Revised by critic
+                        </span>
+                      )}
+                    </div>
+
+                    {qualityGate.error ? (
+                      <p className="text-xs font-rajdhani text-dim-400 mt-1 truncate">
+                        {qualityGate.error}
+                      </p>
+                    ) : typeof qualityGate.final_score === 'number' && (
+                      <div className="flex items-center gap-3 mt-2">
+                        <span className={`text-2xl font-orbitron font-bold ${
+                          qualityGate.passed ? 'text-neural' : 'text-plasma'
+                        }`}>
+                          {qualityGate.final_score}
+                        </span>
+                        <div className="flex-1 max-w-[240px] h-1.5 rounded-full bg-void-700/60 overflow-hidden">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{ width: `${Math.min(100, Math.max(0, qualityGate.final_score))}%` }}
+                            transition={{ duration: 0.6, ease: 'easeOut' }}
+                            className={`h-full rounded-full ${qualityGate.passed ? 'bg-neural' : 'bg-plasma'}`}
+                          />
+                        </div>
+                        {typeof qualityGate.threshold === 'number' && (
+                          <span className="text-2xs font-share-tech uppercase text-dim-500">
+                            threshold {qualityGate.threshold}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {typeof qualityGate.iterations === 'number' && qualityGate.iterations > 0 && (
+                      <p className="text-2xs font-rajdhani text-dim-500 mt-1">
+                        {qualityGate.iterations} critique {qualityGate.iterations === 1 ? 'cycle' : 'cycles'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setQualityGate(null)}
+                  className="p-1 rounded hover:bg-void-600/50 text-dim-400 hover:text-ghost transition-all shrink-0"
+                  aria-label="Dismiss quality gate result"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* AI Image Generator (Phase 1d) */}
+          <motion.div
+            key="image-gen"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card p-4"
+          >
+            <div className="flex items-center justify-between mb-3 gap-4">
+              <div className="flex items-center gap-2 min-w-0">
+                <ImageIcon className="w-4 h-4 text-plasma" />
+                <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">
+                  AI IMAGE GENERATOR
+                </h3>
+                <span className="text-2xs font-rajdhani text-dim-500 hidden sm:inline-block truncate">
+                  post thumbnails &amp; visuals — free, no key needed
+                </span>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void handleGenerateImage() }}
+                placeholder="e.g. neon cyberpunk city skyline, vertical 9:16"
+                spellCheck={false}
+                className="flex-1 bg-void-700/50 border border-cyan-500/10 rounded-lg px-3 py-2 text-sm text-ghost placeholder:text-dim-600 focus:outline-none focus:border-cyan-500/30"
+              />
+              <button
+                onClick={() => void handleGenerateImage()}
+                disabled={generatingImage}
+                className="btn-cyan text-sm flex items-center gap-1.5"
+              >
+                {generatingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
+                {generatingImage ? 'Generating…' : 'Generate'}
+              </button>
+            </div>
+            {imageError && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs font-exo text-red-400">
+                <X className="w-3 h-3 flex-shrink-0" /> {imageError}
+              </p>
+            )}
+            {generatedImage && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-3 flex items-start gap-3"
+              >
+                <img
+                  src={generatedImage}
+                  alt={imagePrompt}
+                  className="w-32 h-56 object-cover rounded-lg border border-white/10 bg-void-700/40"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-rajdhani text-dim-400 mb-2 break-words">
+                    {imagePrompt}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => window.barq?.openExternal(generatedImage)}
+                      className="btn-glass text-xs flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Open full size
+                    </button>
+                    <button
+                      onClick={() => setGeneratedImage(null)}
+                      className="text-xs text-dim-400 hover:text-ghost transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </motion.div>
+
           {/* Pipeline Overview */}
           <motion.div
             key="pipeline-cards"
@@ -491,12 +839,23 @@ export function ContentPage(): JSX.Element {
                         </div>
                         <div className="flex items-center gap-3 text-sm font-exo text-dim-400">
                           <span className="badge-cyan text-hud">{idea.platform}</span>
-                          <span>{idea.format}</span>
+                          <span>{FORMAT_OPTIONS.find(f => f.id === idea.format)?.label ?? idea.format}</span>
                           {idea.score > 0 && (
                             <span className={`font-semibold ${
                               idea.score >= 85 ? 'text-neural' : 'text-plasma'
                             }`}>
                               Score: {idea.score}
+                            </span>
+                          )}
+                          {idea.revised && (
+                            <span className="text-2xs font-share-tech uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 flex items-center gap-1">
+                              <RefreshCw className="w-2.5 h-2.5" />
+                              Revised
+                            </span>
+                          )}
+                          {idea.gate_iterations > 0 && (
+                            <span className="text-2xs font-rajdhani text-dim-500">
+                              {idea.gate_iterations} critique {idea.gate_iterations === 1 ? 'cycle' : 'cycles'}
                             </span>
                           )}
                         </div>
@@ -518,12 +877,25 @@ export function ContentPage(): JSX.Element {
                             </button>
                           )}
                           {idea.status === 'scripted' && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleRender(idea.id) }}
-                              className="btn-glass text-sm"
-                            >
-                              Render Video
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleReRunCritic(idea.id) }}
+                                disabled={reCriticId === idea.id}
+                                className="btn-glass text-sm flex items-center gap-1"
+                                title="Re-run the content critic on this draft without regenerating it"
+                              >
+                                {reCriticId === idea.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <RefreshCw className="w-3 h-3" />}
+                                {reCriticId === idea.id ? 'Critiquing…' : 'Re-run Critic'}
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleRender(idea.id) }}
+                                className="btn-cyan text-sm"
+                              >
+                                Render Video
+                              </button>
+                            </div>
                           )}
                           {idea.status === 'ready' && (
                             <>

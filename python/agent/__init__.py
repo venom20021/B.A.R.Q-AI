@@ -26,6 +26,13 @@ from .skill_registry import (
 )
 from .task_queue import AgentTaskQueue, TaskPriority, TaskStatus
 
+# Register agentic workflow skills (W1-W7) as soon as the agent package is
+# imported — not only via main.py's lifespan — so the planner always sees them
+# regardless of the entrypoint. Idempotent.
+from .agentic_skills import register_agentic_skills as _register_agentic_skills
+
+_register_agentic_skills()
+
 __all__ = [
     "AgentExecutor",
     "AgentPlanner",

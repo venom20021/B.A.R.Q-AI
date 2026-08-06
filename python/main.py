@@ -40,6 +40,7 @@ from agent.agent_kernel_routes import (
 from agent.recruitment.routes import router as recruitment_router
 from agent.research.routes import router as research_router
 from agent.routes import router as agent_router
+from agent.workflow_routes import router as workflow_router
 from agent.vision_routes import router as vision_router
 from knowledge.routes import router as knowledge_router
 from analytics.routes import router as analytics_router
@@ -81,6 +82,7 @@ async def start_scheduler():
     global scheduler
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
         from apscheduler.triggers.interval import IntervalTrigger
 
         scheduler = AsyncIOScheduler()
@@ -116,6 +118,65 @@ async def start_scheduler():
             id="proactive_checkin",
             replace_existing=True,
         )
+
+        # W4: Morning briefing (daily at briefing_time; DB settings override env)
+        try:
+            from settings.briefing import get_briefing_config, upsert_briefing_task
+            briefing = await get_briefing_config()
+            if briefing["enabled"]:
+                _hour, _minute = briefing["time"].split(":")
+                scheduler.add_job(
+                    _run_morning_briefing,
+                    CronTrigger(hour=int(_hour), minute=int(_minute)),
+                    id="morning_briefing",
+                    replace_existing=True,
+                )
+                logger.info(f"[Scheduler] Morning briefing scheduled at {briefing['time']}")
+            # Register/refresh the scheduled_tasks row (Settings UI source of truth)
+            await upsert_briefing_task(briefing["enabled"], briefing["time"])
+            logger.info(
+                f"[Scheduler] Morning briefing registered in scheduled_tasks (enabled={briefing['enabled']})"
+            )
+        except Exception as e:
+            logger.warning(f"[Scheduler] Morning briefing not scheduled: {e}")
+
+        # W11: Weekly review (weekly on weekly_review_day at weekly_review_time)
+        if settings.weekly_review_enabled:
+            try:
+                _rh, _rm = settings.weekly_review_time.split(":")
+                scheduler.add_job(
+                    _run_weekly_review,
+                    CronTrigger(day_of_week=settings.weekly_review_day, hour=int(_rh), minute=int(_rm)),
+                    id="weekly_review",
+                    replace_existing=True,
+                )
+                logger.info(
+                    f"[Scheduler] Weekly review scheduled {settings.weekly_review_day} {settings.weekly_review_time}"
+                )
+            except Exception as e:
+                logger.warning(f"[Scheduler] Weekly review not scheduled: {e}")
+
+        # Periodic knowledge-graph re-import (notes / memory / jobs → brains)
+        try:
+            from settings.brain_sync import get_brain_sync_config, upsert_brain_sync_task
+            brain_sync = await get_brain_sync_config()
+            if brain_sync["enabled"]:
+                scheduler.add_job(
+                    _run_brain_reimport,
+                    IntervalTrigger(hours=brain_sync["interval_hours"]),
+                    id="brain_reimport",
+                    replace_existing=True,
+                )
+                logger.info(
+                    f"[Scheduler] Knowledge graph re-import scheduled every {brain_sync['interval_hours']}h"
+                )
+            # Register/refresh the scheduled_tasks row (Settings UI source of truth)
+            await upsert_brain_sync_task(brain_sync["enabled"], brain_sync["interval_hours"])
+            logger.info(
+                f"[Scheduler] Knowledge graph re-import registered in scheduled_tasks (enabled={brain_sync['enabled']})"
+            )
+        except Exception as e:
+            logger.warning(f"[Scheduler] Knowledge graph re-import not scheduled: {e}")
 
         # Background topic monitoring every 6 hours
         scheduler.add_job(
@@ -155,7 +216,11 @@ async def _auto_scan_jobs():
         )
         count = 0
         for job in jobs[:50]:
-            listing_id = await jobs_dao.insert_job_listing(job)
+            # Insert the listing — already-known jobs are skipped entirely so
+            # they never get re-counted, re-evaluated, or re-notified.
+            listing_id = await jobs_dao.insert_job_listing_if_new(job)
+            if listing_id is None:
+                continue
             # Insert evaluation if scanner already evaluated the job
             if "overall_score" in job:
                 try:
@@ -304,6 +369,16 @@ async def lifespan(app: FastAPI):
     _loaded_count = sum(1 for v in _loaded.values() if v)
     print(f"[BARQ Sidecar] Loaded {_loaded_count}/{len(_loaded)} domain-specific brains from {_brains_dir}")
 
+    # Auto-populate the knowledge graph on first run (all brains empty) so the
+    # Brain / Knowledge Graph page is never blank: seeds a demo graph and
+    # imports real notes/memory/jobs data into the multi-brain graphs.
+    try:
+        from memory_knowledge.brain_api import ensure_populated
+        _pop = await ensure_populated()
+        print(f"[BARQ Sidecar] Knowledge graph population: {_pop.get('status')}")
+    except Exception as _e:
+        print(f"[BARQ Sidecar] Knowledge graph auto-populate skipped: {_e}")
+
     try:
         await analytics_dao.log_activity(
             "system", "startup", f"BARQ Sidecar v2.0 started on {settings.host}:{settings.port}",
@@ -321,7 +396,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[BARQ Sidecar] Agent task queue start error: {e}")
 
-    # Skills auto-register on import via agent.skill_registry
+    # Register agentic workflow skills (idempotent) so the planner can use them
+    try:
+        from agent.agentic_skills import register_agentic_skills
+        register_agentic_skills()
+        print("[BARQ Sidecar] Agentic workflow skills registered")
+    except Exception as e:
+        print(f"[BARQ Sidecar] Agentic skills registration error: {e}")
 
     # Start the AgentKernel (central mediation for all LLM calls)
     try:
@@ -561,6 +642,7 @@ app.include_router(brain_api_router, tags=["Brain Visualisation"])
 app.include_router(auth_router, tags=["Auth"])
 app.include_router(api_v1_router, tags=["Jobs v1"])  # Already has /api/v1 prefix
 app.include_router(agent_router, prefix="/agent", tags=["Agent System"])
+app.include_router(workflow_router, prefix="/agent", tags=["Agentic Workflows"])
 app.include_router(vision_router, prefix="/vision", tags=["Visual Awareness"])
 app.include_router(recruitment_router, prefix="/recruitment", tags=["Recruitment Agents"])
 app.include_router(research_router, prefix="/research", tags=["Deep Research Agent"])
@@ -734,6 +816,42 @@ async def _background_monitor_check():
             logger.info("[BackgroundMonitor] No new headlines")
     except Exception as e:
         logger.error(f"[BackgroundMonitor] Error: {e}")
+
+
+async def _run_morning_briefing():
+    """W4 — Morning briefing (called by APScheduler). Best-effort only."""
+    try:
+        from agent.workflows.morning_briefing import run_morning_briefing
+        result = await run_morning_briefing(notify=True)
+        logger.info(f"[Briefing] Generated {len(result.get('briefing', ''))} chars")
+    except Exception as e:
+        logger.error(f"[Briefing] Failed: {e}")
+
+
+async def _run_weekly_review():
+    """W11 — Weekly review (called by APScheduler). Best-effort only."""
+    try:
+        from agent.workflows.weekly_review import run_weekly_review
+        result = await run_weekly_review(notify=True)
+        logger.info(f"[WeeklyReview] Generated {len(result.get('report', ''))} chars")
+    except Exception as e:
+        logger.error(f"[WeeklyReview] Failed: {e}")
+
+
+async def _run_brain_reimport():
+    """Periodic knowledge-graph re-import (called by APScheduler). Best-effort only."""
+    try:
+        from memory_knowledge.brain_api import run_brain_reimport
+        result = await run_brain_reimport()
+        direct = result.get("results", {}).get("direct_triplets", {})
+        logger.info(
+            "[BrainReimport] Finished — general=%s career=%s llm_notes=%s",
+            direct.get("general", 0),
+            direct.get("career", 0),
+            result.get("results", {}).get("notes_llm_triplets", 0),
+        )
+    except Exception as e:
+        logger.error(f"[BrainReimport] Failed: {e}")
 
 
 async def _auto_extract_knowledge():

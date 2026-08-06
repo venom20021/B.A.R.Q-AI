@@ -40,6 +40,7 @@ interface BarqAPI {
     trends: () => Promise<{ success: boolean; data?: unknown; error?: string }>
     generateScript: (topic: string, format: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     renderVideo: (scriptId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    reRunCritic: (scriptId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>
     post: (videoId: string, platforms: string[]) => Promise<{ success: boolean; data?: unknown; error?: string }>
     calendarMonth: (year: number, month: number) => Promise<{ success: boolean; data?: unknown; error?: string }>
     calendarWeek: (start: string) => Promise<{ success: boolean; data?: unknown; error?: string }>

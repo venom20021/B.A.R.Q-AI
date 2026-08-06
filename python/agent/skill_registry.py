@@ -319,7 +319,14 @@ class SkillRegistry:
 
         try:
             if skill.handler is not None:
-                result = await skill.handler(**params)
+                # Async handlers are awaited directly. Synchronous handlers
+                # (blocking I/O like sqlite3, subprocess, file reads) run via
+                # ``asyncio.to_thread`` so the event loop is never blocked.
+                import asyncio
+                if asyncio.iscoroutinefunction(skill.handler):
+                    result = await skill.handler(**params)
+                else:
+                    result = await asyncio.to_thread(skill.handler, **params)
             else:
                 result = await self._dispatch_http(skill, params)
 
@@ -639,6 +646,32 @@ def register_builtin_skills(registry: Optional[SkillRegistry] = None) -> SkillRe
             critical=False,
             category="web",
             metadata={"route_method": "POST", "route_path": "/web/browse", "route_payload": {"url": ""}},
+        ),
+        Skill(
+            name="browser_action",
+            description="Control a real web browser (Chrome/Edge/Brave) to perform a single web action. Actions: go_to (navigate to a URL), search (web search a query), click (by text or CSS selector), type (type text into an input), scroll, screenshot, new_tab, press_key, fill_form (dict of CSS selectors to values), back, reload, close_tab. Use browser_observe after actions that change the page to verify the result.",
+            parameters=[
+                SkillParameter("action", "string", True, "Browser action: go_to, search, click, type, scroll, screenshot, new_tab, press_key, fill_form, back, reload, close_tab"),
+                SkillParameter("url", "string", False, "URL for go_to / new_tab"),
+                SkillParameter("query", "string", False, "Search query for search"),
+                SkillParameter("selector", "string", False, "CSS selector for click / type"),
+                SkillParameter("text", "string", False, "Visible text to click, or text to type"),
+                SkillParameter("fields", "dict", False, "Dict of CSS selectors to values for fill_form"),
+                SkillParameter("browser", "string", False, "Browser profile: chrome, edge, brave (default chrome)"),
+            ],
+            critical=True,
+            category="web",
+            metadata={"route_method": "POST", "route_path": "/system/browser/action", "route_payload": {"action": "", "url": "", "query": "", "selector": "", "text": "", "fields": {}, "browser": ""}},
+        ),
+        Skill(
+            name="browser_observe",
+            description="Take a self-verification snapshot of the currently open browser page (URL, title, and visible text excerpt). Call this after any browser_action that should change the page, so you can confirm the step actually worked before moving on.",
+            parameters=[
+                SkillParameter("browser", "string", False, "Browser profile (default chrome)"),
+            ],
+            critical=False,
+            category="web",
+            metadata={"route_method": "POST", "route_path": "/system/browser/action", "route_payload": {"action": "observe", "browser": ""}},
         ),
         Skill(
             name="send_message",

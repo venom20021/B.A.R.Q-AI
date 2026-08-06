@@ -16,6 +16,7 @@ from memory.agent_memory_manager import save_session_summary
 from voice.evolution_logger import get_evolution_logger
 from voice.websocket_manager import VoiceWSManager
 from voice.speech import SpeechProcessor
+from voice.agent_history_sync import persist_voice_utterance
 
 # Type aliases for optional command callbacks
 ParseCommandFn = Callable[[str, bool, Optional[str]], Awaitable[dict]]
@@ -314,6 +315,15 @@ class ConversationListener:
             "text": text,
             "isFinal": True,
         }))
+
+        # Persist the spoken command to agent_chat_history (voice_commands key)
+        # so the re-import feeds spoken topics into the ai_chats graph.
+        # Covers every Voice Agent backend (Gemini Live, Deepgram, Pipecat).
+        if not self._is_exit_command(text) and len(text.strip()) >= 2:
+            try:
+                asyncio.create_task(persist_voice_utterance(text))
+            except Exception as e:
+                print(f"[VoiceAgent] History persist error (non-fatal): {e}")
 
         if self._is_exit_command(text):
             print("[VoiceAgent] Exit command detected - stopping conversation")

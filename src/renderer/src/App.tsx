@@ -4,6 +4,7 @@ import {
 } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Sidebar } from './components/Sidebar'
+import { AppErrorBoundary } from './components/AppErrorBoundary'
 import { QuickOverlay} from './components/QuickOverlay'
 import { StartupSequence } from './components/StartupSequence'
 import { ApprovalModal } from './components/ApprovalModal'
@@ -31,6 +32,7 @@ import { MemoryPage } from './pages/MemoryPage'
 import { WidgetsPage } from './pages/WidgetsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AgentPage } from './pages/AgentPage'
+import { WorkflowsPage } from './pages/WorkflowsPage'
 import { VisionPage } from './pages/VisionPage'
 import { BrainPage } from './pages/BrainPage'
 import { PublicApisPage } from './pages/PublicApisPage'
@@ -281,8 +283,17 @@ function AppContent(): JSX.Element {
                 }}
               />
 
-              {/* Page content with transitions */}
+              {/* Page content with transitions — wrapped in an error boundary so a
+                  render crash in any page shows a recovery screen instead of a
+                  blank window. The key remounts the boundary on navigation, which
+                  both drives AnimatePresence and clears any caught crash. */}
               <AnimatePresence mode="wait">
+                <AppErrorBoundary
+                  key={location.pathname}
+                  variant="inline"
+                  title="This view crashed"
+                  onReset={() => navigate('/dashboard')}
+                >
                 <Routes location={location} key={location.pathname}>
                   {/* Main navbar tabs */}
                   <Route path="/" element={<TabView><DashboardPage /></TabView>} />
@@ -321,12 +332,14 @@ function AppContent(): JSX.Element {
                   <Route path="/chat" element={<AnimatedPage><ChatPage /></AnimatedPage>} />
                   <Route path="/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
                   <Route path="/agent" element={<AnimatedPage><AgentPage /></AnimatedPage>} />
+                  <Route path="/workflows" element={<AnimatedPage><WorkflowsPage /></AnimatedPage>} />
                   <Route path="/vision" element={<AnimatedPage><VisionPage /></AnimatedPage>} />
                   <Route path="/brain" element={<AnimatedPage><BrainPage /></AnimatedPage>} />
                   <Route path="/apis" element={<AnimatedPage><PublicApisPage /></AnimatedPage>} />
                   <Route path="/widgets" element={<AnimatedPage><WidgetsPage /></AnimatedPage>} />
                   <Route path="/evolution" element={<AnimatedPage><EvolutionPage /></AnimatedPage>} />
                 </Routes>
+                </AppErrorBoundary>
               </AnimatePresence>
             </div>
           </main>

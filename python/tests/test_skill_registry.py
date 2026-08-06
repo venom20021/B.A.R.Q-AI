@@ -236,7 +236,7 @@ class TestRegisterBuiltinSkills:
 
     def test_registers_all_builtins(self, clean_registry):
         register_builtin_skills(clean_registry)
-        assert clean_registry.count() == 17
+        assert clean_registry.count() == 19
 
     def test_includes_expected_tools(self, clean_registry):
         register_builtin_skills(clean_registry)
@@ -248,6 +248,7 @@ class TestRegisterBuiltinSkills:
             "code_helper", "dev_agent",
             "recruitment_extract", "recruitment_match", "recruitment_write",
             "recruitment_pipeline",
+            "browser_action", "browser_observe",
         }
         assert names == expected
 
@@ -255,6 +256,24 @@ class TestRegisterBuiltinSkills:
         register_builtin_skills(clean_registry)
         skill = clean_registry.get("web_search")
         assert skill.critical is True
+        assert skill.category == "web"
+
+    def test_browser_action_is_critical_web(self, clean_registry):
+        register_builtin_skills(clean_registry)
+        skill = clean_registry.get("browser_action")
+        assert skill is not None
+        assert skill.critical is True
+        assert skill.category == "web"
+        # It must expose the action parameter so the planner can call it
+        param_names = [p.name for p in skill.parameters]
+        assert "action" in param_names
+        assert "url" in param_names
+
+    def test_browser_observe_is_noncritical(self, clean_registry):
+        register_builtin_skills(clean_registry)
+        skill = clean_registry.get("browser_observe")
+        assert skill is not None
+        assert skill.critical is False
         assert skill.category == "web"
 
     def test_read_file_is_noncritical(self, clean_registry):
@@ -279,18 +298,21 @@ class TestRegisterBuiltinSkills:
         assert "recruitment_pipeline" in skiplist
         assert "code_helper" in skiplist
         assert "dev_agent" in skiplist
+        # Browser observe is a non-critical verification tool
+        assert "browser_observe" in skiplist
         # Critical tools
         assert "web_search" not in skiplist
         assert "launch_app" not in skiplist
         assert "system_command" not in skiplist
         assert "create_file" not in skiplist
-        assert len(skiplist) == 13
+        assert "browser_action" not in skiplist
+        assert len(skiplist) == 14
 
     def test_idempotent(self, clean_registry):
         register_builtin_skills(clean_registry)
         register_builtin_skills(clean_registry)
-        # Should still be 17, not 34 (duplicates silently ignored)
-        assert clean_registry.count() == 17
+        # Should still be 19, not 38 (duplicates silently ignored)
+        assert clean_registry.count() == 19
 
 
 # ─── create_skill_from_handler ──────────────────────────────────────────────

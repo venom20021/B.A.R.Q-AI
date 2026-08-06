@@ -18,6 +18,7 @@ import io
 import json
 import os
 import threading
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -427,6 +428,17 @@ class VisionStreamSession:
         self._connected = False
         self._backoff = 2.0
 
+        # Synchronous analysis support (used by the voice function executor):
+        # a single pending future that the transcript loop resolves with the
+        # text response for the image currently being analysed.
+        self._sync_lock = threading.Lock()
+        self._sync_future: Optional[Future] = None
+
+        # Completed transcripts queue, drained by non-synchronous producers
+        # (e.g. ``POST /vision/stream/analyze``) so the FIFO stays aligned
+        # for synchronous consumers like the voice agent.
+        self._transcript_queue: Optional[asyncio.Queue] = None
+
     @property
     def is_connected(self) -> bool:
         return self._connected
@@ -504,6 +516,97 @@ class VisionStreamSession:
             print(f"[VisionStream] Queue error: {e}")
             return False
 
+    def analyze_and_wait(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        user_text: str,
+        timeout: float = 30.0,
+    ) -> str:
+        """Queue an image and block until the text transcript comes back.
+
+        This is the synchronous counterpart to ``analyze()`` — it returns the
+        model's text description instead of delivering it via callbacks.
+        Used by the voice function executor so the Gemini voice agent can see
+        the screen mid-conversation through the warm persistent stream.
+
+        Only one synchronous analysis runs at a time (serialized by a lock).
+        Because the send loop processes queued images strictly in FIFO order,
+        the first transcript delivered while this request is pending is the
+        response to the image we just queued.
+
+        Args:
+            image_bytes: The image data bytes.
+            mime_type: MIME type of the image.
+            user_text: The prompt/question about the image.
+            timeout: Max seconds to wait for the transcript.
+
+        Returns:
+            The model's text description.
+
+        Raises:
+            RuntimeError: If the stream is not ready (request dropped).
+            TimeoutError: If no transcript arrives within ``timeout``.
+        """
+        with self._sync_lock:
+            fut: Future = Future()
+            self._sync_future = fut
+            try:
+                queued = self.analyze(image_bytes, mime_type, user_text)
+                if not queued:
+                    raise RuntimeError(
+                        "Vision stream not ready — request dropped"
+                    )
+                try:
+                    return fut.result(timeout=timeout)
+                except FutureTimeoutError:
+                    raise TimeoutError(
+                        f"Vision stream analysis timed out after {timeout}s"
+                    )
+            finally:
+                self._sync_future = None
+
+    def _deliver_transcript(self, full: str) -> None:
+        """Deliver a completed transcript to callbacks and/or the sync future.
+
+        Runs on the vision stream's event-loop thread. The user callback (if
+        any) is called first so audio/captions flows are unaffected, then any
+        pending synchronous analysis future is resolved, and finally the
+        transcript is queued for non-synchronous consumers to drain.
+        """
+        if self._transcript_callback:
+            try:
+                self._transcript_callback(full)
+            except Exception as e:
+                print(f"[VisionStream] ⚠️  Transcript callback error: {e}")
+        fut = self._sync_future
+        if fut is not None and not fut.done():
+            fut.set_result(full)
+        if self._transcript_queue is not None:
+            try:
+                self._transcript_queue.put_nowait(full)
+            except asyncio.QueueFull:
+                pass
+
+    async def await_next_transcript(self, timeout: float = 1.5) -> Optional[str]:
+        """Consume the next completed transcript (non-blocking best-effort).
+
+        Used by non-synchronous producers (e.g. ``POST /vision/stream/analyze``)
+        to drain their own response from the stream, keeping the FIFO aligned
+        for synchronous consumers like the Gemini voice agent.
+
+        Returns:
+            The transcript text, or None if none arrived within ``timeout``.
+        """
+        if self._transcript_queue is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                self._transcript_queue.get(), timeout=timeout
+            )
+        except Exception:
+            return None
+
     # ── Internal: thread loop ────────────────────────────────────────
 
     def _run_event_loop(self):
@@ -526,6 +629,7 @@ class VisionStreamSession:
 
     async def _session_loop(self):
         self._out_queue = asyncio.Queue(maxsize=30)
+        self._transcript_queue = asyncio.Queue(maxsize=100)
 
         try:
             from google import genai
@@ -639,10 +743,10 @@ class VisionStreamSession:
                         transcript.append(chunk)
 
                 if sc.turn_complete:
-                    if transcript and self._transcript_callback:
+                    if transcript:
                         full = " ".join(transcript).strip()
-                        self._transcript_callback(full)
                         print(f"[VisionStream] 💬 '{full[:80]}'")
+                        self._deliver_transcript(full)
                     transcript = []
 
         except Exception as e:

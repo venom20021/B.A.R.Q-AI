@@ -3,9 +3,15 @@ import { motion } from 'framer-motion'
 import {
   Info, RotateCw, AlertCircle, Search, X, Zap, GitBranch,
   StickyNote, FileText, MessageCircle, Briefcase, Brain, Sparkles,
-  BarChart3, Network, Clock, Filter,
+  BarChart3, Network, Clock, Filter, FilePlus2, Database, BadgePlus,
+  CirclePlus, Loader2,
 } from 'lucide-react'
+import { NodeInspector } from '../components/NodeInspector'
 import { formatDistanceToNow } from '../utils/time'
+import {
+  loadLastSelected, saveLastSelected,
+  rememberSelection, forgetSelection, resolveRestoreTarget,
+} from '../utils/brainSelectionMemory'
 import ForceGraph2D from 'react-force-graph-2d'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -59,6 +65,21 @@ interface BrainStats {
   density: number
   connected_components: number
   top_entities: { entity: string; centrality: number }[]
+}
+
+interface NodeNeighbor {
+  entity: string
+  relation: string
+  weight: number
+}
+
+interface NodeDetails {
+  found: boolean
+  entity: string
+  degree: number
+  weight_sum: number
+  neighbors: NodeNeighbor[]
+  top_relations: { relation: string; count: number }[]
 }
 
 interface TimelineEntry {
@@ -142,12 +163,48 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
+// Blend two hex colours toward a midpoint (used for link colour gradients).
+// Returns a `#rrggbb` hex so the result stays compatible with hexToRgba().
+function blendHex(a: string, b: string, t: number): string {
+  const ca = hexToRgb(a)
+  const cb = hexToRgb(b)
+  const r = Math.round(ca.r + (cb.r - ca.r) * t)
+  const g = Math.round(ca.g + (cb.g - ca.g) * t)
+  const bl = Math.round(ca.b + (cb.b - ca.b) * t)
+  return `#${[r, g, bl].map(c => c.toString(16).padStart(2, '0')).join('')}`
+}
+
+// Rounded-rect path helper (avoids relying on ctx.roundRect availability).
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number, r: number,
+): void {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
 // ─── Pulse timing constants ────────────────────────────────────────────────
 
 const PULSE_DURATION_MS = 2200
 const PULSE_PEAK_MS = 300
 const PULSE_SUSTAIN_MS = 500
 const AUTO_POLL_INTERVAL_MS = 8000
+
+// ─── Level-of-Detail / visual hierarchy constants ───────────────────────────
+
+// Nodes with degree >= this are "hub" nodes: always labelled, bigger radius,
+// and drawn with a breathing outer pulse ring.
+const HUB_DEGREE_THRESHOLD = 2
+// Max label length before ellipsis truncation (kills horizontal pile-up).
+const LABEL_MAX_CHARS = 26
+// Idle repaint clock — drives the hub pulse rings + link shimmer at a cheap
+// ~7fps without keeping the force simulation hot.
+const IDLE_REFRESH_MS = 140
 
 // ─── Fallback meta for initial render before brain list loads ────────────────
 
@@ -158,6 +215,31 @@ const FALLBACK_META: GraphMeta = {
   neon_glow: 'rgba(129,140,248,0.5)',
   nodes: 0,
   edges: 0,
+}
+
+// ─── Fallback brains used when the backend list call fails or hangs, so the
+// page never degrades into a dead skeleton / blank state. Mirrors the backend
+// BRAIN_REGISTRY metadata. ────────────────────────────────────────────────────
+
+const FALLBACK_BRAINS: BrainMeta[] = [
+  { type: 'general', label: 'General Knowledge', description: 'Catch-all knowledge from auto-extraction and ingestion', color: '#818cf8', neon_glow: 'rgba(129,140,248,0.5)', icon: 'brain', nodes: 0, edges: 0 },
+  { type: 'apple_notes', label: 'Apple Notes', description: 'Extracted knowledge from Apple Notes exports', color: '#f59e0b', neon_glow: 'rgba(245,158,11,0.5)', icon: 'sticky-note', nodes: 0, edges: 0 },
+  { type: 'google_docs', label: 'Google Docs', description: 'Extracted knowledge from Google Documents', color: '#3b82f6', neon_glow: 'rgba(59,130,246,0.5)', icon: 'file-text', nodes: 0, edges: 0 },
+  { type: 'ai_chats', label: 'AI Chats', description: 'Knowledge from AI chat conversations', color: '#10b981', neon_glow: 'rgba(16,185,129,0.5)', icon: 'message-circle', nodes: 0, edges: 0 },
+  { type: 'career', label: 'Career Engine', description: 'Job descriptions, skills, companies, and career data', color: '#a855f7', neon_glow: 'rgba(168,85,247,0.5)', icon: 'briefcase', nodes: 0, edges: 0 },
+  { type: 'gemini_chats', label: 'Gemini Chats', description: 'Conversations and knowledge from Google Gemini interactions', color: '#d946ef', neon_glow: 'rgba(217,70,239,0.5)', icon: 'sparkles', nodes: 0, edges: 0 },
+]
+
+// ─── Request timeout helper — prevents endless spinners on a dead backend ───
+
+function withTimeout<T>(promise: Promise<T> | undefined, ms = 12000): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 // ─── Helper: pick a neon hue per node ──────────────────────────────────────
@@ -209,6 +291,39 @@ export function BrainPage(): JSX.Element {
   const prevTimelineKeysRef = useRef<Set<string>>(new Set())
   const timelineInitializedRef = useRef(false)
 
+  // ── Ingest panel state ─────────────────────────────────────────────
+  const [showIngest, setShowIngest] = useState(false)
+  const [ingestText, setIngestText] = useState('')
+  const [ingestBusy, setIngestBusy] = useState(false)
+  const [importBusy, setImportBusy] = useState(false)
+  const [ingestResult, setIngestResult] = useState<string | null>(null)
+  const [triplet, setTriplet] = useState({ subject: '', relation: '', object: '' })
+
+  // ── Selected node details panel state ──────────────────────────────
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
+  const [nodeDetails, setNodeDetails] = useState<NodeDetails | null>(null)
+  const [nodeDetailsLoading, setNodeDetailsLoading] = useState(false)
+  const [nodeDetailsError, setNodeDetailsError] = useState<string | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const confirmRemoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Per-brain last-selected node memory (restored on brain switch / restart)
+  const [lastSelectedByBrain, setLastSelectedByBrain] =
+    useState<Record<string, string>>(loadLastSelected)
+  const activeBrainRef = useRef(activeBrain)
+
+  // Persist the memory whenever it changes
+  useEffect(() => {
+    saveLastSelected(lastSelectedByBrain)
+  }, [lastSelectedByBrain])
+
+  // Keep a ref of the current brain so deferred restores can detect a
+  // brain switch that happened while the transition was pending.
+  useEffect(() => {
+    activeBrainRef.current = activeBrain
+  }, [activeBrain])
+
   // ── Synaptic pulse state ─────────────────────────────────────────────
   const [pulseIntensity, setPulseIntensity] = useState(0)
   const pulseAnimRef = useRef<number | null>(null)
@@ -235,6 +350,51 @@ export function BrainPage(): JSX.Element {
   }, [graphData?._meta, brainsList, activeBrain])
 
   const theme = useMemo(() => buildTheme(graphData?._meta, FALLBACK_META), [graphData?._meta])
+
+  // ── Per-node degree map (drives radii, hub detection, LOD labels) ────
+  const degreeMap = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const l of graphData?.links ?? []) {
+      const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode)?.id
+      const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode)?.id
+      if (s) m.set(s, (m.get(s) ?? 0) + 1)
+      if (t) m.set(t, (m.get(t) ?? 0) + 1)
+    }
+    return m
+  }, [graphData])
+
+  // Hub threshold derived from the degree distribution (top quartile) so
+  // "always-on" labels genuinely target the top-degree nodes, even in dense
+  // brains where a fixed threshold would label almost everything.
+  const hubThreshold = useMemo(() => {
+    const degs = Array.from(degreeMap.values()).sort((a, b) => a - b)
+    if (degs.length === 0) return HUB_DEGREE_THRESHOLD
+    const p75 = degs[Math.min(degs.length - 1, Math.floor(degs.length * 0.75))]
+    return Math.max(HUB_DEGREE_THRESHOLD, p75)
+  }, [degreeMap])
+
+  // ── Idle animation clock + force-simulation status (bottom HUD) ─────
+  // (ref seeded with 0 — first paint uses a static ring; the interval
+  //  updates it on the first tick, satisfying the react purity rule)
+  const pulseClockRef = useRef(0)
+  const [simRunning, setSimRunning] = useState(false)
+  useEffect(() => {
+    if (!graphData || graphData.nodes.length === 0) return
+    // Skip the repaint loop entirely when no hub rings need animating.
+    if (!Array.from(degreeMap.values()).some(d => d >= hubThreshold)) return
+    const id = setInterval(() => {
+      if (document.hidden) return
+      pulseClockRef.current = performance.now()
+      try {
+        graphRef.current?.refresh()
+        const running = typeof graphRef.current?.isSimulationRunning === 'function'
+          ? graphRef.current.isSimulationRunning()
+          : false
+        setSimRunning(Boolean(running))
+      } catch { /* ignore */ }
+    }, IDLE_REFRESH_MS)
+    return () => clearInterval(id)
+  }, [graphData, degreeMap, hubThreshold])
 
   // ── Derived search helpers ───────────────────────────────────────────
   const matchingNodeIds = useMemo(() => {
@@ -270,9 +430,26 @@ export function BrainPage(): JSX.Element {
   // ── Highlight updates on search ──────────────────────────────────────
   useEffect(() => {
     if (!matchingNodeIds || !graphData) {
+      // No active search — restore the pinned node's highlight if one is open
       /* eslint-disable react-hooks/set-state-in-effect */
-      setHighlightNodes(new Set())
-      setHighlightLinks(new Set())
+      if (selectedNode?.id) {
+        const nodeIds = new Set<string>([selectedNode.id])
+        const linkKeys = new Set<string>()
+        for (const link of graphData.links) {
+          const src = typeof link.source === 'string' ? link.source : (link.source as GraphNode)?.id
+          const tgt = typeof link.target === 'string' ? link.target : (link.target as GraphNode)?.id
+          if (src === selectedNode.id || tgt === selectedNode.id) {
+            if (src) nodeIds.add(src)
+            if (tgt) nodeIds.add(tgt)
+            if (src && tgt) linkKeys.add(`${src}->${tgt}`)
+          }
+        }
+        setHighlightNodes(nodeIds)
+        setHighlightLinks(linkKeys)
+      } else {
+        setHighlightNodes(new Set())
+        setHighlightLinks(new Set())
+      }
       /* eslint-enable react-hooks/set-state-in-effect */
       return
     }
@@ -301,7 +478,7 @@ export function BrainPage(): JSX.Element {
 
     setHighlightNodes(nodeIds)
     setHighlightLinks(linkKeys)
-  }, [matchingNodeIds, graphData])
+  }, [matchingNodeIds, graphData, selectedNode?.id])
 
   // ── Keyboard shortcut ────────────────────────────────────────────────
   useEffect(() => {
@@ -353,12 +530,16 @@ export function BrainPage(): JSX.Element {
   useEffect(() => {
     const fetchBrains = async () => {
       try {
-        const resp: unknown = await window.barq?.python.request('/api/brain/list')
-        if (Array.isArray(resp)) {
+        const resp: unknown = await withTimeout(window.barq?.python.request('/api/brain/list'))
+        if (Array.isArray(resp) && resp.length > 0) {
           setBrainsList(resp as BrainMeta[])
+        } else {
+          // Backend unreachable / hung / returned nothing — use the known
+          // brains so the page never renders as a dead skeleton.
+          setBrainsList(FALLBACK_BRAINS)
         }
       } catch {
-        // silently fail — fall back to hardcoded defaults
+        setBrainsList(FALLBACK_BRAINS)
       }
     }
     fetchBrains()
@@ -367,7 +548,7 @@ export function BrainPage(): JSX.Element {
   // ── Fetch brain stats ────────────────────────────────────────────────
   const fetchBrainStats = useCallback(async () => {
     try {
-      const resp: unknown = await window.barq?.python.request(`/api/brain/${activeBrain}/stats`)
+      const resp: unknown = await withTimeout(window.barq?.python.request(`/api/brain/${activeBrain}/stats`))
       if (resp && typeof resp === 'object') {
         setBrainStats(resp as BrainStats)
       }
@@ -381,9 +562,9 @@ export function BrainPage(): JSX.Element {
     setLoading(true)
     setError(null)
     try {
-      const resp: unknown = await window.barq?.python.request(`/api/brain/${activeBrain}/visualize`)
+      const resp: unknown = await withTimeout(window.barq?.python.request(`/api/brain/${activeBrain}/visualize`))
       if (!resp || typeof resp !== 'object') {
-        throw new Error('Invalid response from backend')
+        throw new Error('Backend unreachable or timed out — check the Python sidecar')
       }
       const data = resp as GraphData
 
@@ -419,7 +600,7 @@ export function BrainPage(): JSX.Element {
       const endpoint = timelineAllBrains
         ? '/api/brain/timeline?limit=100'
         : `/api/brain/${activeBrain}/timeline?limit=100`
-      const resp: unknown = await window.barq?.python.request(endpoint)
+      const resp: unknown = await withTimeout(window.barq?.python.request(endpoint))
       if (Array.isArray(resp)) {
         const fresh = resp as TimelineEntry[]
 
@@ -466,6 +647,129 @@ export function BrainPage(): JSX.Element {
       setTimelineLoading(false)
     }
   }, [activeBrain, timelineAllBrains])
+
+  // ── Fetch details for the selected node (defined before refreshAll which
+  //     re-fetches it after graph mutations) ─────────────────────────────
+  const fetchNodeDetails = useCallback(async (entityId: string) => {
+    setNodeDetailsLoading(true)
+    setNodeDetailsError(null)
+    try {
+      const resp: unknown = await withTimeout(
+        window.barq?.python.request(
+          `/api/brain/${activeBrain}/node/${encodeURIComponent(entityId)}`,
+        ),
+      )
+      if (resp && typeof resp === 'object') {
+        setNodeDetails(resp as NodeDetails)
+      } else {
+        setNodeDetails(null)
+        setNodeDetailsError('Backend unreachable or timed out — could not load node details')
+      }
+    } catch (e) {
+      setNodeDetails(null)
+      setNodeDetailsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setNodeDetailsLoading(false)
+    }
+  }, [activeBrain])
+
+  // ── Refresh graph + stats + tab counts after any mutation ────────────
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([fetchGraph(), fetchBrainStats()])
+    const resp: unknown = await withTimeout(window.barq?.python.request('/api/brain/list'))
+    if (Array.isArray(resp) && resp.length > 0) setBrainsList(resp as BrainMeta[])
+    // Keep the details panel fresh when the graph changed under it
+    if (selectedNode?.id) fetchNodeDetails(selectedNode.id)
+    if (showTimeline) fetchTimeline()
+  }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline, selectedNode, fetchNodeDetails])
+
+  // ── Ingest pasted text into the active brain (LLM extraction) ────────
+  const handleIngestText = async (): Promise<void> => {
+    if (!ingestText.trim()) return
+    setIngestBusy(true)
+    setIngestResult(null)
+    try {
+      const resp: unknown = await window.barq?.python.request(
+        `/api/brain/${activeBrain}/ingest`, { text: ingestText },
+      )
+      const r = resp as { triplets_added?: number; nodes?: number; edges?: number; note?: string; provider?: string } | undefined
+      const providerLabel = r?.provider === 'ollama'
+        ? 'via Ollama'
+        : r?.provider === 'gemini'
+          ? 'via Gemini'
+          : null
+      setIngestResult(
+        r?.note
+          ?? `Added ${r?.triplets_added ?? 0} triplets ${providerLabel ? `${providerLabel} ` : ''}— ${r?.nodes ?? '?'} nodes, ${r?.edges ?? '?'} edges`,
+      )
+      setIngestText('')
+      await refreshAll()
+    } catch (e) {
+      setIngestResult(`Ingest failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setIngestBusy(false)
+    }
+  }
+
+  // ── Add a direct triplet to the active brain ─────────────────────────
+  const handleAddTriplet = async (): Promise<void> => {
+    if (!triplet.subject.trim() || !triplet.object.trim()) return
+    setIngestBusy(true)
+    setIngestResult(null)
+    try {
+      const resp: unknown = await window.barq?.python.request(
+        `/api/brain/${activeBrain}/triplet`, {
+          subject: triplet.subject.trim(),
+          relation: triplet.relation.trim() || 'RELATED_TO',
+          object: triplet.object.trim(),
+        },
+      )
+      const r = resp as { nodes?: number; edges?: number } | undefined
+      setIngestResult(`Triplet added — ${r?.nodes ?? '?'} nodes, ${r?.edges ?? '?'} edges`)
+      setTriplet({ subject: '', relation: '', object: '' })
+      await refreshAll()
+    } catch (e) {
+      setIngestResult(`Add failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setIngestBusy(false)
+    }
+  }
+
+  // ── Auto-import real BARQ data (notes / memory / jobs) ───────────────
+  const handleImportSources = async (): Promise<void> => {
+    setImportBusy(true)
+    setIngestResult(null)
+    try {
+      const resp: unknown = await window.barq?.python.request('/api/brain/import-from-sources', {})
+      const r = resp as { results?: { direct_triplets?: Record<string, number> } } | undefined
+      const d = r?.results?.direct_triplets
+      const summary = d
+        ? Object.entries(d).filter(([, v]) => v > 0).map(([k, v]) => `${k}: ${v}`).join(' · ')
+        : ''
+      setIngestResult(`Imported from BARQ data${summary ? ` — ${summary}` : ''}`)
+      await refreshAll()
+    } catch (e) {
+      setIngestResult(`Import failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  // ── Seed a demo graph into empty brains ──────────────────────────────
+  const handleSeedDemo = async (): Promise<void> => {
+    setIngestBusy(true)
+    setIngestResult(null)
+    try {
+      const resp: unknown = await window.barq?.python.request('/api/brain/seed-demo', {})
+      const r = resp as { total_added?: number } | undefined
+      setIngestResult(`Demo graph seeded — ${r?.total_added ?? 0} triplets added`)
+      await refreshAll()
+    } catch (e) {
+      setIngestResult(`Seed failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setIngestBusy(false)
+    }
+  }
 
   // ── Re-fetch when activeBrain or timeline toggle changes ────────────
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -555,15 +859,42 @@ export function BrainPage(): JSX.Element {
       }
       for (const t of flashTimersRef.current) clearTimeout(t)
       flashTimersRef.current = []
+      if (confirmRemoveTimerRef.current) {
+        clearTimeout(confirmRemoveTimerRef.current)
+        confirmRemoveTimerRef.current = null
+      }
     }
   }, [])
+
+  // ── Node selection / details panel ───────────────────────────────────
+  const applySelectionHighlight = useCallback((entityId: string) => {
+    if (!graphData) return
+    const nodeIds = new Set<string>([entityId])
+    const linkKeys = new Set<string>()
+    for (const link of graphData.links) {
+      const src = typeof link.source === 'string' ? link.source : (link.source as GraphNode)?.id
+      const tgt = typeof link.target === 'string' ? link.target : (link.target as GraphNode)?.id
+      if (src === entityId || tgt === entityId) {
+        if (src) nodeIds.add(src)
+        if (tgt) nodeIds.add(tgt)
+        if (src && tgt) linkKeys.add(`${src}->${tgt}`)
+      }
+    }
+    setHighlightNodes(nodeIds)
+    setHighlightLinks(linkKeys)
+  }, [graphData])
 
   // ── Node hover highlight ─────────────────────────────────────────────
   const handleNodeHover = useCallback((node: GraphNode | null) => {
     setHoveredNode(node)
     if (!node || !graphData) {
-      setHighlightNodes(new Set())
-      setHighlightLinks(new Set())
+      // If a node is pinned in the details panel, keep its highlight alive
+      if (selectedNode && selectedNode.id !== node?.id) {
+        applySelectionHighlight(selectedNode.id)
+      } else {
+        setHighlightNodes(new Set())
+        setHighlightLinks(new Set())
+      }
       return
     }
 
@@ -582,19 +913,153 @@ export function BrainPage(): JSX.Element {
     }
     setHighlightNodes(nodeIds)
     setHighlightLinks(linkKeys)
-  }, [graphData])
+  }, [graphData, selectedNode, applySelectionHighlight])
 
-  // ── Node painter (glowing neon circles + labels + search highlight) ──
+  const handleNodeClick = useCallback((node: GraphNode) => {
+    if (!node || !node.id) return
+    setSelectedNode(node)
+    setHoveredNode(null)
+    applySelectionHighlight(node.id)
+    fetchNodeDetails(node.id)
+    // Remember this node as the last-selected for the active brain
+    setLastSelectedByBrain(prev => rememberSelection(prev, activeBrain, node.id))
+  }, [applySelectionHighlight, fetchNodeDetails, activeBrain])
+
+  const closeNodeDetails = useCallback(() => {
+    setSelectedNode(null)
+    setNodeDetails(null)
+    setNodeDetailsError(null)
+    setHighlightNodes(new Set())
+    setHighlightLinks(new Set())
+    // Never leave the remove button armed for the next node that gets opened.
+    setConfirmRemove(false)
+    if (confirmRemoveTimerRef.current) {
+      clearTimeout(confirmRemoveTimerRef.current)
+      confirmRemoveTimerRef.current = null
+    }
+  }, [])
+
+  // Forget the remembered node for a brain (explicit dismissal / removal)
+  const clearSelectionMemory = useCallback((brainType: string) => {
+    setLastSelectedByBrain(prev => forgetSelection(prev, brainType))
+  }, [])
+
+  // Explicit panel close (X): dismiss AND forget, so the panel stays closed
+  // when the user returns to this brain.
+  const dismissNodeDetails = useCallback(() => {
+    clearSelectionMemory(activeBrain)
+    closeNodeDetails()
+  }, [clearSelectionMemory, activeBrain, closeNodeDetails])
+
+  // Clicking a neighbour in the panel jumps to that entity
+  const selectNeighbor = useCallback((entityId: string) => {
+    const node = graphData?.nodes.find(n => n.id === entityId)
+    if (node) handleNodeClick(node)
+  }, [graphData, handleNodeClick])
+
+  // Centre + zoom the graph on the selected node
+  const focusSelectedNode = useCallback(() => {
+    if (!selectedNode || !graphRef.current) return
+    const node = graphData?.nodes.find(n => n.id === selectedNode.id)
+    if (node && node.x != null && node.y != null) {
+      graphRef.current.centerAt(node.x, node.y, 600)
+      graphRef.current.zoom(3, 600)
+    }
+  }, [selectedNode, graphData])
+
+  // ── Remove entity (two-step inline confirm) ──────────────────────────
+  const handleRemoveEntity = useCallback(async (): Promise<void> => {
+    if (!selectedNode?.id) return
+    if (!confirmRemove) {
+      // Arm the confirm state; auto-disarm after a few seconds if unused.
+      setConfirmRemove(true)
+      if (confirmRemoveTimerRef.current) clearTimeout(confirmRemoveTimerRef.current)
+      confirmRemoveTimerRef.current = setTimeout(() => {
+        setConfirmRemove(false)
+        confirmRemoveTimerRef.current = null
+      }, 4000)
+      return
+    }
+    setConfirmRemove(false)
+    setRemoveBusy(true)
+    const entityId = selectedNode.id
+    try {
+      const resp: unknown = await withTimeout(
+        window.barq?.python.request(
+          `/api/brain/${activeBrain}/node/${encodeURIComponent(entityId)}/remove`, {},
+        ),
+      )
+      const r = resp as { found?: boolean; removed_edges?: number } | undefined
+      if (r && r.found !== false) {
+        setIngestResult(
+          `Removed '${entityId}'${r.removed_edges ? ` + ${r.removed_edges} edge${r.removed_edges === 1 ? '' : 's'}` : ''}`,
+        )
+        // The node no longer exists — don't restore it later
+        clearSelectionMemory(activeBrain)
+        closeNodeDetails()
+      } else {
+        setNodeDetailsError(`Entity '${entityId}' not found in this brain`)
+      }
+      await refreshAll()
+    } catch (e) {
+      setNodeDetailsError(`Remove failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setRemoveBusy(false)
+    }
+  }, [selectedNode, confirmRemove, activeBrain, closeNodeDetails, refreshAll, clearSelectionMemory])
+
+  // ── Restore the last-selected node for the active brain ──────────────
+  // Runs whenever the graph finishes loading for the current brain: if there
+  // is no selection open yet and this brain has a remembered entity that
+  // still exists, reopen the details panel for it.
+  useEffect(() => {
+    if (!graphData || selectedNode) return
+    const target = resolveRestoreTarget(
+      graphData.nodes.map(n => n.id),
+      lastSelectedByBrain,
+      activeBrain,
+    )
+    if (!target) return
+    if (target.missing) {
+      // Stale memory — the entity no longer exists in this brain
+      startTransition(() => clearSelectionMemory(activeBrain))
+      return
+    }
+    const node = graphData.nodes.find(n => n.id === target.id)
+    // startTransition defers the state updates out of the effect body (the
+    // react-hooks/set-state-in-effect rule permits this) — the `selectedNode`
+    // guard above prevents any restore loop.
+    startTransition(() => {
+      // Skip if the user switched brains while the transition was pending
+      if (activeBrainRef.current !== activeBrain) return
+      if (node) handleNodeClick(node)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphData, activeBrain, selectedNode, lastSelectedByBrain])
+
+  // ── Node painter: degree-scaled radii + hub pulse rings + LOD labels ──
   const paintNode = useCallback(
     (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      // Guard against non-finite coordinates: during the first paint frames the
+      // force simulation may not have assigned x/y yet, and createRadialGradient
+      // throws on NaN/Infinity — which would crash the whole app (no boundary).
+      if (
+        node.x == null || !Number.isFinite(node.x) ||
+        node.y == null || !Number.isFinite(node.y)
+      ) return
       const label = node.id || ''
       const fontSize = Math.max(6, 12 / globalScale)
-      const baseRadius = Math.max(3, 6 / globalScale)
+      const degree = degreeMap.get(node.id) ?? 0
+      const isHub = degree >= hubThreshold
+
+      // Screen-space radius scaled by connectivity → visual hierarchy.
+      const baseRadius = Math.max(3.5, Math.min(13, 3.5 + Math.sqrt(degree) * 2.1)) / globalScale
 
       const isSearching = matchingNodeIds !== null
       const isSearchMatch = matchingNodeIds?.has(node.id) ?? false
       const isHoverMatch = highlightNodes.has(node.id) && !isSearching
       const isSearchNeighbour = isSearching && !isSearchMatch && highlightNodes.has(node.id)
+      const isSelected = selectedNode?.id === node.id
 
       let color: string
       let glowIntensity: number
@@ -603,45 +1068,54 @@ export function BrainPage(): JSX.Element {
 
       if (isSearchMatch) {
         color = theme.searchNode
-        glowIntensity = 22
+        glowIntensity = 24
         outerGlow = theme.searchNodeGlow
         textColor = '#34d399'
       } else if (isSearchNeighbour) {
         color = nodeColor(node.id)
         glowIntensity = 5
         outerGlow = `${color}33`
-        textColor = 'rgba(226,232,240,0.6)'
+        textColor = 'rgba(226,232,240,0.65)'
       } else if (isHoverMatch) {
         color = theme.highlightNode
-        glowIntensity = 18
+        glowIntensity = 20
         outerGlow = theme.highlightLink
+        textColor = theme.nodeText
+      } else if (isSelected) {
+        color = theme.highlightNode
+        glowIntensity = 16
+        outerGlow = `${color}99`
         textColor = theme.nodeText
       } else if (isSearching) {
         color = theme.mutedNode
         glowIntensity = 0
         outerGlow = 'transparent'
-        textColor = 'rgba(113,113,122,0.3)'
+        textColor = 'rgba(113,113,122,0.35)'
       } else {
         color = nodeColor(node.id)
-        glowIntensity = 10
-        outerGlow = `${color}66`
+        glowIntensity = isHub ? 14 : 9
+        outerGlow = `${color}${isHub ? '99' : '55'}`
         textColor = theme.nodeText
       }
 
-      const glowRadius = isSearchMatch || isHoverMatch
-        ? baseRadius * 2.8
+      const activeRadius = isSearching && !isSearchMatch && !isSearchNeighbour
+        ? baseRadius * 0.45
+        : baseRadius
+
+      const glowRadius = (isSearchMatch || isHoverMatch || isSelected)
+        ? baseRadius * 3
         : isSearchNeighbour
-          ? baseRadius * 1.4
+          ? baseRadius * 1.5
           : isSearching
-            ? baseRadius * 0.5
-            : baseRadius * 1.8
+            ? baseRadius * 0.6
+            : baseRadius * (isHub ? 2.4 : 1.9)
 
       if (outerGlow !== 'transparent') {
         const glow = ctx.createRadialGradient(
           node.x!, node.y!, 0,
           node.x!, node.y!, glowRadius,
         )
-        glow.addColorStop(0, `${hexToRgba(color, 0.4)}`)
+        glow.addColorStop(0, hexToRgba(color, 0.45))
         glow.addColorStop(1, `${color}00`)
         ctx.fillStyle = glow
         ctx.beginPath()
@@ -649,13 +1123,20 @@ export function BrainPage(): JSX.Element {
         ctx.fill()
       }
 
-      const coreRadius = isSearchMatch || isSearchNeighbour
-        ? baseRadius
-        : isSearching
-          ? baseRadius * 0.5
-          : baseRadius
+      // Hub pulse ring — a slowly breathing outer ring on high-degree nodes.
+      if (isHub && !isSearching) {
+        const t = pulseClockRef.current / 1000
+        const ringPhase = (Math.sin(t * 1.7) + 1) / 2 // 0..1
+        const ringRadius = activeRadius * (1.6 + ringPhase * 0.5)
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, ringRadius, 0, 2 * Math.PI)
+        ctx.strokeStyle = hexToRgba(color, 0.22 + ringPhase * 0.28)
+        ctx.lineWidth = 1.1 / globalScale
+        ctx.stroke()
+      }
+
       ctx.beginPath()
-      ctx.arc(node.x!, node.y!, coreRadius, 0, 2 * Math.PI)
+      ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
       ctx.fillStyle = color
       if (glowIntensity > 0) {
         ctx.shadowColor = color
@@ -664,28 +1145,52 @@ export function BrainPage(): JSX.Element {
       ctx.fill()
       ctx.shadowBlur = 0
 
-      if (!isSearching || isSearchMatch || isSearchNeighbour) {
+      // Specular highlight (skipped in muted search state)
+      if (!isSearching || isSearchMatch || isSearchNeighbour || isSelected) {
         ctx.beginPath()
-        ctx.arc(node.x! - baseRadius * 0.2, node.y! - baseRadius * 0.2, baseRadius * 0.35, 0, 2 * Math.PI)
-        ctx.fillStyle = 'rgba(255,255,255,0.4)'
+        ctx.arc(
+          node.x! - activeRadius * 0.2,
+          node.y! - activeRadius * 0.2,
+          activeRadius * 0.32,
+          0, 2 * Math.PI,
+        )
+        ctx.fillStyle = 'rgba(255,255,255,0.45)'
         ctx.fill()
       }
 
-      ctx.font = `${fontSize}px "JetBrains Mono", "Fira Code", monospace`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'top'
-      const labelY = node.y! + coreRadius + 3
+      // ── Level-of-Detail labels ───────────────────────────────────────
+      // Always: hubs, hovered, matched, selected. Otherwise only when zoomed
+      // past 2× — this is what eliminates label pile-up at default zoom.
+      const showLabel =
+        isHub || isHoverMatch || isSearchMatch || isSearchNeighbour || isSelected ||
+        globalScale > 2.0
 
-      ctx.shadowColor = 'rgba(0,0,0,0.8)'
-      ctx.shadowBlur = 4
-      ctx.fillStyle = textColor
-      ctx.fillText(label, node.x!, labelY)
-      ctx.shadowBlur = 0
+      if (showLabel) {
+        const clean = label.length > LABEL_MAX_CHARS
+          ? `${label.slice(0, LABEL_MAX_CHARS - 1)}…`
+          : label
+        ctx.font = `${fontSize}px "JetBrains Mono", "Fira Code", monospace`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'top'
+        const labelY = node.y! + activeRadius + 3
+        const textW = ctx.measureText(clean).width
+
+        // Dark backing pill so overlapping labels stay readable.
+        ctx.fillStyle = 'rgba(9,10,15,0.72)'
+        roundRectPath(ctx, node.x! - textW / 2 - 4, labelY - 2, textW + 8, fontSize + 4, 4)
+        ctx.fill()
+
+        ctx.shadowColor = 'rgba(0,0,0,0.9)'
+        ctx.shadowBlur = 4
+        ctx.fillStyle = textColor
+        ctx.fillText(clean, node.x!, labelY)
+        ctx.shadowBlur = 0
+      }
     },
-    [highlightNodes, matchingNodeIds, theme],
+    [highlightNodes, matchingNodeIds, theme, degreeMap, hubThreshold, selectedNode],
   )
 
-  // ── Link painter (search-aware, theme-aware) ─────────────────────────
+  // ── Link painter: glowing vector links, colour blended source→target ──
   const paintLink = useCallback(
     (link: GraphLink, ctx: CanvasRenderingContext2D) => {
       const src = typeof link.source === 'object' ? (link.source as GraphNode) : null
@@ -705,28 +1210,54 @@ export function BrainPage(): JSX.Element {
         ctx.moveTo(sx, sy)
         ctx.lineTo(tx, ty)
         ctx.strokeStyle = theme.mutedLink
-        ctx.lineWidth = 0.3
+        ctx.lineWidth = 0.35
         ctx.stroke()
         return
       }
 
+      // Blend the two endpoint colours → each edge carries its own hue.
+      const mix = blendHex(nodeColor(src.id), nodeColor(tgt.id), 0.5)
+      const accent = activeMeta.color
+
+      if (isSearching && isHighlighted) {
+        ctx.beginPath()
+        ctx.moveTo(sx, sy)
+        ctx.lineTo(tx, ty)
+        ctx.shadowColor = theme.searchNode
+        ctx.shadowBlur = 6
+        ctx.strokeStyle = theme.searchLink
+        ctx.lineWidth = 1.3
+        ctx.stroke()
+        ctx.shadowBlur = 0
+        return
+      }
+
+      const alpha = isHighlighted ? 0.85 : 0.45
+      const width = isHighlighted ? 1.4 : 1.0
+      const glowColor = isHighlighted ? hexToRgba(accent, 0.9) : mix
+
+      // Soft under-glow pass — makes edges clearly visible on the grid.
       ctx.beginPath()
       ctx.moveTo(sx, sy)
       ctx.lineTo(tx, ty)
-
-      if (isSearching && isHighlighted) {
-        ctx.strokeStyle = theme.searchLink
-        ctx.lineWidth = 1.2
-      } else if (isHighlighted) {
-        ctx.strokeStyle = theme.highlightLink
-        ctx.lineWidth = 1.5
-      } else {
-        ctx.strokeStyle = theme.linkColor
-        ctx.lineWidth = 0.6
-      }
+      ctx.strokeStyle = hexToRgba(mix, alpha * 0.35)
+      ctx.lineWidth = width * 2.6
       ctx.stroke()
+
+      // Bright core pass with shadow glow.
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.lineTo(tx, ty)
+      ctx.shadowColor = glowColor
+      ctx.shadowBlur = 4
+      ctx.strokeStyle = isHighlighted
+        ? hexToRgba(accent, 0.9)
+        : hexToRgba(mix, alpha)
+      ctx.lineWidth = width
+      ctx.stroke()
+      ctx.shadowBlur = 0
     },
-    [highlightLinks, matchingNodeIds, theme],
+    [highlightLinks, matchingNodeIds, theme, activeMeta.color],
   )
 
   // ── Zoom to fit on load ──────────────────────────────────────────────
@@ -747,7 +1278,8 @@ export function BrainPage(): JSX.Element {
     setSearchQuery('')
     setGraphData(null)
     setBrainStats(null)
-  }, [activeBrain])
+    closeNodeDetails()
+  }, [activeBrain, closeNodeDetails])
 
   // ── Render ────────────────────────────────────────────────────────────
   const brainColor = activeMeta.color
@@ -781,14 +1313,14 @@ export function BrainPage(): JSX.Element {
             </div>
           </div>
 
-          {/* Search bar */}
-          <div className="relative flex-1 max-w-xs mx-3">
+          {/* Search bar — floating pill with Ctrl+F hint */}
+          <div className="relative flex-1 max-w-sm mx-auto">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-500 pointer-events-none" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-500 pointer-events-none" />
               <input
                 ref={inputRef}
                 type="text"
-                placeholder="Search entities…  (Ctrl+F)"
+                placeholder="Search entities…"
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value)
@@ -796,19 +1328,29 @@ export function BrainPage(): JSX.Element {
                 }}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
-                className="w-full pl-8 pr-7 py-1 text-[10px] font-mono
-                           bg-zinc-900/80 border border-zinc-800 rounded-lg
+                className="w-full pl-8 pr-16 py-1.5 text-[10px] font-mono rounded-full
+                           bg-zinc-900/70 backdrop-blur-md border border-zinc-700/60
                            text-zinc-200 placeholder-zinc-600
                            focus:outline-none transition-all duration-200"
                 style={{
                   borderColor: searchFocused ? `${brainColor}50` : undefined,
-                  boxShadow: searchFocused ? `0 0 12px ${brainColor}15` : undefined,
+                  boxShadow: searchFocused ? `0 0 14px ${brainColor}22` : undefined,
                 }}
               />
+              {/* kbd shortcut hint */}
+              {!searchQuery && (
+                <kbd
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none
+                             px-1.5 py-0.5 rounded text-[7px] font-mono text-zinc-500
+                             border border-zinc-700/70 bg-zinc-800/70"
+                >
+                  Ctrl F
+                </kbd>
+              )}
               {searchQuery && (
                 <button
                   onClick={handleClearSearch}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded
                              text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
                 >
                   <X className="w-2.5 h-2.5" />
@@ -877,6 +1419,48 @@ export function BrainPage(): JSX.Element {
                 </span>
               </div>
             )}
+
+            {/* Re-import now — run the scheduled brain re-import immediately */}
+            <button
+              onClick={handleImportSources}
+              disabled={importBusy}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[9px] font-mono tracking-wider uppercase
+                         transition-all duration-200 disabled:opacity-40 hover:brightness-125"
+              style={{
+                color: importBusy ? brainColor : '#34d399',
+                backgroundColor: importBusy ? `${brainColor}15` : '#34d39914',
+                border: `1px solid ${importBusy ? `${brainColor}30` : '#34d3992e'}`,
+                boxShadow: importBusy ? 'none' : '0 0 12px rgba(52,211,153,0.12)',
+              }}
+              title="Run the scheduled re-import now — notes / memory / jobs → knowledge graphs (no 6-hour wait)"
+            >
+              {importBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Database className="w-3 h-3" />}
+              Re-import now
+            </button>
+
+            {/* Compact result feedback when the ingest panel is closed */}
+            {ingestResult && !showIngest && (
+              <span
+                className="max-w-[200px] truncate px-2 py-1 rounded-lg bg-zinc-900/80 border text-[8px] font-mono text-zinc-400"
+                style={{ borderColor: `${brainColor}20` }}
+                title={ingestResult}
+              >
+                {ingestResult}
+              </span>
+            )}
+
+            {/* Add knowledge — ingest text / triplets into the active brain */}
+            <button
+              onClick={() => setShowIngest(v => !v)}
+              className="relative p-1 rounded-lg transition-all duration-200"
+              style={{
+                color: showIngest ? brainColor : '#71717a',
+                backgroundColor: showIngest ? `${brainColor}15` : undefined,
+              }}
+              title="Add knowledge — ingest text or triplets into this brain"
+            >
+              <FilePlus2 className="w-3.5 h-3.5" />
+            </button>
 
             {/* Timeline toggle — effect handles fetch when showTimeline flips true */}
             <button
@@ -972,11 +1556,134 @@ export function BrainPage(): JSX.Element {
         </div>
       </div>
 
+      {/* ── Ingest Panel ────────────────────────────────────────────────── */}
+      {showIngest && (
+        <div
+          className="shrink-0 border-b px-4 py-3 space-y-3"
+          style={{ borderColor: `${brainColor}18`, backgroundColor: 'rgba(9,9,11,0.92)' }}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CirclePlus className="w-3.5 h-3.5" style={{ color: brainColor }} />
+              <span
+                className="text-[10px] font-orbitron font-bold tracking-[0.15em] uppercase"
+                style={{ color: brainColor }}
+              >
+                Add Knowledge — {activeMeta.label}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowIngest(false)}
+              className="p-0.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+
+          {/* Paste text → LLM extraction into the active brain */}
+          <div className="space-y-2">
+            <textarea
+              value={ingestText}
+              onChange={(e) => setIngestText(e.target.value)}
+              placeholder="Paste text to extract relationships — e.g. 'Python is used for data science at Google'…"
+              rows={3}
+              className="w-full px-3 py-2 text-[10px] font-mono bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none resize-none"
+              style={{ borderColor: ingestBusy ? `${brainColor}50` : undefined }}
+            />
+            <button
+              onClick={handleIngestText}
+              disabled={ingestBusy || !ingestText.trim()}
+              className="px-3 py-1.5 text-[10px] font-mono tracking-wider uppercase rounded-lg transition-all disabled:opacity-40 flex items-center gap-1.5"
+              style={{ backgroundColor: `${brainColor}15`, color: brainColor, borderColor: `${brainColor}30`, borderWidth: 1 }}
+            >
+              {ingestBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              Extract & Add
+            </button>
+          </div>
+
+          {/* Direct triplet form */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={triplet.subject}
+              onChange={(e) => setTriplet(t => ({ ...t, subject: e.target.value }))}
+              placeholder="subject (e.g. python)"
+              className="flex-1 min-w-[110px] px-2.5 py-1.5 text-[10px] font-mono bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none"
+            />
+            <input
+              value={triplet.relation}
+              onChange={(e) => setTriplet(t => ({ ...t, relation: e.target.value }))}
+              placeholder="relation (e.g. USED_FOR)"
+              className="flex-1 min-w-[110px] px-2.5 py-1.5 text-[10px] font-mono bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none"
+            />
+            <input
+              value={triplet.object}
+              onChange={(e) => setTriplet(t => ({ ...t, object: e.target.value }))}
+              placeholder="object (e.g. data science)"
+              className="flex-1 min-w-[110px] px-2.5 py-1.5 text-[10px] font-mono bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none"
+            />
+            <button
+              onClick={handleAddTriplet}
+              disabled={ingestBusy || !triplet.subject.trim() || !triplet.object.trim()}
+              className="px-3 py-1.5 text-[10px] font-mono tracking-wider uppercase rounded-lg transition-all disabled:opacity-40"
+              style={{ backgroundColor: `${brainColor}15`, color: brainColor, borderColor: `${brainColor}30`, borderWidth: 1 }}
+            >
+              Add Triplet
+            </button>
+          </div>
+
+          {/* Data source actions + result feedback */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={handleImportSources}
+              disabled={importBusy}
+              className="px-3 py-1.5 text-[10px] font-mono tracking-wider uppercase rounded-lg transition-all disabled:opacity-40 flex items-center gap-1.5"
+              style={{ backgroundColor: `${brainColor}15`, color: brainColor, borderColor: `${brainColor}30`, borderWidth: 1 }}
+            >
+              {importBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Database className="w-3 h-3" />}
+              Import from BARQ data
+            </button>
+            <button
+              onClick={handleSeedDemo}
+              disabled={ingestBusy}
+              className="px-3 py-1.5 text-[10px] font-mono tracking-wider uppercase rounded-lg transition-all disabled:opacity-40 flex items-center gap-1.5"
+              style={{ backgroundColor: `${brainColor}12`, color: brainColor, borderColor: `${brainColor}25`, borderWidth: 1 }}
+            >
+              <BadgePlus className="w-3 h-3" />
+              Load demo graph
+            </button>
+            {ingestResult && (
+              <span className="text-[9px] font-mono text-zinc-400 flex-1 min-w-[160px]">
+                {ingestResult}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Graph Container ─────────────────────────────────────────────── */}
-      <div ref={containerRef} className="flex-1 relative">
+      <div ref={containerRef} className="flex-1 relative overflow-hidden">
+        {/* ── Cybernetic backdrop: radial spotlight + grid ──────────────── */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background: `radial-gradient(1100px 640px at 50% 30%, ${hexToRgba(brainColor, 0.12)}, rgba(9,10,15,0) 62%), radial-gradient(1500px 900px at 50% 45%, rgba(24,19,43,0.9), rgba(9,10,15,1) 78%)`,
+          }}
+        />
+        <div
+          className="absolute inset-0 pointer-events-none opacity-70"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(22,27,38,0.6) 1px, transparent 1px),' +
+              'linear-gradient(90deg, rgba(22,27,38,0.6) 1px, transparent 1px)',
+            backgroundSize: '34px 34px',
+            maskImage: 'radial-gradient(ellipse at 50% 38%, black 25%, transparent 80%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at 50% 38%, black 25%, transparent 80%)',
+          }}
+        />
+
         {/* Loading overlay */}
         {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#09090b]/80 backdrop-blur-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d111a]/75 backdrop-blur-sm">
             <div className="flex flex-col items-center gap-3">
               <div
                 className="w-8 h-8 border-2 rounded-full animate-spin"
@@ -994,7 +1701,7 @@ export function BrainPage(): JSX.Element {
 
         {/* Error overlay */}
         {error && !loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#09090b]/80 backdrop-blur-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d111a]/75 backdrop-blur-sm">
             <div className="flex flex-col items-center gap-3 px-6 py-8 rounded-xl bg-zinc-900/60 border border-red-900/40">
               <AlertCircle className="w-8 h-8 text-red-400" />
               <p className="text-xs font-mono text-zinc-400 text-center max-w-xs">{error}</p>
@@ -1016,17 +1723,16 @@ export function BrainPage(): JSX.Element {
 
         {/* Empty state */}
         {!loading && !error && graphData && graphData.nodes.length === 0 && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#09090b]/60">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d111a]/55">
             <div className="flex flex-col items-center gap-2 text-zinc-500">
               <GitBranch className="w-10 h-10 text-zinc-700" />
               <p className="text-xs font-mono" style={{ color: brainColor }}>
                 {activeMeta.label} is empty
               </p>
               <p className="text-[10px] font-mono text-zinc-600">
-                Ingest content via{' '}
-                <code style={{ color: brainColor }}>
-                  POST /graph/ingest
-                </code>
+                Use the{' '}
+                <code style={{ color: brainColor }}>＋</code>{' '}
+                Add Knowledge button above to ingest text or triplets
               </p>
             </div>
           </div>
@@ -1039,14 +1745,21 @@ export function BrainPage(): JSX.Element {
             graphData={graphData}
             width={dimension.width}
             height={dimension.height}
-            backgroundColor={theme.bg}
+            // Transparent canvas so the cybernetic CSS backdrop shows through
+            backgroundColor="rgba(0,0,0,0)"
 
             // Nodes
             nodeRelSize={4}
             nodeCanvasObject={paintNode}
             nodeCanvasObjectMode={() => 'replace'}
             nodePointerAreaPaint={(node, color, ctx) => {
-              const r = 8
+              if (
+                node.x == null || !Number.isFinite(node.x) ||
+                node.y == null || !Number.isFinite(node.y)
+              ) return
+              // Bigger hit area for hubs = easier to grab high-degree nodes
+              const deg = degreeMap.get(node.id as string) ?? 0
+              const r = Math.max(7, 9 + Math.sqrt(deg) * 2.5)
               ctx.beginPath()
               ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI)
               ctx.fillStyle = color
@@ -1072,6 +1785,8 @@ export function BrainPage(): JSX.Element {
 
             // Interaction
             onNodeHover={handleNodeHover}
+            onNodeClick={handleNodeClick}
+            onBackgroundClick={closeNodeDetails}
             enableNodeDrag={true}
             enableZoomInteraction={true}
             enablePanInteraction={true}
@@ -1125,6 +1840,7 @@ export function BrainPage(): JSX.Element {
                   <button
                     onClick={() => setShowTimeline(false)}
                     className="p-0.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                    title="Close timeline panel"
                   >
                     <X className="w-2.5 h-2.5" />
                   </button>
@@ -1256,6 +1972,23 @@ export function BrainPage(): JSX.Element {
           </motion.div>
         )}
 
+        {/* Glassmorphic Node Inspector drawer (right side) */}
+        <NodeInspector
+          node={selectedNode}
+          details={nodeDetails}
+          loading={nodeDetailsLoading}
+          error={nodeDetailsError}
+          brainColor={brainColor}
+          brainLabel={activeMeta.label}
+          brainType={activeBrain}
+          onClose={dismissNodeDetails}
+          onFocusNode={focusSelectedNode}
+          onSelectNeighbor={selectNeighbor}
+          onRemove={handleRemoveEntity}
+          confirmRemove={confirmRemove}
+          removeBusy={removeBusy}
+        />
+
         {/* Hover info tooltip */}
         {hoveredNode && (
           <motion.div
@@ -1275,12 +2008,34 @@ export function BrainPage(): JSX.Element {
         )}
       </div>
 
-      {/* ── Footer: Stats bar ────────────────────────────────────────────── */}
+      {/* ── Footer: floating HUD status bar ─────────────────────────────── */}
       <div className="flex items-center justify-between px-4 py-1.5 border-t border-zinc-800/40 shrink-0">
         <div className="flex items-center gap-3">
-          <Info className="w-3 h-3 text-zinc-600" />
-          <span className="text-[8px] font-mono text-zinc-600 tracking-wider">
-            Drag nodes · Scroll to zoom · Hover to highlight connections
+          {/* Force simulation status + live counts */}
+          <span className="flex items-center gap-1.5">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${simRunning ? 'animate-pulse' : ''}`}
+              style={{
+                backgroundColor: simRunning ? '#34d399' : '#71717a',
+                boxShadow: simRunning ? '0 0 8px rgba(52,211,153,0.9)' : 'none',
+              }}
+            />
+            <span
+              className="text-[8px] font-mono uppercase tracking-wider"
+              style={{ color: simRunning ? '#34d399' : '#71717a' }}
+            >
+              Force Sim {simRunning ? 'Active' : 'Idle'}
+            </span>
+          </span>
+          {graphData && (
+            <span className="text-[8px] font-mono text-zinc-500 tracking-wider">
+              <span style={{ color: brainColor }}>{graphData.nodes.length}</span> Nodes ·{' '}
+              <span style={{ color: brainColor }}>{graphData.links.length}</span> Edges
+            </span>
+          )}
+          <span className="hidden md:flex items-center gap-1.5 text-[8px] font-mono text-zinc-600 tracking-wider">
+            <Info className="w-3 h-3" />
+            Drag · Scroll to zoom · Hover to highlight
           </span>
         </div>
 

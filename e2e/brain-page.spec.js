@@ -13,14 +13,24 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await page.addInitScript(mockScript)
     // Navigate to root — MemoryRouter ignores URL bar
     await page.goto('/', { waitUntil: 'networkidle' })
-    await page.waitForTimeout(1000)
+    await page.waitForTimeout(400)
 
-    // Sidebar is collapsed (translateX -160px) — button is in DOM but off-screen.
-    // Use native DOM click via evaluate() to bypass Playwright's viewport check.
-    await page.evaluate(() => {
-      const btn = document.querySelector('[title="Brain"]')
-      if (btn) btn.click()
-    })
+    // Dismiss the startup sequence overlay if it is still animating in.
+    // It blocks the dock for ~6s while the dock auto-hides after 3s, so the
+    // nav buttons may be unmounted when we try to click — dismiss it first.
+    const skipBtn = page.getByText('SKIP >>')
+    if (await skipBtn.isVisible().catch(() => false)) {
+      await skipBtn.click()
+    }
+    await page.waitForTimeout(300)
+
+    // Reveal the auto-hiding dock by moving the mouse to the bottom edge,
+    // then wait for the /brain nav item (title is its label) to exist.
+    await page.mouse.move(640, 710)
+    await page.waitForTimeout(300)
+    const brainNav = page.locator('[title="Knowledge Graph"]')
+    await brainNav.waitFor({ state: 'visible', timeout: 5000 })
+    await brainNav.click()
 
     // Wait for BrainPage to render — the first brain tab label should appear
     await page.waitForSelector('text=General Knowledge', { timeout: 8000 })
@@ -42,9 +52,9 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await page.locator('button[title="Toggle timeline history"]').click()
     await expect(page.getByText('Timeline')).toBeVisible({ timeout: 3000 })
 
-    // Close via the X button inside the timeline panel
-    // The timeline panel has a header with a close button containing an X icon
-    const closeBtn = page.locator('text=Timeline').locator('..').locator('button').last()
+    // Close via the X button inside the timeline panel header
+    const closeBtn = page.locator('button[title="Close timeline panel"]')
+    await expect(closeBtn).toBeVisible({ timeout: 3000 })
     await closeBtn.click()
 
     // The timeline heading should disappear
@@ -71,12 +81,13 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await page.waitForTimeout(1000)
 
     // The mock returns three entries for the general brain.
-    // Each entry renders a triplet: subject → relation → object
-    await expect(page.getByText('Quantum Computing')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('Machine Learning')).toBeVisible()
-    await expect(page.getByText('related_to')).toBeVisible()
-    await expect(page.getByText('Python')).toBeVisible()
-    await expect(page.getByText('Data Science')).toBeVisible()
+    // Each entry renders a triplet: subject → relation → object.
+    // Use .first() because some labels also appear in the stats panel.
+    await expect(page.getByText('Quantum Computing').first()).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('Machine Learning').first()).toBeVisible()
+    await expect(page.getByText('related_to').first()).toBeVisible()
+    await expect(page.getByText('Python').first()).toBeVisible()
+    await expect(page.getByText('Data Science').first()).toBeVisible()
   })
 
   test('marks new edges with a NEW badge', async ({ page }) => {
@@ -123,8 +134,8 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await page.waitForTimeout(1000)
 
     // The default filter badge shows the brain abbreviation (first 4 chars uppercase)
-    // "general" → "GENE"
-    await expect(page.getByText('GENE')).toBeVisible({ timeout: 3000 })
+    // "general" → "GENE" (exact match — the substring also appears in the heading)
+    await expect(page.getByText('GENE', { exact: true })).toBeVisible({ timeout: 3000 })
   })
 
   test('switches filter badge to ALL when toggling all-brains view', async ({ page }) => {
@@ -157,11 +168,12 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
   // ═══ Brain Tab Switching ═══
 
   test('renders all brain tabs from the mock data', async ({ page }) => {
-    // The mock returns 4 brains: General Knowledge, Apple Notes, Google Docs, AI Chats
-    await expect(page.getByText('General Knowledge')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('Apple Notes')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('Google Docs')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('AI Chats')).toBeVisible({ timeout: 3000 })
+    // The mock returns 5 brains — each renders as a tab button (title = label + counts)
+    await expect(page.locator('button[title="General Knowledge — 12 nodes, 18 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="Apple Notes — 8 nodes, 10 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="Google Docs — 6 nodes, 7 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="AI Chats — 15 nodes, 22 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="Gemini Chats — 10 nodes, 14 edges"]')).toBeVisible({ timeout: 3000 })
   })
 
   test('switches active brain tab when clicking a different tab', async ({ page }) => {
@@ -175,7 +187,7 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await page.waitForTimeout(1000)
 
     // The page heading should now show "Apple Notes" (the active brain label)
-    await expect(page.getByText('Apple Notes')).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('Apple Notes').first()).toBeVisible({ timeout: 3000 })
   })
 
   test('highlights the active brain tab with the brain color', async ({ page }) => {
@@ -189,12 +201,11 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
   })
 
   test('shows node count badge on each brain tab', async ({ page }) => {
-    // Each brain tab with nodes > 0 shows a count badge
-    // Verify numbers from the mock appear
-    await expect(page.getByText('12')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('8')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('6')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('15')).toBeVisible({ timeout: 3000 })
+    // Each brain tab button title carries its node/edge counts from the mock
+    await expect(page.locator('button[title="General Knowledge — 12 nodes, 18 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="Apple Notes — 8 nodes, 10 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="Google Docs — 6 nodes, 7 edges"]')).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('button[title="AI Chats — 15 nodes, 22 edges"]')).toBeVisible({ timeout: 3000 })
   })
 
   test('graph data refreshes when switching brains', async ({ page }) => {
@@ -204,9 +215,9 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
 
     // The force graph should re-render with the new brain's data.
     // The loading overlay goes away and the heading updates.
-    await expect(page.getByText('Apple Notes')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('Apple Notes').first()).toBeVisible({ timeout: 5000 })
     // The stats badge should show Apple Notes node/edge count
-    await expect(page.getByText('NODES')).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('NODES', { exact: true })).toBeVisible({ timeout: 3000 })
   })
 
   test('switches to AI Chats tab and verifies content', async ({ page }) => {
@@ -215,12 +226,12 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await aiChatsTab.click()
 
     await page.waitForTimeout(1000)
-    await expect(page.getByText('AI Chats')).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('AI Chats').first()).toBeVisible({ timeout: 3000 })
 
     // The nodes stat should show the AI Chats node count
     await page.waitForTimeout(1000)
     // The stats badge shows NODES with the count
-    await expect(page.getByText('NODES')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('NODES', { exact: true })).toBeVisible({ timeout: 5000 })
   })
 
   test('renders Gemini Chats tab with correct metadata', async ({ page }) => {
@@ -241,24 +252,23 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await geminiTab.click()
 
     await page.waitForTimeout(1500)
-    await expect(page.getByText('Gemini Chats')).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('Gemini Chats').first()).toBeVisible({ timeout: 3000 })
 
-    // Should show graph nodes from Gemini mock data
-    await expect(page.getByText('Gemini 2.5 Flash')).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('Multimodal')).toBeVisible()
-    await expect(page.getByText('Vision Analysis')).toBeVisible()
+    // The Gemini graph's node labels are painted on canvas (not DOM text),
+    // so assert on the stats badge that reflects the fetched graph meta.
+    await expect(page.getByText('NODES', { exact: true }).first()).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('EDGES', { exact: true }).first()).toBeVisible({ timeout: 3000 })
 
-    // The stats badge should show NODES and EDGES
-    await expect(page.getByText('NODES').first()).toBeVisible({ timeout: 3000 })
-    await expect(page.getByText('EDGES').first()).toBeVisible({ timeout: 3000 })
+    // The Gemini tab button shows the graph's node/edge counts
+    await expect(page.locator('button[title="Gemini Chats — 10 nodes, 14 edges"]')).toBeVisible({ timeout: 3000 })
   })
 
   // ═══ Graph Rendering ═══
 
   test('renders graph data with nodes and edges stats', async ({ page }) => {
     // The stats badge should show NODES and EDGES from the graph _meta
-    await expect(page.getByText('NODES').first()).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('EDGES').first()).toBeVisible({ timeout: 3000 })
+    await expect(page.getByText('NODES', { exact: true }).first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('EDGES', { exact: true }).first()).toBeVisible({ timeout: 3000 })
   })
 
   test('graph loading overlay disappears after data arrives', async ({ page }) => {
@@ -288,8 +298,8 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     await searchInput.fill('Machine')
     await page.waitForTimeout(500)
 
-    // The autocomplete dropdown should appear with suggestions
-    await expect(page.getByText('Machine Learning')).toBeVisible({ timeout: 3000 })
+    // The autocomplete dropdown should appear with a suggestion button
+    await expect(page.getByRole('button', { name: 'Machine Learning' })).toBeVisible({ timeout: 3000 })
   })
 
   test('search can be cleared with the X button', async ({ page }) => {
@@ -335,7 +345,7 @@ test.describe('BrainPage — Timeline Panel & Tab Switching', () => {
     })
     await page.waitForTimeout(500)
     await page.evaluate(() => {
-      const btn = document.querySelector('[title="Brain"]')
+      const btn = document.querySelector('[title="Knowledge Graph"]')
       if (btn) btn.click()
     })
     await page.waitForTimeout(2000)

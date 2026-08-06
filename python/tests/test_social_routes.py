@@ -66,16 +66,26 @@ async def test_get_trends_success(client):
 
 @pytest.mark.asyncio
 async def test_generate_script(client):
-    """POST /generate-script should generate and store a script."""
+    """POST /generate-script should generate, quality-gate, and store a script."""
     mock_script = {
         "script": "This is a sample script about AI.",
         "sections": '["Hook", "Content", "CTA"]',
         "visual_cues": '["Show code", "Show demo"]',
         "score": 85,
     }
+    gate_result = {
+        "final_draft": "This is a sample script about AI.",
+        "passed": True,
+        "final_score": 88.0,
+        "iterations": 1,
+        "history": [],
+        "revised": False,
+    }
 
-    with patch("social.routes.script_generator.generate", new_callable=AsyncMock) as mock_gen:
+    with patch("social.routes.script_generator.generate", new_callable=AsyncMock) as mock_gen, \
+         patch("agent.workflows.content_critic.ContentCritic") as mock_critic_cls:
         mock_gen.return_value = mock_script
+        mock_critic_cls.return_value.critique_and_improve = AsyncMock(return_value=gate_result)
         response = await client.post(
             "/generate-script",
             json={"topic": "AI Basics", "format": "youtube_shorts", "tone": "educational"},
@@ -85,6 +95,100 @@ async def test_generate_script(client):
     data = response.json()
     assert data["script_id"] > 0
     assert "sample script" in data["script"]["script"]
+    assert data["quality_gate"]["passed"] is True
+    assert data["quality_gate"]["final_score"] == 88.0
+
+    # The gate verdict is persisted so the UI can show it after refresh
+    stored = await social_dao.get_script(data["script_id"])
+    assert stored["score"] == 88.0
+    assert stored["revised"] == 0
+    assert stored["gate_iterations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_script_critic_revises_draft(client):
+    """A below-threshold draft should be revised by the critic before storage."""
+    original = "Original weak draft that rambles without a hook or a clear call to action."
+    revised = "Revised strong draft that hooks immediately, stays on topic, and ends with a clear CTA."
+    mock_script = {
+        "script": original,
+        "sections": '["Hook", "Content", "CTA"]',
+        "visual_cues": "[]",
+        "score": 0,
+    }
+    gate_result = {
+        "final_draft": revised,
+        "passed": False,
+        "final_score": 72.0,
+        "iterations": 2,
+        "history": [],
+        "revised": True,
+    }
+
+    with patch("social.routes.script_generator.generate", new_callable=AsyncMock) as mock_gen, \
+         patch("agent.workflows.content_critic.ContentCritic") as mock_critic_cls:
+        mock_gen.return_value = mock_script
+        mock_critic_cls.return_value.critique_and_improve = AsyncMock(return_value=gate_result)
+        response = await client.post(
+            "/generate-script",
+            json={"topic": "AI Basics", "format": "youtube_shorts", "tone": "educational"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["quality_gate"]["passed"] is False
+    assert data["quality_gate"]["revised"] is True
+    assert data["quality_gate"]["final_score"] == 72.0
+    assert data["script"]["script"] == revised
+
+    # The quality-gated draft (not the raw one) is what gets stored
+    stored = await social_dao.get_script(data["script_id"])
+    assert stored["script_content"] == revised
+    assert stored["score"] == 72.0
+    assert stored["revised"] == 1
+    assert stored["gate_iterations"] == 2
+
+    # GET /scripts surfaces the persisted gate flags for the list UI
+    list_resp = await client.get("/scripts?status=draft")
+    rows = list_resp.json()["scripts"]
+    row = next(r for r in rows if r["id"] == data["script_id"])
+    assert row["revised"] == 1
+    assert row["gate_iterations"] == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_script_critic_failure_does_not_block(client):
+    """Critic failures must never block script generation (best-effort gate)."""
+    mock_script = {
+        "script": "This is a sample script about AI.",
+        "sections": '["Hook", "Content", "CTA"]',
+        "visual_cues": "[]",
+        "score": 0,
+    }
+
+    with patch("social.routes.script_generator.generate", new_callable=AsyncMock) as mock_gen, \
+         patch("agent.workflows.content_critic.ContentCritic") as mock_critic_cls:
+        mock_gen.return_value = mock_script
+        mock_critic_cls.return_value.critique_and_improve = AsyncMock(
+            side_effect=RuntimeError("LLM down")
+        )
+        response = await client.post(
+            "/generate-script",
+            json={"topic": "AI Basics", "format": "youtube_shorts", "tone": "educational"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["script_id"] > 0
+    # Raw draft is still stored, and the gate reports the error
+    assert "sample script" in data["script"]["script"]
+    assert data["quality_gate"]["passed"] is None
+    assert "LLM down" in data["quality_gate"]["error"]
+
+    # No gate verdict means no revision flags on the stored row
+    stored = await social_dao.get_script(data["script_id"])
+    assert stored["revised"] == 0
+    assert stored["gate_iterations"] == 0
 
 
 @pytest.mark.asyncio
@@ -148,6 +252,80 @@ async def test_render_video_invalid_id(client):
     response = await client.post("/render-video", json={"script_id": "abc"})
     assert response.status_code == 400
     assert "integer" in response.json()["detail"].lower()
+
+
+# ─── Re-run Critic ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_rerun_critic_not_found(client):
+    """POST /scripts/{id}/re-critic with a non-existent script should return 404."""
+    response = await client.post("/scripts/99999/re-critic")
+    assert response.status_code == 404
+    assert "Script not found" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_rerun_critic_revises_draft(client):
+    """Re-running the critic should re-gate a stored draft and persist the verdict."""
+    script_id = await social_dao.insert_script({
+        "title": "ReCritic Test", "topic": "AI", "format": "youtube_shorts",
+        "script_content": "Original draft that rambles without a hook.",
+        "status": "draft",
+    })
+    gate_result = {
+        "final_draft": "Tight revised draft with a hook and a clear CTA.",
+        "passed": False,
+        "final_score": 74.0,
+        "iterations": 2,
+        "history": [],
+        "revised": True,
+    }
+
+    with patch("agent.workflows.content_critic.ContentCritic") as mock_critic_cls:
+        mock_critic_cls.return_value.critique_and_improve = AsyncMock(return_value=gate_result)
+        response = await client.post(f"/scripts/{script_id}/re-critic")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["script_id"] == script_id
+    assert data["quality_gate"]["passed"] is False
+    assert data["quality_gate"]["revised"] is True
+    assert data["quality_gate"]["final_score"] == 74.0
+    assert data["revised_draft"] == gate_result["final_draft"]
+
+    # The upgraded draft + verdict are persisted in place (no regeneration)
+    stored = await social_dao.get_script(script_id)
+    assert stored["script_content"] == gate_result["final_draft"]
+    assert stored["score"] == 74.0
+    assert stored["revised"] == 1
+    assert stored["gate_iterations"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rerun_critic_failure_keeps_draft(client):
+    """A critic failure on re-run must not clobber the stored draft."""
+    original = "Original draft."
+    script_id = await social_dao.insert_script({
+        "title": "ReCritic Fail", "topic": "AI", "format": "youtube_shorts",
+        "script_content": original,
+        "status": "draft",
+    })
+
+    with patch("agent.workflows.content_critic.ContentCritic") as mock_critic_cls:
+        mock_critic_cls.return_value.critique_and_improve = AsyncMock(
+            side_effect=RuntimeError("LLM down")
+        )
+        response = await client.post(f"/scripts/{script_id}/re-critic")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["quality_gate"]["passed"] is None
+    assert "LLM down" in data["quality_gate"]["error"]
+
+    stored = await social_dao.get_script(script_id)
+    assert stored["script_content"] == original
+    assert stored["revised"] == 0
+    assert stored["gate_iterations"] == 0
 
 
 # ─── Videos ───────────────────────────────────────────────────────────────────

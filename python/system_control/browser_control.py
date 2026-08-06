@@ -336,6 +336,27 @@ class BrowserSession:
         except Exception as e:
             return f"Could not get page text: {e}"
 
+    async def observe(self) -> str:
+        """Take a self-verification snapshot of the current page.
+
+        Returns a compact summary (URL, title, visible text excerpt) that a
+        planning agent can use to verify a step actually worked — e.g. after
+        clicking "Sign in" it can check that the login form appeared.
+
+        Returns:
+            A human-readable observation string (or an error message).
+        """
+        try:
+            page = await self._get_page()
+            url = await page.url
+            title = await page.title()
+            text = await page.inner_text("body")
+            # Collapse whitespace and trim to a readable excerpt
+            compact = " ".join(text.split())[:1500]
+            return f"URL: {url}\nTitle: {title}\nPage text: {compact}"
+        except Exception as e:
+            return f"Observe error: {e}"
+
     async def get_url(self) -> str:
         """Get the current page URL."""
         page = await self._get_page()
@@ -515,6 +536,7 @@ class SessionRegistry:
             "get_text": lambda: sess.run(sess.get_text()),
             "get_url": lambda: sess.run(sess.get_url()),
             "get_title": lambda: sess.run(sess.get_title()),
+            "observe": lambda: sess.run(sess.observe()),
             "back": lambda: sess.run(sess.back()),
             "forward": lambda: sess.run(sess.forward()),
             "reload": lambda: sess.run(sess.reload()),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, startTransition } from 'react'
 import { api } from '../utils/api'
-import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, Cloud, WifiOff, Trash2, Plus, X, Save, Eye, Send, ShieldCheck, ShieldOff, AlertTriangle } from 'lucide-react'
+import { Settings, Shield, Bell, Mic, Key, Palette, User, Loader2, CheckCircle, Briefcase, Video, Volume2, Play, Terminal, Cpu, Cloud, WifiOff, Trash2, Plus, X, Save, Eye, Send, ShieldCheck, ShieldOff, AlertTriangle, Sunrise } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { SettingsSection } from './settings/types'
 import { sections, TTS_VOICES, SENSITIVITY_LEVELS, type VoiceStatus } from './settings/types'
@@ -103,6 +103,17 @@ export function SettingsPage(): JSX.Element {
   const [cloudLLMSaved, setCloudLLMSaved] = useState('')
   const [cloudLLMKeyVisible, setCloudLLMKeyVisible] = useState(false)
 
+  // Morning Briefing settings
+  const [briefing, setBriefing] = useState({
+    enabled: true,
+    time: '08:00',
+    scheduled: false,
+    cron: '',
+  })
+  const [briefingLoading, setBriefingLoading] = useState(false)
+  const [briefingSaving, setBriefingSaving] = useState(false)
+  const [briefingSaved, setBriefingSaved] = useState('')
+
   // ─── Cloud Connection State ──────────────────────────────────
   const [cloudMode, setCloudMode] = useState(false)
   const [cloudUrl, setCloudUrl] = useState('http://155.248.247.224')
@@ -204,6 +215,46 @@ export function SettingsPage(): JSX.Element {
     }
     setCloudLLMSaving(false)
   }, [cloudLLM])
+
+  // ─── Morning Briefing Callbacks ──────────────────────────────────
+
+  const fetchBriefing = useCallback(async () => {
+    setBriefingLoading(true)
+    try {
+      const resp = await api('/settings/briefing')
+      if (resp && typeof resp === 'object') {
+        const data = resp as Record<string, unknown>
+        setBriefing(prev => ({
+          ...prev,
+          enabled: data.enabled === true,
+          time: String(data.time || '08:00'),
+          scheduled: data.scheduled === true,
+          cron: String(data.cron || ''),
+        }))
+      }
+    } catch { /* ignore */ }
+    setBriefingLoading(false)
+  }, [])
+
+  const handleSaveBriefing = useCallback(async () => {
+    setBriefingSaving(true)
+    setBriefingSaved('')
+    try {
+      const resp = await api('/settings/briefing', {
+        enabled: briefing.enabled,
+        time: briefing.time,
+      })
+      if (resp && typeof resp === 'object' && (resp as Record<string, unknown>).status === 'saved') {
+        setBriefing(prev => ({ ...prev, scheduled: true, cron: String((resp as Record<string, unknown>).cron || prev.cron) }))
+        setBriefingSaved('Settings saved!')
+        setTimeout(() => setBriefingSaved(''), 3000)
+      }
+    } catch {
+      setBriefingSaved('Failed to save')
+      setTimeout(() => setBriefingSaved(''), 3000)
+    }
+    setBriefingSaving(false)
+  }, [briefing.enabled, briefing.time])
 
   // ─── Security / Command Whitelist State ───────────────────────────
   const [checkCommand, setCheckCommand] = useState('')
@@ -619,8 +670,9 @@ export function SettingsPage(): JSX.Element {
       void fetchTelegramCredentials()
       void fetchCloudLLM()
       void fetchCloudConfig()
+      void fetchBriefing()
     })
-  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTelegramCredentials, fetchCloudLLM, fetchCloudConfig])
+  }, [fetchVoiceStatus, fetchSettings, fetchSoundSettings, fetchWhitelistRules, fetchVoiceSettings, fetchTelegramCredentials, fetchCloudLLM, fetchCloudConfig, fetchBriefing])
 
 
   return (
