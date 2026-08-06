@@ -8,7 +8,7 @@ vosk>=0.3.44          # Wake word detection (local)
 sounddevice>=0.5.1    # Audio capture and playback
 
 # Local LLM
-ollama>=0.4.0
+ollama>=0.6.2
 
 # Web Scraping & Browsing
 playwright>=1.48.0
