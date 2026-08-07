@@ -254,13 +254,15 @@ class DatabaseConnection:
 
     async def execute_many(self, sql: str, params_list: list[tuple]):
         if self._turso_mode:
-            return await self._turso.execute_many(sql, params_list)
+            conn = await self.connect()
+            return await conn.execute_many(sql, params_list)
         db = await self.connect()
         return await db.executemany(sql, params_list)
 
     async def fetch_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         if self._turso_mode:
-            return await self._turso.fetch_one(sql, params)
+            conn = await self.connect()
+            return await conn.fetch_one(sql, params)
         db = await self.connect()
         cursor = await db.execute(sql, params)
         row = await cursor.fetchone()
@@ -268,7 +270,8 @@ class DatabaseConnection:
 
     async def fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
         if self._turso_mode:
-            return await self._turso.fetch_all(sql, params)
+            conn = await self.connect()
+            return await conn.fetch_all(sql, params)
         db = await self.connect()
         cursor = await db.execute(sql, params)
         rows = await cursor.fetchall()
@@ -276,7 +279,8 @@ class DatabaseConnection:
 
     async def insert(self, sql: str, params: tuple = ()) -> int:
         if self._turso_mode:
-            return await self._turso.insert(sql, params)
+            conn = await self.connect()
+            return await conn.insert(sql, params)
         db = await self.connect()
         cursor = await db.execute(sql, params)
         await db.commit()
@@ -284,7 +288,8 @@ class DatabaseConnection:
 
     async def update(self, sql: str, params: tuple = ()) -> int:
         if self._turso_mode:
-            return await self._turso.update(sql, params)
+            conn = await self.connect()
+            return await conn.update(sql, params)
         db = await self.connect()
         cursor = await db.execute(sql, params)
         await db.commit()
@@ -292,7 +297,8 @@ class DatabaseConnection:
 
     async def delete(self, sql: str, params: tuple = ()) -> int:
         if self._turso_mode:
-            return await self._turso.delete(sql, params)
+            conn = await self.connect()
+            return await conn.delete(sql, params)
         db = await self.connect()
         cursor = await db.execute(sql, params)
         await db.commit()

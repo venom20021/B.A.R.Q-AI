@@ -30,8 +30,8 @@ const AUTO_REMOTE = process.env['SIDECAR_AUTO_REMOTE'] !== 'false'
 const SIDECAR_REMOTE_URL = process.env['SIDECAR_REMOTE_URL'] || ''
 const isRemote = !!SIDECAR_REMOTE_URL
 
-/** Endpoint prefixes that must always hit the local Python sidecar (voice needs local mic/speakers) */
-const LOCAL_ONLY_PREFIXES = ['/voice/', '/speech/']
+/** Voice endpoints that are text-only (no mic/speakers) and can safely hit the remote backend in cloud mode. */
+const REMOTE_CAPABLE_VOICE_PATHS = ['/voice/chat/text', '/voice/chat/stream']
 
 /**
  * Common Python installation paths on Windows, checked in order.
@@ -473,7 +473,9 @@ class PythonSidecar {
    * Voice endpoints always hit localhost; non-voice endpoints hit remote when in cloud mode.
    */
   private _resolveBaseUrl(endpoint: string): string {
-    const isLocalOnly = LOCAL_ONLY_PREFIXES.some((prefix) => endpoint.startsWith(prefix))
+    const isVoice = endpoint.startsWith('/voice/')
+    const isRemoteCapable = REMOTE_CAPABLE_VOICE_PATHS.some((path) => endpoint.startsWith(path))
+    const isLocalOnly = (isVoice && !isRemoteCapable) || endpoint.startsWith('/speech/')
     return (this.remoteMode && this._remoteUrl && !isLocalOnly) ? this._remoteUrl : SIDECAR_URL
   }
 
@@ -520,10 +522,10 @@ class PythonSidecar {
    * renderer's Chromium network stack, which avoids CORS issues in
    * cloud/remote mode.
    *
-   * IMPORTANT: Overrides LOCAL_ONLY_PREFIXES — even though the endpoint
-   * path is /voice/chat/stream, this is NOT a voice-pipeline endpoint that
-   * needs local mic/speakers.  In cloud mode it hits the remote backend
-   * so the cloud LLM handles the request.
+   * IMPORTANT: Chat endpoints override the local-only voice routing — even
+   * though the path is /voice/chat/stream, this is NOT a voice-pipeline
+   * endpoint that needs local mic/speakers. In cloud mode it hits the
+   * remote backend so the cloud LLM handles the request.
    *
    * Has a built-in 60-second inactivity timeout — if no data arrives for
    * 60s, the controller aborts and onError is called.
@@ -544,7 +546,7 @@ class PythonSidecar {
 
     const run = async (): Promise<void> => {
       try {
-        // Override LOCAL_ONLY_PREFIXES — chat/stream is NOT a voice-pipeline endpoint
+        // Chat/stream is NOT a voice-pipeline endpoint — hit remote in cloud mode
         const baseUrl = (this.remoteMode && this._remoteUrl) ? this._remoteUrl : SIDECAR_URL
         const url = `${baseUrl}/voice/chat/stream`
 

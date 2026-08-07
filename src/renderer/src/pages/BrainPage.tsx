@@ -47,6 +47,15 @@ interface GraphData {
   _meta?: GraphMeta
 }
 
+interface EntityImageRecord {
+  id: number
+  brain_id: string
+  entity: string
+  prompt: string
+  image_url: string
+  created_at: string
+}
+
 interface BrainMeta {
   type: string
   label: string
@@ -267,6 +276,8 @@ export function BrainPage(): JSX.Element {
 
   // ── Graph state ──────────────────────────────────────────────────────
   const [graphData, setGraphData] = useState<GraphData | null>(null)
+  const [entityImages, setEntityImages] = useState<Map<string, string>>(new Map())
+  const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null)
@@ -432,7 +443,9 @@ export function BrainPage(): JSX.Element {
     if (!matchingNodeIds || !graphData) {
       // No active search — restore the pinned node's highlight if one is open
       /* eslint-disable react-hooks/set-state-in-effect */
-      if (selectedNode?.id) {
+      // `graphData` can be null in this branch (search cleared) — only
+      // restore the pinned highlight when the graph is actually present.
+      if (selectedNode?.id && graphData) {
         const nodeIds = new Set<string>([selectedNode.id])
         const linkKeys = new Set<string>()
         for (const link of graphData.links) {
@@ -593,6 +606,38 @@ export function BrainPage(): JSX.Element {
     }
   }, [activeBrain])
 
+  // ── Fetch saved entity images → thumbnail markers on nodes ──────────
+  const fetchEntityImages = useCallback(async () => {
+    try {
+      const resp: unknown = await withTimeout(
+        window.barq?.python.request('/api/brain/images?brain_id=' + encodeURIComponent(activeBrain)),
+      )
+      if (!resp || typeof resp !== 'object') return
+      const items = (resp as { items?: EntityImageRecord[] }).items
+      if (!Array.isArray(items)) return
+      // Backend returns newest-first → first occurrence per entity wins.
+      // Guard against a stale response landing after a brain switch
+      if (activeBrainRef.current !== activeBrain) return
+      const byEntity = new Map<string, string>()
+      for (const it of items) {
+        if (it && it.entity && it.image_url && !byEntity.has(it.entity)) byEntity.set(it.entity, it.image_url)
+      }
+      setEntityImages(byEntity)
+      // Preload thumbnails so paintNode can draw them synchronously.
+      for (const url of byEntity.values()) {
+        if (imgCacheRef.current.has(url)) continue
+        const img = new Image()
+        img.onload = () => {
+          imgCacheRef.current.set(url, img)
+          graphRef.current?.refresh()
+        }
+        img.src = url
+      }
+    } catch {
+      // Thumbnails are progressive enhancement - never block the graph.
+    }
+  }, [activeBrain])
+
   // ── Fetch timeline entries ───────────────────────────────────────────
   const fetchTimeline = useCallback(async () => {
     setTimelineLoading(true)
@@ -675,13 +720,13 @@ export function BrainPage(): JSX.Element {
 
   // ── Refresh graph + stats + tab counts after any mutation ────────────
   const refreshAll = useCallback(async () => {
-    await Promise.allSettled([fetchGraph(), fetchBrainStats()])
+    await Promise.allSettled([fetchGraph(), fetchBrainStats(), fetchEntityImages()])
     const resp: unknown = await withTimeout(window.barq?.python.request('/api/brain/list'))
     if (Array.isArray(resp) && resp.length > 0) setBrainsList(resp as BrainMeta[])
     // Keep the details panel fresh when the graph changed under it
     if (selectedNode?.id) fetchNodeDetails(selectedNode.id)
     if (showTimeline) fetchTimeline()
-  }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline, selectedNode, fetchNodeDetails])
+  }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline, selectedNode, fetchNodeDetails, fetchEntityImages])
 
   // ── Ingest pasted text into the active brain (LLM extraction) ────────
   const handleIngestText = async (): Promise<void> => {
@@ -776,11 +821,12 @@ export function BrainPage(): JSX.Element {
   useEffect(() => {
     fetchGraph()
     fetchBrainStats()
+    fetchEntityImages()
     if (showTimeline) {
       timelineInitializedRef.current = false
       fetchTimeline()
     }
-  }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline])
+  }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline, fetchEntityImages])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Synaptic pulse animation loop ────────────────────────────────────
@@ -838,9 +884,10 @@ export function BrainPage(): JSX.Element {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchGraph()
+      fetchEntityImages()
     }, AUTO_POLL_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [fetchGraph])
+  }, [fetchGraph, fetchEntityImages])
 
   // ── Auto-poll timeline entries while panel is open ────────────────────
   useEffect(() => {
@@ -1135,15 +1182,47 @@ export function BrainPage(): JSX.Element {
         ctx.stroke()
       }
 
-      ctx.beginPath()
-      ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
-      ctx.fillStyle = color
-      if (glowIntensity > 0) {
-        ctx.shadowColor = color
-        ctx.shadowBlur = glowIntensity
+      // ── Entity thumbnail layer ───────────────────────────────────
+      // Saved renders become the node face — circular-cropped photo,
+      // rimmed in the node colour. Falls back to the flat disc while
+      // the image is still loading (or missing).
+      const thumbUrl = entityImages.get(node.id)
+      const thumb = thumbUrl ? imgCacheRef.current.get(thumbUrl) : undefined
+      const thumbReady = !!thumb && thumb.complete && thumb.naturalWidth > 0
+
+      if (thumbReady && thumb) {
+        const cover = Math.max((activeRadius * 2) / thumb.naturalWidth, (activeRadius * 2) / thumb.naturalHeight)
+        const dw = thumb.naturalWidth * cover
+        const dh = thumb.naturalHeight * cover
+
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
+        if (glowIntensity > 0) {
+          ctx.shadowColor = color
+          ctx.shadowBlur = glowIntensity
+        }
+        ctx.clip()
+        ctx.drawImage(thumb, node.x! - dw / 2, node.y! - dh / 2, dw, dh)
+        ctx.restore()
+
+        // Colour rim so the node still reads as typed
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
+        ctx.strokeStyle = hexToRgba(color, 0.9)
+        ctx.lineWidth = 1.2 / globalScale
+        ctx.stroke()
+      } else {
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
+        ctx.fillStyle = color
+        if (glowIntensity > 0) {
+          ctx.shadowColor = color
+          ctx.shadowBlur = glowIntensity
+        }
+        ctx.fill()
+        ctx.shadowBlur = 0
       }
-      ctx.fill()
-      ctx.shadowBlur = 0
 
       // Specular highlight (skipped in muted search state)
       if (!isSearching || isSearchMatch || isSearchNeighbour || isSelected) {
@@ -1187,7 +1266,7 @@ export function BrainPage(): JSX.Element {
         ctx.shadowBlur = 0
       }
     },
-    [highlightNodes, matchingNodeIds, theme, degreeMap, hubThreshold, selectedNode],
+    [highlightNodes, matchingNodeIds, theme, degreeMap, hubThreshold, selectedNode, entityImages],
   )
 
   // ── Link painter: glowing vector links, colour blended source→target ──

@@ -499,6 +499,18 @@ CREATE TABLE IF NOT EXISTS workflows (
 
 # ─── Aggregate schema creation ───────────────────────────────────────────────
 
+
+CREATE_ENTITY_IMAGES = """
+CREATE TABLE IF NOT EXISTS entity_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brain_id TEXT NOT NULL DEFAULT '',
+    entity TEXT NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 ALL_TABLES = [
     ("user_settings", CREATE_USER_SETTINGS),
     ("user_profiles", CREATE_USER_PROFILES),
@@ -524,6 +536,7 @@ ALL_TABLES = [
     ("company_research", CREATE_COMPANY_RESEARCH),
     ("agent_checkpoints", CREATE_AGENT_CHECKPOINTS),
     ("workflows", CREATE_WORKFLOWS),
+    ("entity_images", CREATE_ENTITY_IMAGES),
 ]
 
 
@@ -617,6 +630,15 @@ async def initialize_schema(db):
     # Create job-listing dedup indexes (partial UNIQUE indexes). These can
     # fail on databases that already contain duplicates — run
     # scripts/dedupe_jobs.py first. Failures are logged, not fatal.
+    # Entity image history lookup index (queries are always brain + entity scoped)
+    try:
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_entity_images_lookup '
+            'ON entity_images(brain_id, entity)'
+        )
+    except Exception as e:
+        print(f'[Schema] Warning: entity_images index not created: {e}')
+
     for index_name, ddl in JOB_LISTING_DEDUP_INDEXES:
         try:
             await db.execute(ddl)
