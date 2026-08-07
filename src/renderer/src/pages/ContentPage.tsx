@@ -472,18 +472,45 @@ export function ContentPage(): JSX.Element {
     setGeneratingImage(false)
   }
 
-  const handleSchedule = async (date: string): Promise<void> => {
-    // Find the first ready video to schedule
-    const readyItem = scripts.find(s => s.status === 'ready')
-    if (!readyItem) return
+  // Inline date picker for scheduling a specific ready video (Phase 2d)
+  const [scheduleTarget, setScheduleTarget] = useState<ContentIdea | null>(null)
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleBusy, setScheduleBusy] = useState(false)
+
+  const handleSchedule = async (date: string, scriptId?: string): Promise<void> => {
+    // If a specific script is given (ready-card Schedule button), schedule
+    // that video; otherwise fall back to the first ready video (calendar day).
+    const readyItem = scriptId
+      ? scripts.find(s => s.id === scriptId && s.status === 'ready')
+      : scripts.find(s => s.status === 'ready')
+    if (!readyItem || !videosByScript[readyItem.id]) return
     await window.barq?.social.schedule({
-      video_id: Number(readyItem.id),
+      video_id: Number(videosByScript[readyItem.id].id),
       platforms: ['youtube', 'tiktok'],
       scheduled_date: `${date}T12:00:00`,
       title: readyItem.topic,
     })
     await fetchCalendar(calendarYear, calendarMonth)
+    await fetchPipeline()
     setSelectedDay(null)
+  }
+
+  const openSchedulePicker = (idea: ContentIdea): void => {
+    setScheduleTarget(idea)
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+    setScheduleDate(tomorrow.toISOString().slice(0, 10))
+  }
+
+  const confirmSchedule = async (): Promise<void> => {
+    if (!scheduleTarget || !scheduleDate) return
+    setScheduleBusy(true)
+    try {
+      await handleSchedule(scheduleDate, scheduleTarget.id)
+      setScheduleTarget(null)
+      setScheduleDate('')
+    } finally {
+      setScheduleBusy(false)
+    }
   }
 
   const navigateMonth = (delta: number): void => {
@@ -905,6 +932,52 @@ export function ContentPage(): JSX.Element {
             </motion.div>
           )}
 
+          {/* Schedule Picker (Phase 2d — schedule a specific rendered video) */}
+          {scheduleTarget && (
+            <motion.div
+              key="schedule-picker"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card p-4 border-l-2 border-cyan-500/40"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-cyan-300" />
+                    SCHEDULE VIDEO
+                  </h3>
+                  <p className="text-xs font-rajdhani text-dim-400 mt-1 truncate">
+                    {scheduleTarget.topic} → posts to YouTube + TikTok on the chosen day
+                  </p>
+                </div>
+                <button
+                  onClick={() => setScheduleTarget(null)}
+                  className="p-1 rounded hover:bg-void-600/50 text-dim-400 hover:text-ghost transition-all shrink-0"
+                  aria-label="Cancel scheduling"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  min={new Date().toISOString().slice(0, 10)}
+                  className="flex-1 bg-void-700/50 border border-cyan-500/10 rounded-lg px-3 py-2 text-sm text-ghost focus:outline-none focus:border-cyan-500/30"
+                />
+                <button
+                  onClick={() => void confirmSchedule()}
+                  disabled={scheduleBusy || !scheduleDate}
+                  className="btn-cyan text-sm flex items-center gap-1.5"
+                >
+                  {scheduleBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Clock className="w-3.5 h-3.5" />}
+                  {scheduleBusy ? 'Scheduling…' : 'Confirm Schedule'}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
           {/* Scripts List */}
           <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">
             {scripts.length > 0 ? 'Scripts & Ideas' : 'Generated Scripts'}
@@ -1038,7 +1111,7 @@ export function ContentPage(): JSX.Element {
                                 Post Now
                               </button>
                               <button
-                                onClick={(e) => { e.stopPropagation(); setActiveTab('calendar') }}
+                                onClick={(e) => { e.stopPropagation(); openSchedulePicker(idea) }}
                                 className="btn-glass text-sm"
                               >
                                 <Calendar className="w-3 h-3 mr-1" />

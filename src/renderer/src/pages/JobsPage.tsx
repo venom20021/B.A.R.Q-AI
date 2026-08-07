@@ -5,7 +5,7 @@ import {
   Search, Filter, ExternalLink, CheckCircle, XCircle,
   Loader2, Activity, BarChart3, Mail, Send, RefreshCw,
   TrendingUp, Target, AlertCircle, UserCheck, Upload,
-  X, MapPin, FileText, Brain, Lightbulb,
+  X, MapPin, FileText, Brain, Lightbulb, Eye, ShieldCheck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -27,6 +27,9 @@ interface Job {
   reasoning: string
   pros: string[]
   cons: string[]
+  evaluated_by?: string
+  evaluated_at?: string
+  rawStatus?: string
 }
 
 interface ScanProgress {
@@ -115,6 +118,33 @@ interface FollowupCandidate {
   submitted_at: string
 }
 
+interface ApplyPreview {
+  job_id: number
+  title: string
+  company: string
+  status: string
+  message?: string
+  detected_platform: string
+  filled_fields: Record<string, string>
+  screenshot_base64?: string
+  screenshot_path?: string
+  next?: { endpoint: string }
+}
+
+interface JobDetailResponse {
+  job?: Record<string, unknown>
+  evaluation?: {
+    overall_score?: number
+    match_percentage?: number
+    reasoning?: string
+    pros?: string
+    cons?: string
+    evaluated_by?: string
+    evaluated_at?: string
+  } | null
+  application_status?: string
+}
+
 function _mapJobStatus(backendStatus: string): Job['status'] {
   /* Map backend application statuses to the frontend Job status type. */
   const map: Record<string, Job['status']> = {
@@ -146,6 +176,29 @@ const statusColors: Record<Job['status'], string> = {
   approved: 'badge-green',
   applied: 'badge-purple',
   rejected: 'badge-dim'
+}
+
+// Real application status from the backend (applications table) — shown as a
+// secondary chip on each card so queued/submitted/failed are visible without
+// opening the detail modal.
+const rawStatusColors: Record<string, string> = {
+  queued: 'bg-green-500/10 text-green-400 border border-green-400/20',
+  submitted: 'bg-holographic-500/10 text-holographic border border-holographic-500/20',
+  ready_for_review: 'bg-plasma-500/10 text-plasma border border-plasma-500/20',
+  applied: 'bg-holographic-500/10 text-holographic border border-holographic-500/20',
+  failed: 'bg-red-500/10 text-red-400 border border-red-400/20',
+  draft: 'bg-dim-500/10 text-dim border border-dim-500/20',
+  new: 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20',
+}
+
+const RAW_STATUS_LABELS: Record<string, string> = {
+  queued: 'Queued',
+  submitted: 'Applied',
+  ready_for_review: 'Ready for Review',
+  applied: 'Applied',
+  failed: 'Failed',
+  draft: 'Draft',
+  new: 'No Application',
 }
 
 const phaseIcons = ['🌐', '🔍', '🧠', '✅']
@@ -222,6 +275,7 @@ export function JobsPage(): JSX.Element {
 function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarget | null; onDrillConsumed?: () => void }): JSX.Element {
   const [jobs, setJobs] = usePersistentState<Job[]>('JobsPage.jobs', [])
   const [filter, setFilter] = usePersistentState<Job['status'] | 'all'>('JobsPage.filter', 'all')
+  const [rawStatusFilter, setRawStatusFilter] = usePersistentState<RawStatusFilter>('JobsPage.rawStatusFilter', 'all')
   const [sortBy, setSortBy] = usePersistentState<'match' | 'date'>('JobsPage.sortBy', 'match')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = usePersistentState('JobsPage.scanning', false)
@@ -233,11 +287,17 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [applyingJobs, setApplyingJobs] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({})
 
+  // Preview → Confirm & Submit flow (safe-mode auto-apply gate)
+  const [previewJob, setPreviewJob] = useState<Job | null>(null)
+  const [previewData, setPreviewData] = useState<ApplyPreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
   // Scan history state
   const [scanHistory, setScanHistory] = useState<Array<{ id: number; action: string; description: string; severity: string; created_at: string }>>([])
   const [showHistory, setShowHistory] = useState(false)
   const [autoScanEnabled, setAutoScanEnabled] = useState(false)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
+  const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null)
   const [minScoreFilter, setMinScoreFilter] = useState<number | null>(null)
   const [sourceBoardFilter, setSourceBoardFilter] = useState<string | null>(null)
 
@@ -276,6 +336,7 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
           description: String(m['description'] ?? ''),
           source_url: String(m['source_url'] ?? ''),
           status: _mapJobStatus(String(m['status'] ?? 'new')),
+          rawStatus: String(m['status'] ?? ''),
           reasoning: String(m['reasoning'] ?? ''),
           pros,
           cons,
@@ -468,8 +529,79 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
     }
   }
 
+  const handlePreview = async (job: Job): Promise<void> => {
+    setPreviewJob(job)
+    setPreviewData(null)
+    setPreviewLoading(true)
+    try {
+      const resp = await api<ApplyPreview>(`/jobs/${job.id}/apply/preview`, {})
+      setPreviewData(resp ?? null)
+    } catch {
+      setPreviewData({
+        job_id: Number(job.id),
+        title: job.title,
+        company: job.company,
+        status: 'error',
+        message: 'Preview failed — check the backend logs.',
+        detected_platform: 'unknown',
+        filled_fields: {},
+        screenshot_base64: '',
+      })
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  // Fresh detail view from GET /jobs/{id} — same endpoint the voice agent's
+  // barq_job_details tool uses. Includes the latest evaluation + real
+  // application status, not just the cached /jobs/matches payload.
+  const handleViewDetails = async (job: Job): Promise<void> => {
+    setDetailsLoadingId(job.id)
+    try {
+      const detail = await api<JobDetailResponse>(`/jobs/${job.id}`)
+      const raw = detail?.job ?? {}
+      const ev = detail?.evaluation
+
+      const prosRaw = String(ev?.pros ?? raw['pros'] ?? job.pros?.join(',') ?? '')
+      const consRaw = String(ev?.cons ?? raw['cons'] ?? job.cons?.join(',') ?? '')
+      const parseList = (v: string): string[] => {
+        try { return JSON.parse(v) as string[] } catch { return v.replace(/[[\]"]/g, '').split(',').filter(Boolean) }
+      }
+
+      const enriched: Job = {
+        ...job,
+        title: String(raw['title'] ?? job.title),
+        company: String(raw['company'] ?? job.company),
+        location: String(raw['location'] ?? job.location),
+        salary: raw['salary_min'] && raw['salary_max']
+          ? `$${Number(raw['salary_min']).toLocaleString()} - $${Number(raw['salary_max']).toLocaleString()}`
+          : job.salary,
+        source: String(raw['source_board'] ?? raw['source'] ?? job.source),
+        description: String(raw['description'] ?? job.description),
+        source_url: String(raw['source_url'] ?? job.source_url),
+        posted_date: String(raw['posted_date'] ?? raw['scanned_at'] ?? job.posted_date),
+        match_percentage: Math.round(Number(ev?.match_percentage ?? raw['match_percentage'] ?? job.match_percentage)),
+        match_score: Math.round(Number(ev?.overall_score ?? raw['match_score'] ?? job.match_score)),
+        reasoning: String(ev?.reasoning ?? raw['reasoning'] ?? job.reasoning),
+        pros: parseList(prosRaw),
+        cons: parseList(consRaw),
+        status: detail?.application_status ? _mapJobStatus(detail.application_status) : job.status,
+        evaluated_by: ev?.evaluated_by || undefined,
+        evaluated_at: ev?.evaluated_at || undefined,
+        rawStatus: detail?.application_status || job.rawStatus,
+      }
+      setSelectedJob(enriched)
+    } catch {
+      // Fall back to the cached listing if the detail call fails
+      setSelectedJob(job)
+    } finally {
+      setDetailsLoadingId(null)
+    }
+  }
+
   const filteredJobs = jobs
     .filter((job) => filter === 'all' || job.status === filter)
+    .filter((job) => rawStatusFilter === 'all' || job.rawStatus === rawStatusFilter)
     .filter((job) => minScoreFilter == null || job.match_percentage >= minScoreFilter)
     .filter((job) => sourceBoardFilter == null || job.source === sourceBoardFilter)
     .sort((a, b) => sortBy === 'match' ? b.match_percentage - a.match_percentage : a.posted_date.localeCompare(b.posted_date))
@@ -640,6 +772,18 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
           </select>
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-sm font-exo text-dim-400">Pipeline:</span>
+          <select value={rawStatusFilter} onChange={(e) => setRawStatusFilter(e.target.value as RawStatusFilter)} className="input-cyan text-sm">
+            <option value="all">All Stages</option>
+            <option value="queued">Queued</option>
+            <option value="submitted">Applied</option>
+            <option value="applied">Applied</option>
+            <option value="ready_for_review">Ready for Review</option>
+            <option value="failed">Failed</option>
+            <option value="draft">Draft</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
           <span className="text-sm font-exo text-dim-400">Sort:</span>
           <button onClick={() => setSortBy('match')}
             className={`text-sm font-rajdhani font-semibold px-3 py-1.5 rounded-lg transition-all ${sortBy === 'match' ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20' : 'text-dim-400 hover:text-ghost'}`}>
@@ -671,9 +815,17 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
               <motion.div key={job.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }} className="glass-card-hover">
                 <div className="flex items-start justify-between">
                   <div className="space-y-1.5 flex-1">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-base font-rajdhani font-semibold text-ghost">{job.title}</h3>
                       <span className={statusColors[job.status]}>{job.status.charAt(0).toUpperCase() + job.status.slice(1)}</span>
+                      {job.rawStatus && job.rawStatus !== 'new' && (
+                        <span
+                          className={"text-[10px] font-share-tech font-semibold px-1.5 py-0.5 rounded " + (rawStatusColors[job.rawStatus] || rawStatusColors.draft)}
+                          title={`Live application status: ${job.rawStatus}`}
+                        >
+                          {RAW_STATUS_LABELS[job.rawStatus] || job.rawStatus}
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm font-exo text-dim-400">{job.company}</p>
                     <div className="flex items-center gap-4 text-xs font-exo text-dim-400">
@@ -713,24 +865,30 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
                       btnClass = 'bg-red-500/10 text-red-400 border border-red-400/20 text-xs flex items-center gap-1.5'
                       btnContent = <><XCircle className="w-3.5 h-3.5" /> Retry</>
                     } else {
-                      btnContent = <><CheckCircle className="w-3.5 h-3.5" /> Approve & Apply</>
+                      btnContent = <><Eye className="w-3.5 h-3.5" /> Preview & Apply</>
                     }
 
                     return (
                       <button
-                        onClick={() => handleApprove(job.id)}
+                        onClick={() => handlePreview(job)}
                         disabled={isBtnDisabled}
                         className={btnClass}
+                        title="Fill the form in safe mode, review a screenshot, then confirm submission"
                       >
                         {btnContent}
                       </button>
                     )
                   })()}
                   <button
-                    onClick={() => setSelectedJob(job)}
+                    onClick={() => void handleViewDetails(job)}
+                    disabled={detailsLoadingId === job.id}
                     className="btn-ghost-cyan text-xs flex items-center gap-1.5"
+                    title="Load fresh details + latest match evaluation from the backend"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" /> View
+                    {detailsLoadingId === job.id
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <ExternalLink className="w-3.5 h-3.5" />}
+                    {detailsLoadingId === job.id ? 'Loading...' : 'View'}
                   </button>
                 </div>
               </motion.div>
@@ -741,6 +899,19 @@ function JobListings({ drillFilter, onDrillConsumed }: { drillFilter?: DrillTarg
       {/* Job Detail Modal */}
       <AnimatePresence>
         {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      </AnimatePresence>
+
+      {/* Preview → Confirm & Submit Modal (safe-mode gate) */}
+      <AnimatePresence>
+        {(previewJob || previewLoading) && (
+          <ApplyPreviewModal
+            job={previewJob}
+            loading={previewLoading}
+            data={previewData}
+            onConfirm={() => { if (previewJob) void handleApprove(previewJob.id) }}
+            onClose={() => { setPreviewJob(null); setPreviewData(null) }}
+          />
+        )}
       </AnimatePresence>
     </div>
   )
@@ -791,6 +962,16 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }): JS
             <span className="badge-dim text-hud text-[10px]">{job.source}</span>
             <span className={"text-[10px] font-share-tech font-semibold px-1.5 py-0.5 rounded " + (statusColors[job.status] || 'badge-dim')}>{job.status.charAt(0).toUpperCase() + job.status.slice(1)}</span>
             {job.posted_date && <span className="text-[10px] font-share-tech text-dim-500 bg-void-800/50 px-2 py-0.5 rounded">{new Date(job.posted_date).toLocaleDateString()}</span>}
+            {job.evaluated_at && (() => {
+              const evDate = new Date(job.evaluated_at as string)
+              const valid = !Number.isNaN(evDate.getTime())
+              return valid && (
+                <span className="text-[10px] font-share-tech text-dim-500 bg-void-800/50 px-2 py-0.5 rounded flex items-center gap-1" title="Evaluation fetched live from GET /jobs/{id}">
+                  <Brain className="w-3 h-3 text-plasma" />
+                  Evaluated {evDate.toLocaleString()}{job.evaluated_by ? ` by ${job.evaluated_by}` : ''}
+                </span>
+              )
+            })()}
           </div>
         </div>
         <div className="p-5 space-y-5">
@@ -877,6 +1058,142 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }): JS
     </motion.div>
   )
 }
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1c. Preview → Confirm & Submit Modal (safe-mode auto-apply gate)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function ApplyPreviewModal({ job, loading, data, onConfirm, onClose }: {
+  job: Job | null
+  loading: boolean
+  data: ApplyPreview | null
+  onConfirm: () => void
+  onClose: () => void
+}): JSX.Element {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const filledCount = data ? Object.keys(data.filled_fields || {}).length : 0
+  const hasScreenshot = Boolean(data?.screenshot_base64)
+  const previewOk = data?.status === 'completed'
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.92, y: 30 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.92, y: 30 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+        className="relative w-full max-w-3xl max-h-[88vh] overflow-y-auto rounded-xl border border-cyan-500/15 bg-void-900/95 shadow-2xl shadow-cyan-500/5 scroll-cyan"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-3 right-3 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-void-800/80 text-dim-400 hover:text-ghost hover:bg-void-700/90 transition-all" aria-label="Close modal"><X className="w-4 h-4" /></button>
+
+        <div className="p-5 pb-4 border-b border-cyan-500/10">
+          <div className="flex items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-orbitron font-bold text-ghost leading-tight tracking-tight">{job ? job.title : 'Loading preview...'}</h2>
+              <p className="text-sm font-rajdhani font-semibold text-cyan-300 mt-0.5">{job ? job.company : ''}</p>
+            </div>
+            <div className="flex flex-col items-center flex-shrink-0">
+              <div className="w-14 h-14 rounded-full border-2 border-plasma flex items-center justify-center">
+                <ShieldCheck className="w-6 h-6 text-plasma" />
+              </div>
+              <span className="text-[10px] font-share-tech text-dim-400 mt-0.5">SAFE PREVIEW</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-12 space-y-3">
+              <Loader2 className="w-8 h-8 text-cyan-300 animate-spin" />
+              <p className="text-sm font-rajdhani text-dim-300">Filling the application form in safe mode (never submits)...</p>
+              <p className="text-xs font-exo text-dim-500">Launches a headless browser, fills fields from your resume, screenshots the result</p>
+            </div>
+          )}
+
+          {!loading && data && (
+            <>
+              {/* Status banner */}
+              <div className={"rounded-lg px-3 py-2 text-xs font-rajdhani font-semibold flex items-center gap-2 border " +
+                (previewOk
+                  ? 'bg-green-500/10 text-green-400 border-green-400/20'
+                  : data.status === 'error'
+                    ? 'bg-red-500/10 text-red-400 border-red-400/20'
+                    : 'bg-amber-500/10 text-amber-400 border-amber-400/20')}>
+                {previewOk ? <CheckCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                {data.message || (previewOk ? 'Form filled — review before submitting' : 'Preview unavailable')}
+              </div>
+
+              {/* Screenshot */}
+              {hasScreenshot ? (
+                <div>
+                  <h4 className="text-xs font-orbitron font-bold text-dim-400 tracking-wider mb-2 flex items-center gap-1.5"><Eye className="w-3.5 h-3.5 text-cyan-400" /> FILLED FORM SCREENSHOT</h4>
+                  <img
+                    src={data.screenshot_base64}
+                    alt={`Filled application form for ${data.title}`}
+                    className="w-full rounded-lg border border-void-600/40 bg-void-800/40"
+                  />
+                  <p className="text-[11px] font-exo text-dim-500 mt-1.5">Nothing was submitted — this is a dry run for your review.</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-void-600/30 bg-void-800/30 p-4 text-center">
+                  <p className="text-xs font-rajdhani text-dim-400">No screenshot available — the site may block automated form filling.</p>
+                </div>
+              )}
+
+              {/* Platform + filled fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <h4 className="text-xs font-orbitron font-bold text-dim-400 tracking-wider mb-2">DETECTED PLATFORM</h4>
+                  <span className="badge-dim text-hud text-[11px]">{data.detected_platform || 'unknown'}</span>
+                </div>
+                <div>
+                  <h4 className="text-xs font-orbitron font-bold text-dim-400 tracking-wider mb-2">FILLED FIELDS ({filledCount})</h4>
+                  {filledCount === 0 ? (
+                    <p className="text-xs font-exo text-dim-500">No fields auto-filled — form may require manual entry or login.</p>
+                  ) : (
+                    <div className="space-y-1 max-h-32 overflow-y-auto scroll-cyan">
+                      {Object.entries(data.filled_fields || {}).map(([field, value]) => (
+                        <div key={field} className="flex items-start gap-2 text-[11px] font-exo">
+                          <CheckCircle className="w-3 h-3 text-neural mt-0.5 flex-shrink-0" />
+                          <span className="text-dim-400 w-24 flex-shrink-0 font-semibold">{field}:</span>
+                          <span className="text-dim-300 truncate">{String(value).slice(0, 60)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-5 py-3.5 border-t border-cyan-500/10 flex items-center justify-between bg-void-800/30 rounded-b-xl">
+          <button onClick={onClose} className="text-xs font-rajdhani font-semibold text-dim-400 hover:text-ghost px-3 py-1.5 rounded-lg hover:bg-void-700/50 transition-all">Cancel</button>
+          <button
+            onClick={onConfirm}
+            disabled={loading || !previewOk}
+            className={"btn-cyan text-xs flex items-center gap-1.5 " + (loading || !previewOk ? 'opacity-50 cursor-not-allowed' : '')}
+            title={previewOk ? 'Submit the real application in the background' : 'Only available after a successful preview'}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" /> Confirm & Submit
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Response Rate Analytics
 // ═══════════════════════════════════════════════════════════════════════════════
