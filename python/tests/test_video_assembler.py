@@ -48,6 +48,88 @@ def test_split_into_sections_empty(assembler):
     assert assembler._split_into_sections("", ["Hook"]) == [("Content", "")]
 
 
+# ─── Phase 2d: aspect-aware canvas ───────────────────────────────────────────
+
+def test_aspect_size_defaults_vertical():
+    from social.video import _aspect_size
+    assert _aspect_size(None) == (1080, 1920)
+    assert _aspect_size("") == (1080, 1920)
+
+
+def test_aspect_size_by_aspect_string():
+    from social.video import _aspect_size
+    assert _aspect_size("9:16") == (1080, 1920)
+    assert _aspect_size("16:9") == (1920, 1080)
+    assert _aspect_size("1:1") == (1080, 1080)
+
+
+def test_aspect_size_by_script_format():
+    from social.video import _aspect_size
+    assert _aspect_size("youtube_shorts") == (1080, 1920)
+    assert _aspect_size("tiktok_short") == (1080, 1920)
+    assert _aspect_size("instagram_reel") == (1080, 1920)
+    assert _aspect_size("youtube_essay") == (1920, 1080)
+    assert _aspect_size("twitter_thread") == (1080, 1080)
+
+
+def test_aspect_size_unknown_format_falls_back_vertical():
+    from social.video import _aspect_size
+    assert _aspect_size("some_unknown_format") == (1080, 1920)
+
+
+# ─── Phase 2d: Ken Burns on stills ───────────────────────────────────────────
+
+def test_ken_burns_returns_modified_clip_on_success(assembler, monkeypatch):
+    """On a successful animated resize the Ken Burns clip is returned."""
+    class FakeClip:
+        def resized(self, *a, **k):
+            return "kb-clip"
+
+    # _apply_ken_burns calls clip.resized(zoom_lambda) — FakeClip returns 'kb-clip'
+    result = assembler._apply_ken_burns(FakeClip(), 8.0)
+    assert result == "kb-clip"
+
+
+def test_ken_burns_falls_back_on_error(assembler, monkeypatch):
+    """If moviepy rejects the animated resize, the original clip is returned."""
+    class BadClip:
+        def resized(self, *a, **k):
+            raise RuntimeError("resize failed")
+
+    result = assembler._apply_ken_burns(BadClip(), 8.0)
+    assert isinstance(result, BadClip)
+
+
+# ─── Phase 2d: free topic-image fallback ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fetch_topic_images_no_topic_returns_empty(assembler):
+    """No topic and no cues -> empty list, never an exception."""
+    result = await assembler._fetch_topic_images("", [], count=3)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_topic_images_failure_non_fatal(assembler, monkeypatch):
+    """A failed Pollinations request must return [] (non-fatal)."""
+    class BoomClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr("httpx.AsyncClient", BoomClient)
+    result = await assembler._fetch_topic_images("remote jobs", [], count=2)
+    assert result == []
+
+
 # ─── Stock footage graceful fallback ────────────────────────────────────────
 
 @pytest.mark.asyncio

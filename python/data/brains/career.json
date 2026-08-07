@@ -4,26 +4,46 @@
   "graph": {},
   "nodes": [
     {
-      "label": "a",
-      "id": "a"
+      "label": "career engine",
+      "id": "career engine"
     },
     {
-      "label": "b",
-      "id": "b"
+      "label": "job applications",
+      "id": "job applications"
+    },
+    {
+      "label": "skills",
+      "id": "skills"
+    },
+    {
+      "label": "cover letters",
+      "id": "cover letters"
     }
   ],
   "links": [
     {
-      "relation": "RELATED_TO",
+      "relation": "TRACKS",
       "weight": 1,
-      "source": "a",
-      "target": "b"
+      "source": "career engine",
+      "target": "job applications"
+    },
+    {
+      "relation": "MATCHES",
+      "weight": 1,
+      "source": "career engine",
+      "target": "skills"
+    },
+    {
+      "relation": "GENERATES",
+      "weight": 1,
+      "source": "career engine",
+      "target": "cover letters"
     }
   ],
   "_meta": {
     "brain_type": "career",
     "version": 1,
-    "nodes": 2,
-    "edges": 1
+    "nodes": 4,
+    "edges": 3
   }
 }

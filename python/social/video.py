@@ -31,9 +31,41 @@ except Exception:  # pragma: no cover - import fallback
     MOVIEPY_AVAILABLE = False
 
 
-# Vertical video canvas (9:16) for shorts/reels
+# Video canvas presets (Phase 2d — aspect-aware rendering)
+# Format -> (width, height). All common short-form + essay formats covered.
 CANVAS_W = 1080
 CANVAS_H = 1920
+
+ASPECT_PRESETS = {
+    "9:16": (1080, 1920),      # TikTok / Reels / Shorts (vertical)
+    "16:9": (1920, 1080),      # YouTube essays (landscape)
+    "1:1": (1080, 1080),       # Feed posts / threads
+}
+
+# Script format strings (from the Content Studio format picker) -> aspect
+_FORMAT_TO_ASPECT = {
+    "tiktok_short": "9:16",
+    "instagram_reel": "9:16",
+    "youtube_shorts": "9:16",
+    "youtube_essay": "16:9",
+    "twitter_thread": "1:1",
+    "linkedin_post": "1:1",
+    "facebook_reel": "9:16",
+}
+
+
+def _aspect_size(format_or_aspect: str | None) -> tuple[int, int]:
+    """Resolve a script format or aspect string to a (width, height) canvas."""
+    key = (format_or_aspect or "9:16").strip().lower()
+    if key in ASPECT_PRESETS:
+        return ASPECT_PRESETS[key]
+    if key in _FORMAT_TO_ASPECT:
+        return ASPECT_PRESETS[_FORMAT_TO_ASPECT[key]]
+    # Bare names like 'tiktok' / 'shorts'
+    for fmt, aspect in _FORMAT_TO_ASPECT.items():
+        if fmt.startswith(key) or key in fmt:
+            return ASPECT_PRESETS[aspect]
+    return ASPECT_PRESETS["9:16"]
 
 def _resolve_caption_font() -> str:
     """Return a usable caption font (file path preferred) for this platform.
@@ -42,26 +74,6 @@ def _resolve_caption_font() -> str:
     some Linux boxes, Arial on Windows), so resolve a real .ttf path first and
     fall back to the bare name only as a last resort.
     """
-    if os.name == "nt":
-        win = os.environ.get("WINDIR", "C:/Windows")
-        arial = os.path.join(win, "Fonts", "arial.ttf")
-        if os.path.exists(arial):
-            return arial
-        return "Arial"
-    for cand in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ):
-        if os.path.exists(cand):
-            return cand
-    return "DejaVu-Sans"
-
-
-_CAPTION_FONT = _resolve_caption_font()
-
-
-def _resolve_caption_font() -> str:
-    """Return a usable caption font (file path preferred) for this platform."""
     if os.name == "nt":
         win = os.environ.get("WINDIR", "C:/Windows")
         arial = os.path.join(win, "Fonts", "arial.ttf")
@@ -175,6 +187,7 @@ class VideoAssembler:
         output_path: str | Path,
         voiceover_path: str | Path | None = None,
         stock_footage_paths: list[str | Path] | None = None,
+        format: str | None = None,
     ) -> Path:
         """
         Render a complete video from script and assets.
@@ -195,6 +208,11 @@ class VideoAssembler:
             Path to the rendered video file
         """
         output_path = Path(output_path)
+
+        # Phase 2d: aspect-aware canvas — derive from the script's format field
+        # (stored by the Content Studio format picker) or the explicit arg.
+        fmt = format or script.get("format") or script.get("script_format") or "youtube_shorts"
+        canvas_w, canvas_h = _aspect_size(fmt)
 
         if not MOVIEPY_AVAILABLE:
             # No moviepy — write a minimal placeholder so the pipeline
@@ -217,6 +235,17 @@ class VideoAssembler:
                 footage = await self._fetch_stock_footage(search, count=len(section_texts) or 3)
                 downloaded_footage = list(footage)
 
+        # Phase 2d: if no stock footage (no API key / no matches), fall back to
+        # free Pollinations images matched to the topic — rendered with a Ken
+        # Burns zoom so stills feel like video instead of frozen frames.
+        used_images: list[str] = []
+        if not footage:
+            images = await self._fetch_topic_images(topic, visual_cues, count=len(section_texts) or 3)
+            if images:
+                footage = images
+                used_images = list(images)
+                downloaded_footage = list(images)
+
         # ── Voiceover: use provided or auto-generate from the script ─────
         voice = str(voiceover_path) if voiceover_path else None
         if not voice:
@@ -225,9 +254,11 @@ class VideoAssembler:
         clips = []
         try:
             if footage:
-                clips = await self._build_footage_clips(footage, section_texts)
+                clips = await self._build_footage_clips(
+                    footage, section_texts, canvas_w=canvas_w, canvas_h=canvas_h
+                )
             if not clips:
-                clips = self._build_slide_clips(section_texts)
+                clips = self._build_slide_clips(section_texts, canvas_w=canvas_w, canvas_h=canvas_h)
 
             if not clips:
                 # Nothing to render — empty placeholder
@@ -235,7 +266,9 @@ class VideoAssembler:
                 return output_path
 
             # Composite: captions over the visual layer
-            final_clip = self._composite_with_captions(clips, section_texts)
+            final_clip = self._composite_with_captions(
+                clips, section_texts, canvas_w=canvas_w, canvas_h=canvas_h
+            )
 
             # Attach voiceover audio
             if voice and Path(voice).exists():
@@ -276,13 +309,86 @@ class VideoAssembler:
                     Path(f).unlink(missing_ok=True)
                 except Exception:
                     pass
+            for f in used_images:
+                try:
+                    Path(f).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         return output_path
 
     # ── Clip builders ───────────────────────────────────────────────────
 
+    def _apply_ken_burns(self, clip, duration: float) -> Any:
+        """Apply a slow Ken Burns zoom to a still-image clip.
+
+        Zooms from 1.0x to ~1.12x over the clip duration so a static image
+        reads as gentle motion instead of a frozen frame. Falls back to the
+        unmodified clip if moviepy rejects the animated resize.
+        """
+        try:
+            start_scale = 1.0
+            end_scale = 1.12
+            zoom = (
+                lambda t: start_scale
+                + (end_scale - start_scale) * min(t / max(duration, 1.0), 1.0)
+            )
+            return clip.resized(zoom)
+        except Exception as e:
+            print(f"[Video] Ken Burns skipped (non-fatal): {e}")
+            return clip
+
+    async def _fetch_topic_images(
+        self, topic: str, visual_cues: list[str], count: int = 3
+    ) -> list[str]:
+        """Download free Pollinations images for the topic / visual cues.
+
+        No-cost fallback so every render has a visual layer even when the
+        Pexels key is missing. Returns local file paths (empty on failure).
+        """
+        try:
+            import httpx
+
+            tmp_dir = Path(tempfile.gettempdir()) / "barq_topic_images"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+
+            queries: list[str] = []
+            for cue in (visual_cues or [])[:count]:
+                if isinstance(cue, str) and cue.strip():
+                    queries.append(cue.strip()[:60])
+            if not queries and topic:
+                queries = [topic[:60]]
+            if not queries:
+                queries = ["technology abstract"][:count]
+
+            paths: list[str] = []
+            for q in queries[:count]:
+                try:
+                    import urllib.parse
+                    prompt = urllib.parse.quote(q)
+                    url = (
+                        f"https://image.pollinations.ai/prompt/{prompt}"
+                        f"?width=1080&height=1920&nologo=true&seed={abs(hash(q)) % 100000}"
+                    )
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                        dl = await client.get(url)
+                        if dl.status_code == 200 and len(dl.content) > 2000:
+                            path = tmp_dir / f"topic_{abs(hash(q)) % 100000}.jpg"
+                            path.write_bytes(dl.content)
+                            paths.append(str(path))
+                except Exception:
+                    continue
+            return paths
+        except Exception as e:
+            print(f"[Video] Topic image fetch failed (non-fatal): {e}")
+            return []
+
     async def _build_footage_clips(
-        self, footage: list[str], section_texts: list[tuple[str, str]]
+        self,
+        footage: list[str],
+        section_texts: list[tuple[str, str]],
+        canvas_w: int = CANVAS_W,
+        canvas_h: int = CANVAS_H,
     ) -> list:
         """Build video clips from stock footage, one per script section."""
         clips = []
@@ -290,16 +396,20 @@ class VideoAssembler:
             for i, path in enumerate(footage):
                 section = section_texts[i] if i < len(section_texts) else section_texts[-1] if section_texts else ("", "")
                 try:
-                    clip = ImageClip(path) if path.lower().endswith((".png", ".jpg", ".jpeg")) else None
+                    is_image = path.lower().endswith((".png", ".jpg", ".jpeg"))
+                    clip = ImageClip(path) if is_image else None
                     if clip is None:
                         from moviepy import VideoFileClip
                         clip = VideoFileClip(path)
-                    clip = clip.resized(height=CANVAS_H)
+                    clip = clip.resized(height=canvas_h)
                     # Cover-crop horizontally to canvas width
-                    if clip.w < CANVAS_W:
-                        clip = clip.resized(width=CANVAS_W)
-                    clip = clip.cropped(x_center=clip.w / 2, y_center=clip.h / 2, width=CANVAS_W, height=CANVAS_H)
+                    if clip.w < canvas_w:
+                        clip = clip.resized(width=canvas_w)
+                    clip = clip.cropped(x_center=clip.w / 2, y_center=clip.h / 2, width=canvas_w, height=canvas_h)
                     clip = clip.with_duration(8.0)
+                    # Ken Burns on stills (Phase 2d)
+                    if is_image:
+                        clip = self._apply_ken_burns(clip, 8.0)
                     clips.append(clip)
                 except Exception as e:
                     print(f"[Video] Footage clip {i} skipped: {e}")
@@ -308,7 +418,9 @@ class VideoAssembler:
             pass
         return clips
 
-    def _build_slide_clips(self, section_texts: list[tuple[str, str]]) -> list:
+    def _build_slide_clips(
+        self, section_texts: list[tuple[str, str]], canvas_w: int = CANVAS_W, canvas_h: int = CANVAS_H
+    ) -> list:
         """Build styled text slides as a fallback when no footage is available."""
         clips = []
         for i, (section_name, text) in enumerate(section_texts):
@@ -318,7 +430,7 @@ class VideoAssembler:
                     font_size=48,
                     color="white",
                     bg_color="black",
-                    size=(CANVAS_W, CANVAS_H),
+                    size=(canvas_w, canvas_h),
                     method="caption",
                     duration=8.0,
                 )
@@ -327,7 +439,10 @@ class VideoAssembler:
                 print(f"[Video] Slide {i} failed: {e}")
         return clips
 
-    def _composite_with_captions(self, base_clips: list, section_texts: list[tuple[str, str]]) -> Any:
+    def _composite_with_captions(
+        self, base_clips: list, section_texts: list[tuple[str, str]],
+        canvas_w: int = CANVAS_W, canvas_h: int = CANVAS_H,
+    ) -> Any:
         """Stack the visual clips and overlay a caption bar for each section."""
         if len(base_clips) == 1:
             base = base_clips[0]
@@ -347,16 +462,16 @@ class VideoAssembler:
                     stroke_color="black",
                     stroke_width=1,
                     method="caption",
-                    size=(CANVAS_W - 120, 180),
+                    size=(canvas_w - 120, 180),
                 )
-                caption = caption.with_position(("center", CANVAS_H - 320))
+                caption = caption.with_position(("center", canvas_h - 320))
                 caption = caption.with_start(i * caption_duration).with_duration(caption_duration)
                 overlays.append(caption)
             except Exception as e:
                 print(f"[Video] Caption {i} failed: {e}")
 
         if overlays:
-            return CompositeVideoClip([base, *overlays], size=(CANVAS_W, CANVAS_H))
+            return CompositeVideoClip([base, *overlays], size=(canvas_w, canvas_h))
         return base
 
     def _split_into_sections(

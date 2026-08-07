@@ -53,6 +53,14 @@ class StubSession:
         # must expose observe() (returning a coroutine like the real method).
         return _awaitable("observe-called")
 
+    def detect_captcha(self):
+        # Phase 2a anti-bot: the action map calls sess.detect_captcha() too.
+        return _awaitable("captcha-called")
+
+    def check_rate_limited(self):
+        # Phase 2a anti-bot: the action map calls sess.check_rate_limited() too.
+        return _awaitable("ratelimit-called")
+
     def run(self, coro, timeout=60):
         # coro is an awaitable built by run_on — we can't await it here, so
         # just record that run() was invoked and return the canned result.
@@ -157,6 +165,92 @@ def test_unknown_action_reports_error(monkeypatch):
     assert result == "Unknown browser action: 'fly_to_the_moon'"
     # get() is called before the action lookup, but no run() for unknown actions
     assert stub.called_actions == []
+
+
+# ─── Anti-bot: CAPTCHA detection & rate-limit checks (Phase 2a) ─────────────
+
+class FakePageWithFrames:
+    """Page stand-in that reports iframe counts + body text."""
+
+    def __init__(self, hcap=0, recap=0, body=""):
+        self._hcap = hcap
+        self._recap = recap
+        self._body = body
+        self.url = "https://example.com"
+
+    def is_closed(self):
+        return False
+
+    def locator(self, selector):
+        class _Loc:
+            def __init__(self, count):
+                self._count = count
+
+            async def count(self):
+                return self._count
+
+        if "hcaptcha" in selector:
+            return _Loc(self._hcap)
+        if "recaptcha" in selector:
+            return _Loc(self._recap)
+        return _Loc(0)
+
+    async def inner_text(self, selector):
+        return self._body
+
+
+@pytest.mark.asyncio
+async def test_detect_captcha_hcaptcha():
+    sess = _make_session(FakePageWithFrames(hcap=1))
+    assert await sess.detect_captcha() == "hcaptcha"
+
+
+@pytest.mark.asyncio
+async def test_detect_captcha_recaptcha():
+    sess = _make_session(FakePageWithFrames(recap=2))
+    assert await sess.detect_captcha() == "recaptcha"
+
+
+@pytest.mark.asyncio
+async def test_detect_captcha_none():
+    sess = _make_session(FakePageWithFrames(body="jobs and careers"))
+    assert await sess.detect_captcha() == "none"
+
+
+@pytest.mark.asyncio
+async def test_detect_captcha_text_marker():
+    sess = _make_session(FakePageWithFrames(body="Please verify you are human before continuing"))
+    assert await sess.detect_captcha() == "unknown-challenge"
+
+
+@pytest.mark.asyncio
+async def test_check_rate_limited():
+    sess = _make_session(FakePageWithFrames(body="Too many requests. Please slow down and try again."))
+    assert await sess.check_rate_limited() == "rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_check_rate_limited_blocked():
+    sess = _make_session(FakePageWithFrames(body="Access denied. Our systems have detected unusual traffic."))
+    assert await sess.check_rate_limited() == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_check_rate_limited_ok():
+    sess = _make_session(FakePageWithFrames(body="Python developer jobs in London"))
+    assert await sess.check_rate_limited() == "ok"
+
+
+def test_captcha_actions_registered(monkeypatch):
+    """detect_captcha / check_rate_limited must route through the action map."""
+    from system_control import browser_control
+
+    stub = StubSession(result="none")
+    monkeypatch.setattr(browser_control._registry, "get", lambda name=None: stub)
+
+    assert browser_control.browser_action("detect_captcha", {}) == "none"
+    assert browser_control.browser_action("check_rate_limited", {}) == "none"
+    assert len(stub.called_actions) == 2
 
 
 # ─── URL helper ─────────────────────────────────────────────────────────────

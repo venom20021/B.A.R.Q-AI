@@ -385,6 +385,7 @@ async def _render_video_task(script_id: int, script: dict[str, Any]) -> None:
         )
         script_text = script.get("script_content", "") or ""
         topic = script.get("topic", "") or script.get("title", "")
+        script_format = script.get("format", "youtube_shorts") or "youtube_shorts"
 
         set_generation_progress(
             "rendering", GENERATION_PHASES[2], 40, "Fetching stock footage & assembling assets..."
@@ -396,6 +397,7 @@ async def _render_video_task(script_id: int, script: dict[str, Any]) -> None:
                 "script": script_text,
                 "topic": topic,
                 "visual_cues": visual_cues,
+                "format": script_format,  # Phase 2d: aspect-aware canvas
             },
             output_path=output_path,
         )

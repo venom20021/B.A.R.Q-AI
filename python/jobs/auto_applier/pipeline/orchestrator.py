@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..applier.engine import ApplicationEngine
+from ..boards.glassdoor import GlassdoorStrategy
+from ..boards.indeed import IndeedStrategy
 from ..boards.linkedin import LinkedInStrategy
 from ..config import CONFIG, PROFILE
 from ..failure.evo_logger import EvoLogger
@@ -33,6 +35,8 @@ class AutoApplyPipeline:
 
         # Register built-in strategies
         self.engine.register_strategy("linkedin.com", LinkedInStrategy)
+        self.engine.register_strategy("indeed.com", IndeedStrategy)
+        self.engine.register_strategy("glassdoor.com", GlassdoorStrategy)
 
         # Wire Telegram callbacks
         self.telegram.on_apply = self._on_telegram_apply

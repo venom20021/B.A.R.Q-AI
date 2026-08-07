@@ -29,6 +29,22 @@ class KeyboardRequest(BaseModel):
     action: str = "type"  # type, press_key, hotkey
     key: Optional[str] = None
 
+class DesktopActionRequest(BaseModel):
+    action: str
+    x: Optional[int] = None
+    y: Optional[int] = None
+    button: str = "left"
+    clicks: int = 1
+    text: str = ""
+    key: Optional[str] = None
+    keys: Optional[list[str]] = None
+    window_name: Optional[str] = None
+    app_name: Optional[str] = None
+    direction: str = "down"
+    amount: int = 3
+    duration: float = 0.3
+    confirm: bool = False
+
 class WallpaperRequest(BaseModel):
     description: str
     source: str = "auto"  # auto, pollinations, unsplash
@@ -161,6 +177,135 @@ async def mouse_control(action: str, x: Optional[int] = None, y: Optional[int] =
         return {"status": "executed", "action": action}
     except ImportError:
         return {"status": "unavailable", "message": "pyautogui not installed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Unified Desktop Action (agent + voice skill) ─────────────────────────────
+
+# Safety tiers: which actions are destructive and therefore require confirm=true
+_CONFIRM_REQUIRED_ACTIONS = {"close_app"}
+
+
+@router.post("/action")
+async def desktop_action(request: DesktopActionRequest):
+    """Unified desktop control endpoint used by the agent's ``desktop_action`` skill.
+
+    Dispatches to mouse / keyboard / window / app operations.  Destructive
+    actions (e.g. ``close_app``) are gated behind ``confirm=true`` so an
+    autonomous agent can never kill a process without an explicit go-ahead
+    (mirrors the ``command_whitelist`` warn/dangerous approval flow).
+
+    Actions:
+        mouse_click    — click at (x, y) or current cursor (button, clicks)
+        mouse_move     — move cursor to (x, y)
+        mouse_scroll   — scroll up/down by amount
+        keyboard_type  — type text at the focused field
+        keyboard_press — press a key (enter, tab, escape, ...)
+        keyboard_hotkey— press a combo (keys list e.g. ['ctrl', 'c'])
+        focus_window   — bring a window (by title) to the foreground
+        close_app      — close an app by name (requires confirm=true)
+        screenshot     — save a screenshot to path
+    """
+    action = request.action
+
+    # ── Safety gate (before any import so responses are deterministic) ──
+    if action in _CONFIRM_REQUIRED_ACTIONS and not request.confirm:
+        return {
+            "status": "confirmation_required",
+            "message": (
+                f"'{action}' is a destructive desktop action and needs explicit approval. "
+                "Re-send with confirm=true to allow it."
+            ),
+        }
+
+    # ── Input validation (before importing pyautogui — a missing optional
+    #    dependency must not turn a validation error into 'unavailable'.)
+    _VALID_ACTIONS = {
+        "mouse_click", "mouse_move", "mouse_scroll", "keyboard_type",
+        "keyboard_press", "keyboard_hotkey", "focus_window", "close_app",
+        "screenshot",
+    }
+    if action not in _VALID_ACTIONS:
+        return {"status": "error", "message": f"Unknown desktop action: '{action}'"}
+
+    if action == "mouse_move" and (request.x is None or request.y is None):
+        return {"status": "error", "message": "mouse_move requires x and y coordinates"}
+    if action == "keyboard_type" and not request.text:
+        return {"status": "error", "message": "keyboard_type requires text"}
+    if action == "keyboard_hotkey" and not request.keys:
+        return {"status": "error", "message": "keyboard_hotkey requires a keys list e.g. ['ctrl', 'c']"}
+    if action == "focus_window" and not request.window_name:
+        return {"status": "error", "message": "focus_window requires window_name"}
+    if action == "close_app" and not request.app_name:
+        return {"status": "error", "message": "close_app requires app_name"}
+
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+
+        if action == "mouse_click":
+            if request.x is not None and request.y is not None:
+                pyautogui.click(request.x, request.y, button=request.button, clicks=request.clicks)
+            else:
+                pyautogui.click(button=request.button, clicks=request.clicks)
+            result = f"Clicked ({request.button}) at ({request.x or 'cursor'}, {request.y or 'cursor'})"
+
+        elif action == "mouse_move":
+            pyautogui.moveTo(request.x, request.y, duration=request.duration)
+            result = f"Mouse moved to ({request.x}, {request.y})"
+
+        elif action == "mouse_scroll":
+            amount = abs(request.amount) * (-1 if request.direction == "down" else 1)
+            pyautogui.scroll(amount)
+            result = f"Scrolled {request.direction} by {request.amount}"
+
+        elif action == "keyboard_type":
+            pyautogui.write(request.text, interval=0.02)
+            result = f"Typed {len(request.text)} characters"
+
+        elif action == "keyboard_press":
+            pyautogui.press(request.key or "enter")
+            result = f"Pressed key '{request.key or 'enter'}'"
+
+        elif action == "keyboard_hotkey":
+            pyautogui.hotkey(*[k.strip() for k in request.keys])
+            result = f"Pressed hotkey {'+'.join(request.keys)}"
+
+        elif action == "focus_window":
+            try:
+                import pygetwindow as gw
+                wins = gw.getWindowsWithTitle(request.window_name)
+                if not wins:
+                    return {"status": "error", "message": f"No window found with title containing '{request.window_name}'"}
+                wins[0].activate()
+                result = f"Focused window '{request.window_name}'"
+            except ImportError:
+                return {"status": "unavailable", "message": "pygetwindow not installed. Run: pip install pygetwindow"}
+
+        elif action == "close_app":
+            if platform.system().lower() == "windows":
+                subprocess.run(["taskkill", "/f", "/im", f"{request.app_name}.exe"],
+                               capture_output=True, timeout=5)
+            else:
+                subprocess.run(["pkill", "-f", request.app_name], capture_output=True, timeout=5)
+            result = f"Closed app '{request.app_name}'"
+
+        elif action == "screenshot":
+            path = request.text or str(Path.home() / "Desktop" / "barq_desktop_screenshot.png")
+            try:
+                img = pyautogui.screenshot()
+                img.save(path)
+                result = f"Screenshot saved to {path}"
+            except ImportError:
+                return {"status": "unavailable", "message": "Pillow not installed. Run: pip install pillow"}
+
+        await analytics_dao.log_activity(
+            "desktop", f"action:{action}", result
+        )
+        return {"status": "executed", "message": result}
+    except ImportError:
+        return {"status": "unavailable", "message": "pyautogui not installed. Run: pip install pyautogui"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

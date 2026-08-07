@@ -259,6 +259,23 @@ class BrowserSession:
             await asyncio.sleep(0.2)
         return self._page
 
+    async def _apply_stealth(self, page) -> None:
+        """Inject anti-automation-detection scripts (shared with auto_applier).
+
+        Reuses ``StealthConfig`` from the auto_applier module when available
+        so one stealth implementation serves both the agent browser and the
+        job auto-applier. Falls back silently if the module is unavailable.
+        """
+        try:
+            from jobs.auto_applier.browser.stealth import StealthConfig
+            await StealthConfig.apply_to_page(page)
+        except Exception:
+            # Minimal inline stealth so automation flags are still masked
+            try:
+                await page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+            except Exception:
+                pass
+
     def run(self, coro, timeout: int = 60):
         """Run an async coroutine on the browser's event loop (thread-safe)."""
         if not self._loop:
@@ -272,6 +289,7 @@ class BrowserSession:
         page = await self._get_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._apply_stealth(page)
             await asyncio.sleep(0.3)
             return f"Opened: {page.url}"
         except Exception as e:
@@ -335,6 +353,73 @@ class BrowserSession:
             return text[:4000]
         except Exception as e:
             return f"Could not get page text: {e}"
+
+    # ── Anti-bot hardening (Phase 2a) ──────────────────────────────────
+
+    async def detect_captcha(self) -> str:
+        """Detect whether the current page is presenting a CAPTCHA challenge.
+
+        Checks for common CAPTCHA iframes (hCaptcha / reCAPTCHA) and
+        visible challenge markers. Used by the agent loop to pause and ask
+        the user for a manual solve instead of hammering the site.
+
+        Returns:
+            'none' | 'hcaptcha' | 'recaptcha' | 'unknown-challenge'
+        """
+        try:
+            page = await self._get_page()
+            # hCaptcha challenge iframe
+            hcap = await page.locator(
+                "iframe[src*='hcaptcha.com'], iframe[title*='hCaptcha'], [id*='hcaptcha']"
+            ).count()
+            # reCAPTCHA challenge iframe
+            recap = await page.locator(
+                "iframe[src*='recaptcha'], iframe[src*='google.com/recaptcha'], [class*='g-recaptcha']"
+            ).count()
+            if hcap:
+                return "hcaptcha"
+            if recap:
+                return "recaptcha"
+            # Generic challenge markers
+            body = " "
+            try:
+                body = (await page.inner_text("body")).lower()[:4000]
+            except Exception:
+                pass
+            for marker in ("verify you are human", "complete the captcha", "captcha verification", "press and hold"):
+                if marker in body:
+                    return "unknown-challenge"
+            return "none"
+        except Exception as e:
+            return f"error: {e}"
+
+    async def check_rate_limited(self) -> str:
+        """Detect whether the site is rate-limiting or blocking the session.
+
+        Checks for HTTP 429 markers, LinkedIn/Glassdoor-style blocks, and
+        "too many requests" text. The agent loop should back off (exponential
+        sleep + jitter) before retrying.
+
+        Returns:
+            'ok' | 'rate_limited' | 'blocked' | 'error: ...'
+        """
+        try:
+            page = await self._get_page()
+            body = " "
+            try:
+                body = (await page.inner_text("body")).lower()[:4000]
+            except Exception:
+                pass
+            for marker in ("too many requests", "rate limit", "request throttled", "slow down and try again"):
+                if marker in body:
+                    return "rate_limited"
+            # LinkedIn/Indeed block pages
+            for marker in ("unusual traffic", "please verify you are a human", "access denied", "our systems have detected"):
+                if marker in body:
+                    return "blocked"
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
 
     async def observe(self) -> str:
         """Take a self-verification snapshot of the current page.
@@ -529,6 +614,8 @@ class SessionRegistry:
         sess = self.get(browser_name)
         action_map = {
             "go_to": lambda: sess.run(sess.go_to(params.get("url", ""))),
+            "detect_captcha": lambda: sess.run(sess.detect_captcha()),
+            "check_rate_limited": lambda: sess.run(sess.check_rate_limited()),
             "search": lambda: sess.run(sess.search(params.get("query", ""), params.get("engine", "google"))),
             "click": lambda: sess.run(sess.click(params.get("selector"), params.get("text"))),
             "type": lambda: sess.run(sess.type_text(params.get("text", ""), params.get("selector"), params.get("clear_first", True))),
