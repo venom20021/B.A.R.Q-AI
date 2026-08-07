@@ -191,6 +191,10 @@ const rawStatusColors: Record<string, string> = {
   new: 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20',
 }
 
+// Raw application statuses from the backend `applications` table — used by
+// both the status chips and the Pipeline filter dropdown.
+type RawStatusFilter = 'all' | 'queued' | 'submitted' | 'applied' | 'ready_for_review' | 'failed' | 'draft'
+
 const RAW_STATUS_LABELS: Record<string, string> = {
   queued: 'Queued',
   submitted: 'Applied',
