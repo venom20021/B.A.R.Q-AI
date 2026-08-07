@@ -4,7 +4,9 @@ Uses database DAOs for all CRUD operations.
 """
 
 import asyncio
+import base64
 import json
+import os
 import re
 from typing import Optional
 
@@ -292,6 +294,18 @@ async def preview_application(job_id: int):
             resume_path=None,
         )
 
+        # Base64-encode the screenshot so the renderer can display it through
+        # the JSON IPC bridge (works in both local and cloud mode — a direct
+        # file:// or backend URL would be blocked by the bridge/CORS).
+        screenshot_base64 = ""
+        screenshot_path = str(result.get("screenshot_path", "") or "")
+        if screenshot_path and os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as _f:
+                    screenshot_base64 = "data:image/png;base64," + base64.b64encode(_f.read()).decode("utf-8")
+            except Exception as _enc_err:
+                print(f"[ApplyPreview] Screenshot encode failed (non-fatal): {_enc_err}")
+
         await analytics_dao.log_activity(
             "job", "apply_preview",
             f"Safe-mode form preview for #{job_id}: {job.get('title', '')} — {result.get('status')}"
@@ -302,6 +316,7 @@ async def preview_application(job_id: int):
             "title": job.get("title", ""),
             "company": job.get("company", ""),
             **result,
+            "screenshot_base64": screenshot_base64,
             "next": {
                 "action": "apply",
                 "endpoint": f"/jobs/{job_id}/apply",
@@ -1179,5 +1194,42 @@ async def job_status():
             "applications_submitted": status_map.get("submitted", 0),
             "interviews": status_map.get("interview", 0),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Job Detail ──────────────────────────────────────────────────────────
+# Registered LAST so the dynamic /{job_id} path never shadows the literal
+# GET routes above (/matches, /applications, /status, ...).
+
+
+@router.get("/{job_id}")
+async def get_job_detail(job_id: int):
+    """Get full details for a single job listing.
+
+    Returns the raw listing plus its latest evaluation (match score, reasoning,
+    pros/cons) and the real application status — the one-stop detail view the
+    voice agent and frontend use to describe a specific job.
+    """
+    try:
+        job = await jobs_dao.get_job_listing(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job #{job_id} not found")
+
+        evaluation = await db_connection.fetch_one(
+            "SELECT overall_score, match_percentage, reasoning, pros, cons, "
+            "       evaluated_by, evaluated_at "
+            "FROM job_evaluations WHERE job_listing_id = ? ORDER BY id DESC LIMIT 1",
+            (job_id,),
+        )
+        app_statuses = await jobs_dao.get_application_statuses_for_jobs([job_id])
+
+        return {
+            "job": job,
+            "evaluation": dict(evaluation) if evaluation else None,
+            "application_status": app_statuses.get(job_id, "new"),
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

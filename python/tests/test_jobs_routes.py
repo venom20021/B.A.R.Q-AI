@@ -267,6 +267,80 @@ async def test_job_status_defaults(client):
     assert isinstance(data["applications_queued"], int)
 
 
+# ─── Job Detail ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_found(client):
+    """GET /{job_id} returns the listing, evaluation, and app status."""
+    listing_id = int(await jobs_dao.insert_job_listing({
+        "title": "Detail Role",
+        "company": "Detail Co",
+        "source_board": "linkedin",
+        "location": "Remote",
+        "source_url": "https://linkedin.com/jobs/detail-1",
+    }))
+    await jobs_dao.insert_evaluation({
+        "job_listing_id": listing_id,
+        "overall_score": 4.2,
+        "match_percentage": 84.0,
+        "reasoning": "Excellent fit",
+        "pros": json.dumps(["Python", "Remote"]),
+        "cons": json.dumps(["On-call"]),
+        "evaluated_by": "scanner",
+    })
+    await jobs_dao.insert_application({
+        "job_listing_id": listing_id,
+        "status": "queued",
+    })
+
+    response = await client.get(f"/{listing_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job"]["id"] == listing_id
+    assert data["job"]["title"] == "Detail Role"
+    assert data["job"]["company"] == "Detail Co"
+    assert data["evaluation"]["overall_score"] == 4.2
+    assert data["evaluation"]["match_percentage"] == 84.0
+    assert data["evaluation"]["reasoning"] == "Excellent fit"
+    assert data["application_status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_missing_evaluation(client):
+    """A listing without an evaluation returns evaluation=None, status new."""
+    listing_id = int(await jobs_dao.insert_job_listing({
+        "title": "Bare Role", "company": "Bare Co", "source_board": "indeed",
+    }))
+
+    response = await client.get(f"/{listing_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job"]["id"] == listing_id
+    assert data["evaluation"] is None
+    assert data["application_status"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_not_found(client):
+    """GET /{job_id} on a missing job should return 404."""
+    response = await client.get("/99999")
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_does_not_shadow_literal_routes(client):
+    """The dynamic /{job_id} route must not shadow literal GET routes."""
+    response = await client.get("/status")
+    assert response.status_code == 200
+    assert "total_jobs_scanned" in response.json()
+
+    matches = await client.get("/matches")
+    assert matches.status_code == 200
+    assert "matches" in matches.json()
+
+
 # ─── Evaluation Insertion Integration Tests ─────────────────────────────
 # These verify that when a scan saves listings, it also creates entries
 # in the job_evaluations table, so GET /matches returns results.

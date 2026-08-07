@@ -26,9 +26,12 @@ from voice.feature_bridge import (
     FEATURE_SCHEMAS,
     barq_analytics,
     barq_api,
+    barq_apply_preview,
     barq_brain_summary,
     barq_briefing,
+    barq_job_details,
     barq_job_matches,
+    barq_job_scan,
     barq_notify,
     barq_recall,
     barq_remember,
@@ -224,6 +227,64 @@ def test_barq_job_matches(mock_request):
     result = barq_job_matches(min_score=4.0, limit=5)
     mock_request.assert_called_once_with("GET", "/jobs/matches", {"min_score": 4.0, "limit": 5})
     assert result["status"] == "success"
+
+
+@patch("voice.feature_bridge._request")
+def test_barq_job_scan(mock_request):
+    """barq_job_scan triggers the background job-board scan."""
+    mock_request.return_value = {"status": "success", "data": {"status": "started"}}
+    result = barq_job_scan()
+    mock_request.assert_called_once_with("POST", "/jobs/scan", {})
+    assert result["status"] == "success"
+
+
+@patch("voice.feature_bridge._request")
+def test_barq_job_details(mock_request):
+    """barq_job_details fetches one listing's full detail view."""
+    mock_request.return_value = {"status": "success", "job": {"id": 42}}
+    result = barq_job_details(42)
+    mock_request.assert_called_once_with("GET", "/jobs/42")
+    assert result["status"] == "success"
+
+
+def test_barq_job_details_requires_id():
+    """A missing/zero job_id must not hit the backend."""
+    assert barq_job_details(0)["status"] == "error"
+    assert barq_job_details(None)["status"] == "error"
+
+
+def test_barq_job_details_never_raises_on_bad_id():
+    """A non-numeric job_id (voice transcript garbage) must never raise."""
+    with patch("voice.feature_bridge._request", return_value={"status": "success"}) as mock_request:
+        result = barq_job_details("abc")
+    assert result["status"] == "success"
+    mock_request.assert_called_once_with("GET", "/jobs/abc")
+
+
+@patch("voice.feature_bridge._request")
+def test_barq_apply_preview(mock_request):
+    """barq_apply_preview runs the safe-mode form fill (no submit)."""
+    mock_request.return_value = {
+        "status": "success",
+        "data": {"status": "filled", "screenshot_path": "/tmp/preview.png"},
+    }
+    result = barq_apply_preview(7)
+    mock_request.assert_called_once_with("POST", "/jobs/7/apply/preview")
+    assert result["status"] == "success"
+
+
+def test_barq_apply_preview_requires_id():
+    """A missing/zero job_id must not hit the backend."""
+    assert barq_apply_preview(0)["status"] == "error"
+    assert barq_apply_preview(None)["status"] == "error"
+
+
+def test_barq_apply_preview_never_raises_on_bad_id():
+    """A non-numeric job_id (voice transcript garbage) must never raise."""
+    with patch("voice.feature_bridge._request", return_value={"status": "success"}) as mock_request:
+        result = barq_apply_preview("abc")
+    assert result["status"] == "success"
+    mock_request.assert_called_once_with("POST", "/jobs/abc/apply/preview")
 
 
 @patch("voice.feature_bridge._request")

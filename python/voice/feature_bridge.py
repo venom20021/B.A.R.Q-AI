@@ -220,6 +220,51 @@ def barq_job_matches(min_score: float = 3.0, limit: int = 20) -> dict[str, Any]:
     return _request("GET", "/jobs/matches", {"min_score": min_score, "limit": limit})
 
 
+def barq_job_scan() -> dict[str, Any]:
+    """Trigger a background scan of all configured job boards for new listings.
+
+    Runs asynchronously on the backend; poll ``GET /jobs/scan/progress`` via
+    ``barq_api`` for live progress.  Returns immediately with a status.
+    """
+    return _request("POST", "/jobs/scan", {})
+
+
+def barq_job_details(job_id: int) -> dict[str, Any]:
+    """Get full details for a specific job listing.
+
+    Includes the raw listing, its latest match evaluation (score, reasoning,
+    pros/cons), and the real application status.
+
+    Args:
+        job_id: The job listing id (from ``barq_job_matches`` results).
+    """
+    if not job_id:
+        return {"status": "error", "detail": "A job_id is required."}
+    # No int() coercion here — a non-numeric value must never raise. The
+    # backend declares job_id: int, so it coerces numeric strings and returns
+    # 422 for garbage, which _request surfaces as an error dict.
+    return _request("GET", f"/jobs/{job_id}")
+
+
+def barq_apply_preview(job_id: int) -> dict[str, Any]:
+    """Safe-mode: fill a job's application form and screenshot WITHOUT submitting.
+
+    Opens the job's URL in the user's real browser profile, detects the ATS
+    platform, fills the form from the parsed resume, and returns a screenshot
+    + filled-fields summary for human review.  Nothing is submitted — callers
+    review, then decide whether to apply for real.
+
+    Args:
+        job_id: The job listing id to preview.
+    """
+    if not job_id:
+        return {"status": "error", "detail": "A job_id is required."}
+    # No int() coercion here — a non-numeric value must never raise. The
+    # backend declares job_id: int, so it coerces numeric strings and returns
+    # 422 for garbage, which _request surfaces as an error dict.
+    return _request("POST", f"/jobs/{job_id}/apply/preview")
+
+
 def barq_social_trends() -> dict[str, Any]:
     """Get the current social media trending topics."""
     return _request("GET", "/social/trends")
@@ -283,6 +328,9 @@ FEATURE_FUNCTIONS: dict[str, Any] = {
     "barq_brain_summary": barq_brain_summary,
     "barq_notify": barq_notify,
     "barq_job_matches": barq_job_matches,
+    "barq_job_scan": barq_job_scan,
+    "barq_job_details": barq_job_details,
+    "barq_apply_preview": barq_apply_preview,
     "barq_social_trends": barq_social_trends,
     "barq_workflow_run": barq_workflow_run,
     "barq_workflow_status": barq_workflow_status,
@@ -380,6 +428,33 @@ FEATURE_SCHEMAS: list[dict] = [
                 "min_score": {"type": "number", "description": "Minimum match score (default 3.0)."},
                 "limit": {"type": "integer", "description": "Max matches (default 20)."},
             },
+        },
+    },
+    {
+        "name": "barq_job_scan",
+        "description": "Trigger a background scan of all configured job boards for new listings. Poll GET /jobs/scan/progress via barq_api for live progress.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "barq_job_details",
+        "description": "Get full details for a specific job listing, including its match evaluation (score, reasoning, pros/cons) and real application status.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer", "description": "The job listing id (from barq_job_matches results)."},
+            },
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "barq_apply_preview",
+        "description": "Safe-mode: fill a job's application form in the browser and screenshot WITHOUT submitting, so the user can review before deciding to apply.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer", "description": "The job listing id to preview."},
+            },
+            "required": ["job_id"],
         },
     },
     {
