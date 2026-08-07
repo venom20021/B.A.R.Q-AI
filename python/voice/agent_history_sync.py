@@ -16,6 +16,7 @@ import os
 import time
 
 from database import settings_dao
+from voice.loop_utils import call_on_main_loop, is_main_loop, run_on_main_loop
 
 # Serializes the local read-modify-write of agent_chat_history so two rapid
 # final transcripts (different text) can't interleave and drop one entry.
@@ -40,12 +41,34 @@ def _remote_url() -> str:
     return (os.getenv("BARQ_REMOTE_URL") or "").strip() or _DEFAULT_REMOTE_URL
 
 
+def schedule_persist_voice_utterance(text: str) -> None:
+    """Thread/loop-safe fire-and-forget persist (never blocks the voice loop).
+
+    Safe to call from ANY thread or event loop — including the wake-word
+    managed loop where ``asyncio.create_task`` on the main-loop-bound DB
+    would raise "Future attached to a different loop".  The actual DB write
+    is marshaled onto the main backend loop.
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+    if run_on_main_loop(_persist_impl(text)) is None:
+        # No live main loop to marshal onto.  Only fall back to the current
+        # loop if it IS the main loop (tests / pre-lifespan) — never the
+        # managed voice loop, which would re-trigger the cross-loop bug.
+        if is_main_loop():
+            try:
+                asyncio.create_task(_persist_impl(text))
+            except RuntimeError:
+                print("[AgentHistory] Voice persist skipped (no event loop available)")
+
+
 async def persist_voice_utterance(text: str) -> None:
     """Append a spoken command/utterance to agent_chat_history (best-effort).
 
-    Writes to the LOCAL backend's ``agent_chat_history`` under the
-    ``voice_commands`` key (role='user'), then schedules a fire-and-forget
-    mirror of that key to the remote backend so cloud-side re-imports see it.
+    Loop-safe: the DB work is marshaled onto the main backend loop via
+    ``call_on_main_loop`` so callers on the managed voice loop never touch
+    main-loop-bound futures directly.
 
     Args:
         text: The transcribed command/utterance (wake command, agent turn, ...).
@@ -53,6 +76,11 @@ async def persist_voice_utterance(text: str) -> None:
     text = (text or "").strip()
     if not text:
         return
+    await call_on_main_loop(_persist_impl(text))
+
+
+async def _persist_impl(text: str) -> None:
+    """Core persistence (runs on the main loop when the main loop is known)."""
     async with _persist_lock:
         try:
             raw = await settings_dao.get_setting("agent_chat_history")

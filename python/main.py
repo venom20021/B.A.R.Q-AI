@@ -310,6 +310,19 @@ async def lifespan(app: FastAPI):
     # Startup — wrap database init with a timeout so the health endpoint
     # becomes available even if Turso cloud is slow or unreachable.
     print(f"[BARQ Sidecar] Starting on {settings.host}:{settings.port}")
+
+    # Capture the MAIN event loop for the voice pipeline.  The wake-word flow
+    # runs the conversation on a separate managed loop (Vosk thread), but the
+    # shared aiosqlite connection lives here — so voice coroutines that touch
+    # the DB (persist_voice_utterance, background info) marshal onto this loop
+    # via voice.loop_utils to avoid "Future attached to a different loop".
+    try:
+        from voice.loop_utils import set_main_loop
+        set_main_loop(asyncio.get_running_loop())
+        print("[BARQ Sidecar] Main event loop captured for voice pipeline")
+    except Exception as _loop_err:
+        print(f"[BARQ Sidecar] [WARN] Main loop capture failed (non-fatal): {_loop_err}")
+
     try:
         await asyncio.wait_for(init_db(), timeout=15.0)
     except asyncio.TimeoutError:

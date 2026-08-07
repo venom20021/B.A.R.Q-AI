@@ -14,9 +14,10 @@ from typing import Callable, Optional
 from ai.responder import BARQResponder
 from memory.agent_memory_manager import save_session_summary
 from voice.evolution_logger import get_evolution_logger
+from voice.loop_utils import call_on_main_loop
 from voice.websocket_manager import VoiceWSManager
 from voice.speech import SpeechProcessor
-from voice.agent_history_sync import persist_voice_utterance
+from voice.agent_history_sync import schedule_persist_voice_utterance
 
 # Type aliases for optional command callbacks
 ParseCommandFn = Callable[[str, bool, Optional[str]], Awaitable[dict]]
@@ -225,7 +226,7 @@ class ConversationListener:
                     user_name = None
                     try:
                         from database.settings_dao import settings_dao
-                        name_val = await settings_dao.get_setting("user_name", "core")
+                        name_val = await call_on_main_loop(settings_dao.get_setting("user_name", "core"))
                         if name_val and name_val.strip():
                             user_name = name_val.strip()
                     except Exception:
@@ -237,7 +238,7 @@ class ConversationListener:
                     # weather_city without a namespace.
                     weather_city = None
                     try:
-                        city_val = await settings_dao.get_setting("weather_city")
+                        city_val = await call_on_main_loop(settings_dao.get_setting("weather_city"))
                         if city_val and city_val.strip():
                             weather_city = city_val.strip()
                     except Exception:
@@ -320,8 +321,10 @@ class ConversationListener:
         # so the re-import feeds spoken topics into the ai_chats graph.
         # Covers every Voice Agent backend (Gemini Live, Deepgram, Pipecat).
         if not self._is_exit_command(text) and len(text.strip()) >= 2:
+            # Loop-safe fire-and-forget: marshals the DB write onto the main
+            # loop so the managed voice loop never touches main-loop futures.
             try:
-                asyncio.create_task(persist_voice_utterance(text))
+                schedule_persist_voice_utterance(text)
             except Exception as e:
                 print(f"[VoiceAgent] History persist error (non-fatal): {e}")
 
@@ -349,10 +352,18 @@ class ConversationListener:
 
 
 async def _get_backend_once() -> str:
-    """Read the voice agent backend from DB once (with env fallback)."""
+    """Read the voice agent backend from DB once (with env fallback).
+
+    Runs on the MAIN loop (via ``call_on_main_loop``) because
+    ``get_backend_from_db`` reads settings through the main-loop-bound DB
+    connection — this coroutine runs on the managed voice loop.
+    """
     try:
         from .agent_factory import get_backend_from_db
-        return await get_backend_from_db()
+        resolved = await call_on_main_loop(get_backend_from_db())
+        if resolved:
+            return resolved
     except Exception:
-        import os
-        return os.getenv("VOICE_AGENT_BACKEND", "deepgram")
+        pass
+    import os
+    return os.getenv("VOICE_AGENT_BACKEND", "deepgram")
