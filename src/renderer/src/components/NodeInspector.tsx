@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { formatDistanceToNow } from '../utils/time'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   X, Focus, Trash2, Loader2, ScanSearch, Boxes, Activity, Link2, Gauge,
+  ImagePlus, ExternalLink,
 } from 'lucide-react'
 
 // ─── Types (structurally compatible with BrainPage's local interfaces) ──────
@@ -261,6 +263,8 @@ function DeepEntityDrawer(props: DeepDrawerProps): JSX.Element {
               </div>
             )}
           </div>
+
+          <EntityImageGenerator entity={node.id} brainColor={brainColor} brainId={brainType} />
         </div>
 
         {/* Footer actions */}
@@ -290,6 +294,225 @@ function DeepEntityDrawer(props: DeepDrawerProps): JSX.Element {
         </div>
       </motion.div>
     </motion.div>
+  )
+}
+
+
+// --- Free AI Image Generation (Pollinations via backend) -------------------
+
+interface EntityImageRecord {
+  id: number
+  brain_id: string
+  entity: string
+  prompt: string
+  image_url: string
+  created_at: string
+}
+
+function parseRecordDate(raw: string): Date {
+  const iso = raw.indexOf('T') !== -1 ? raw : raw.replace(' ', 'T') + 'Z'
+  return new Date(iso)
+}
+
+interface EntityImageGeneratorProps {
+  entity: string
+  brainColor: string
+  brainId: string
+}
+
+function EntityImageGenerator({ entity, brainColor, brainId }: EntityImageGeneratorProps): JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [url, setUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<EntityImageRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const busyRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // Load saved renders for this entity (scoped to the active brain)
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    let cancelled = false
+    setUrl(null)
+    setError(null)
+    setHistoryLoading(true)
+    const api = window.barq?.python
+    if (!brainId || !api) {
+      if (!cancelled) setHistoryLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+    const q = '/api/brain/images?brain_id=' + encodeURIComponent(brainId) + '&entity=' + encodeURIComponent(entity)
+    const load = async (): Promise<void> => {
+      try {
+        const res = (await api.request(q)) as unknown as { items?: EntityImageRecord[] } | undefined
+        if (cancelled) return
+        const items = res && res.items ? res.items : []
+        setHistory(items)
+        setUrl((prev) => prev || (items[0] ? items[0].image_url : null))
+      } catch {
+        if (!cancelled) setHistory([])
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [entity, brainId])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const persistImage = async (prompt: string, imageUrl: string): Promise<void> => {
+    try {
+      const saved = (await window.barq?.python.request('/api/brain/images', {
+        brain_id: brainId,
+        entity: entity,
+        prompt: prompt,
+        image_url: imageUrl,
+      })) as unknown as { id?: number } | undefined
+      if (!mountedRef.current) return
+      const rec: EntityImageRecord = {
+        id: saved && saved.id ? Number(saved.id) : Date.now(),
+        brain_id: brainId,
+        entity: entity,
+        prompt: prompt,
+        image_url: imageUrl,
+        created_at: new Date().toISOString(),
+      }
+      setHistory((h) => [rec, ...h.filter((x) => x.id !== rec.id)])
+    } catch {
+      // A save failure should never hide a successfully generated image.
+    }
+  }
+
+  const removeImage = async (rec: EntityImageRecord): Promise<void> => {
+    try {
+      const res = (await window.barq?.python.request('/api/brain/images/delete', { id: rec.id })) as unknown as { deleted?: number } | undefined
+      if (!mountedRef.current) return
+      if (res && res.deleted === 1) {
+        setHistory((h) => h.filter((x) => x.id !== rec.id))
+        setUrl((prev) => (prev === rec.image_url ? null : prev))
+      }
+    } catch {
+      // ignore - the image simply stays in the strip
+    }
+  }
+
+  const generate = async (): Promise<void> => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      const prompt = 'AI concept art of ' + entity + ', cybernetic neural interface, dark futuristic background, neon glow, high detail'
+      const result = await window.barq?.web.generateImage(prompt)
+      const data = result && result.success ? result.data : undefined
+      const next = (data as { image_url?: string } | undefined)?.image_url
+      if (!mountedRef.current) return
+      if (next) {
+        setUrl(next)
+        await persistImage(prompt, next)
+      } else {
+        setError('Backend did not return an image URL.')
+      }
+    } catch (e) {
+      if (mountedRef.current) setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      busyRef.current = false
+      if (mountedRef.current) setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className='rounded-xl border overflow-hidden'
+      style={{ borderColor: `${brainColor}25`, backgroundColor: `${brainColor}06` }}
+    >
+      <div className='flex items-center justify-between px-3 py-2'>
+        <span className='text-[8px] font-mono text-zinc-500 uppercase tracking-[0.18em]'>Entity Visual</span>
+        <button
+          onClick={generate}
+          disabled={busy}
+          className='flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[8px] font-share-tech uppercase tracking-wider transition-all disabled:opacity-50 group'
+          style={{ color: '#06121a', background: `linear-gradient(90deg, ${brainColor}, ${nodeColor(entity)})`, boxShadow: `0 0 14px ${hexToRgba(brainColor, 0.45)}` }}
+        >
+          {busy ? <Loader2 className='w-3 h-3 animate-spin' /> : <ImagePlus className='w-3 h-3' />}
+          {busy ? 'Generating...' : url ? 'Regenerate' : 'Generate image'}
+        </button>
+      </div>
+      {url ? (
+        <div className='relative'>
+          <img src={url} alt={entity} className='w-full h-36 object-cover' />
+          <a
+            href={url}
+            target='_blank'
+            rel='noreferrer'
+            className='absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/60 backdrop-blur-sm border border-white/10 text-zinc-200 hover:text-white hover:border-white/30 transition-colors'
+            title='Open full size'
+          >
+            <ExternalLink className='w-3 h-3' />
+          </a>
+          <button
+            onClick={() => setUrl(null)}
+            className='absolute top-2 right-2 p-1 rounded-lg bg-black/60 backdrop-blur-sm border border-white/10 text-zinc-300 hover:text-red-300 hover:border-red-400/50 transition-colors'
+            title='Dismiss'
+          >
+            <X className='w-3 h-3' />
+          </button>
+        </div>
+      ) : error ? (
+        <p className='px-3 py-2 text-[9px] font-mono text-red-400/80'>{error}</p>
+      ) : (
+        <p className='px-3 pb-2.5 text-[8px] font-mono text-zinc-600'>Free AI render of this entity - no API key needed.</p>
+      )}
+
+      {historyLoading ? (
+        <div className='border-t px-3 py-2 text-[8px] font-mono text-zinc-600' style={{ borderColor: `${brainColor}15` }}>
+          Loading saved renders...
+        </div>
+      ) : history.length > 0 ? (
+        <div className='border-t' style={{ borderColor: `${brainColor}15` }}>
+          <div className='flex items-center justify-between px-3 pt-2'>
+            <span className='text-[8px] font-mono text-zinc-500 uppercase tracking-[0.18em]'>Saved to brain</span>
+            <span className='text-[7px] font-mono text-zinc-600'>{history.length}</span>
+          </div>
+          <div className='flex gap-1.5 overflow-x-auto px-3 py-2'>
+            {history.map((rec) => (
+              <div key={rec.id} className='relative group shrink-0'>
+                <button
+                  onClick={() => setUrl(rec.image_url)}
+                  className='block w-14 h-10 rounded-md overflow-hidden border transition-all'
+                  style={{
+                    borderColor: url === rec.image_url ? brainColor : `${brainColor}25`,
+                    boxShadow: url === rec.image_url ? `0 0 8px ${hexToRgba(brainColor, 0.5)}` : 'none',
+                  }}
+                  title={formatDistanceToNow(parseRecordDate(rec.created_at))}
+                >
+                  <img src={rec.image_url} alt={entity} loading='lazy' className='w-full h-full object-cover' />
+                </button>
+                <button
+                  onClick={() => removeImage(rec)}
+                  className='absolute -top-1 -right-1 hidden group-hover:flex p-0.5 rounded-full bg-black/80 border border-zinc-700 text-zinc-300 hover:text-red-300 transition-colors'
+                  title='Remove from brain'
+                >
+                  <X className='w-2.5 h-2.5' />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -409,6 +632,8 @@ export function NodeInspector(props: NodeInspectorProps): JSX.Element | null {
                       />
                     </div>
                   </div>
+
+                  <EntityImageGenerator entity={node.id} brainColor={brainColor} brainId={brainType} />
 
                   {/* Stats */}
                   <div className="grid grid-cols-3 gap-1.5">

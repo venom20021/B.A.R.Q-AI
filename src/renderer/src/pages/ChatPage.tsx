@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, startTransition } from 'react'
-import { MessageSquare, Mic, MicOff, Send, Loader2, Trash2, User, Bot, Volume2, StopCircle } from 'lucide-react'
+import { MessageSquare, Mic, MicOff, Send, Loader2, Trash2, User, Bot, Volume2, StopCircle, ImagePlus } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { api } from '../utils/api'
 import { fetchAgentHistory, pushAgentHistory, clearAgentHistoryKey, type AgentHistoryMessage } from '../utils/agentHistory'
@@ -12,6 +12,7 @@ interface ChatMessage {
   role: 'user' | 'barq'
   text: string
   timestamp: number
+  imageUrl?: string
 }
 
 // ─── Persistence: localStorage (fast cache) + backend (durable sync) ───────
@@ -181,6 +182,8 @@ export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>(loadChatHistory)
   const [input, setInput] = usePersistentState('ChatPage.input', '')
   const [sending, setSending] = useState(false)
+  const [generatingPrompt, setGeneratingPrompt] = useState<string | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
   const [recentCommands, setRecentCommands] = useState<{ transcript: string; created_at: string }[]>([])
   const chatEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -311,6 +314,30 @@ export function ChatPage(): JSX.Element {
     setSending(false)
   }, [input, speak])
 
+  // Generate an image from any prompt via the free Pollinations endpoint.
+  // The result is rendered into the conversation flow as a user bubble.
+  // Re-entrancy guard: only one generation in flight at a time.
+  const generatingRef = useRef(false)
+  const generateImage = useCallback(async (prompt: string) => {
+    const target = prompt.trim()
+    if (!target || generatingRef.current) return
+    generatingRef.current = true
+    setGeneratingPrompt(target)
+    setImageError(null)
+    try {
+      const data = await api<{ status?: string; image_url?: string; message?: string }>('/web/images/generate', { prompt: target })
+      if (data && data.image_url) {
+        setMessages((prev) => [...prev, { role: 'user', text: target, timestamp: Date.now(), imageUrl: data.image_url }])
+      } else {
+        setImageError((data && data.message) || 'Image generation failed - try again.')
+      }
+    } catch {
+      setImageError('Failed to reach the image generator. Is the backend running?')
+    }
+    setGeneratingPrompt(null)
+    generatingRef.current = false
+  }, [])
+
   // Clear history (localStorage + backend so the graph forgets it too)
   const clearHistory = useCallback(() => {
     setMessages([])
@@ -403,7 +430,7 @@ export function ChatPage(): JSX.Element {
                 <motion.div key={i}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div className={`flex items-start gap-2.5 max-w-[80%] ${
                     msg.role === 'user' ? 'flex-row-reverse' : ''
@@ -424,6 +451,13 @@ export function ChatPage(): JSX.Element {
                         : 'bg-zinc-800/40 border border-zinc-800/60'
                     }`}>
                       <p className="text-sm font-exo text-zinc-200 leading-relaxed">{msg.text}</p>
+                      {msg.imageUrl && (
+                        <a href={msg.imageUrl} target="_blank" rel="noreferrer" className="block mt-2">
+                          <img src={msg.imageUrl} alt={msg.text} loading="lazy"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none" }}
+                            className="rounded-lg border border-zinc-700/40 max-w-full max-h-56 object-cover transition-transform hover:scale-[1.01]" />
+                        </a>
+                      )}
                       <p className="text-[9px] font-mono text-zinc-600 mt-1">
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
@@ -435,6 +469,15 @@ export function ChatPage(): JSX.Element {
                         title="Speak this response"
                       >
                         <Volume2 className="w-3 h-3" />
+                      </button>
+                    )}
+                    {/* Render-image button for user messages */}
+                    {msg.role === 'user' && (
+                      <button onClick={() => generateImage(msg.text)}
+                        className="p-1 rounded text-zinc-600 hover:text-fuchsia-400 hover:bg-zinc-800/40 transition-all opacity-0 group-hover:opacity-100"
+                        title="Generate an image from this text"
+                      >
+                        <ImagePlus className="w-3 h-3" />
                       </button>
                     )}
                   </div>
@@ -470,7 +513,32 @@ export function ChatPage(): JSX.Element {
               <p className="text-xs font-exo text-cyan-300/60 italic">&ldquo;{interimTranscript}&rdquo;</p>
             </div>
           )}
+          {generatingPrompt && (
+            <div className="mb-2 px-3 py-1.5 rounded-lg bg-fuchsia-500/5 border border-fuchsia-500/10 flex items-center gap-2">
+              <Loader2 className="w-3 h-3 text-fuchsia-400 animate-spin" />
+              <p className="text-xs font-exo text-fuchsia-300/70 italic">Generating image for &ldquo;{generatingPrompt}&rdquo;&hellip;</p>
+            </div>
+          )}
+          {imageError && (
+            <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-500/5 border border-red-500/10">
+              <p className="text-xs font-exo text-red-300/70">{imageError}</p>
+            </div>
+          )}
           <div className="flex items-center gap-2">
+            {/* Generate image button - renders the typed prompt */}
+            <button
+              onClick={() => generateImage(input)}
+              disabled={generatingPrompt !== null || !input.trim()}
+              className={`flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200 ${
+                generatingPrompt !== null
+                  ? 'bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 animate-pulse'
+                  : 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-700/60 hover:text-fuchsia-300'
+              } disabled:opacity-30 disabled:cursor-not-allowed`}
+              title="Generate an image from the typed prompt"
+            >
+              {generatingPrompt !== null ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+            </button>
+
             {/* Mic button */}
             <button
               onClick={isListening ? stopListening : startListening}
@@ -490,7 +558,10 @@ export function ChatPage(): JSX.Element {
               ref={inputRef}
               type="text"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value)
+                if (imageError) setImageError(null)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()

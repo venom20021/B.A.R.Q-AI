@@ -36,6 +36,80 @@ from memory_knowledge.multi_brain import BRAIN_REGISTRY, multi_brain_manager
 
 logger = logging.getLogger("barq.brain_api")
 router = APIRouter(prefix="/api/brain", tags=["Brain Visualisation"])
+# ─── Entity image history (static) ─────────────────────────────────────────
+
+
+class EntityImageSave(BaseModel):
+    "Payload for persisting a generated entity image to the brain."
+
+    brain_id: str = 'general'
+    entity: str
+    prompt: str = ''
+    image_url: str
+
+
+class EntityImageDelete(BaseModel):
+    "Payload for removing a saved entity image."
+
+    id: int
+
+
+@router.post("/images")
+async def save_entity_image(request: EntityImageSave) -> dict[str, Any]:
+    "Persist a generated entity image so it survives restarts."
+    try:
+        from database.connection import db_connection
+
+        image_id = await db_connection.insert(
+            'INSERT INTO entity_images (brain_id, entity, prompt, image_url) VALUES (?, ?, ?, ?)',
+            (request.brain_id, request.entity, request.prompt, request.image_url),
+        )
+        return {'id': image_id, 'brain_id': request.brain_id, 'entity': request.entity}
+    except Exception as e:
+        logger.error('save_entity_image failed: %s', e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/images")
+async def list_entity_images(brain_id: str = '', entity: str = '') -> dict[str, Any]:
+    "List saved images for a brain/entity, newest first."
+    try:
+        from database.connection import db_connection
+
+        sql = (
+            'SELECT id, brain_id, entity, prompt, image_url, created_at '
+            'FROM entity_images WHERE 1=1'
+        )
+        params: list[str] = []
+        if brain_id:
+            sql += ' AND brain_id = ?'
+            params.append(brain_id)
+        if entity:
+            sql += ' AND entity = ?'
+            params.append(entity)
+        sql += ' ORDER BY id DESC LIMIT 100'
+        rows = await db_connection.fetch_all(sql, tuple(params))
+        return {'items': rows, 'count': len(rows)}
+    except Exception as e:
+        logger.error('list_entity_images failed: %s', e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/images/delete")
+async def delete_entity_image(request: EntityImageDelete) -> dict[str, Any]:
+    "Remove a saved entity image by id."
+    try:
+        from database.connection import db_connection
+
+        deleted = await db_connection.delete(
+            'DELETE FROM entity_images WHERE id = ?',
+            (request.id,),
+        )
+        return {'deleted': deleted}
+    except Exception as e:
+        logger.error('delete_entity_image failed: %s', e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  IMPORTANT: Static routes MUST be registered BEFORE parameterised routes
