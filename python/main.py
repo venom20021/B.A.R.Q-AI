@@ -29,8 +29,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # files when running in background mode (nohup, Task Scheduler, etc.).
 # Without this, Python buffers output when stdout is not a TTY, making
 # the log appear to freeze during the startup lifespan.
+#
+# errors="replace" is critical on Windows: the default console codec is
+# cp1252, so print() of any emoji/Unicode (✅, 💬, 🧠, …) raises
+# UnicodeEncodeError ('charmap' codec error).  That exception can escape
+# into worker threads — e.g. it crashed the vision stream thread and made
+# vision_stream_start fail.  Replacing unencodable chars (instead of
+# raising) makes every print() across the whole backend console-safe.
 if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(line_buffering=True, errors="replace")
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(line_buffering=True, errors="replace")
 
 from agent.agent_kernel_routes import (
     kernel_router as agent_kernel_router,

@@ -4,17 +4,19 @@ Covers:
 - The four ``vision_stream_*`` tools being visible in the Gemini schemas.
 - The new ``vision_stream_analyze`` tool (warm-stream path + REST fallback).
 - ``VisionStreamSession.analyze_and_wait`` synchronous transcript capture.
+- Console-safe printing (Windows cp1252 emoji crash regression).
 
 No live network calls are made — all Gemini/session internals are mocked.
 """
 
 import asyncio
+import builtins
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.vision import VisionStreamSession
+from agent.vision import VisionStreamSession, _safe_print
 from voice.function_executor import (
     FUNCTION_REGISTRY,
     _vision_stream_analyze,
@@ -28,6 +30,78 @@ STREAM_TOOLS = (
     "vision_stream_status",
     "vision_stream_analyze",
 )
+
+
+# ─── Console-safe printing (cp1252 regression) ─────────────────────────
+
+
+def _cp1252_console_print(real_print):
+    """Return a fake ``builtins.print`` that mimics a Windows cp1252 console.
+
+    Encodes the message with cp1252 first (which raises ``UnicodeEncodeError``
+    for emoji / non-Latin-1 characters) and only calls the real print when the
+    message is cp1252-encodable — exactly what a real Windows terminal does.
+    """
+    def _fake_print(*args, **kwargs):
+        for a in args:
+            if isinstance(a, str):
+                a.encode("cp1252")
+        real_print(*args, **kwargs)
+    return _fake_print
+
+
+def test_safe_print_survives_emoji_on_cp1252_console(monkeypatch):
+    """Regression: emoji prints crashed the vision thread on Windows (charmap).
+
+    A bare ``print("[VisionStream] ✅ Session ready")`` raises
+    ``UnicodeEncodeError`` on cp1252 consoles; ``_safe_print`` must fall back
+    to ASCII replacement instead of crashing.
+    """
+    monkeypatch.setattr(builtins, "print", _cp1252_console_print(builtins.print))
+    # Must not raise despite the emoji glyphs (previously fatal).
+    _safe_print("[VisionStream] ✅ Session ready")
+    _safe_print("[VisionStream] 🔌 Connecting to Gemini Live...")
+    _safe_print("[VisionStream] 💬 'hello'")
+    _safe_print(f"[VisionStream] Thread error: {ValueError('boom')}")
+
+
+def test_safe_print_preserves_plain_ascii_on_cp1252_console(monkeypatch):
+    """Plain ASCII messages still print verbatim through the cp1252 gate."""
+    monkeypatch.setattr(builtins, "print", _cp1252_console_print(builtins.print))
+    # Pure-ASCII text encodes fine on cp1252 and must pass through unchanged.
+    _safe_print("[VisionStream] Session did not connect within 25s")
+
+
+def test_safe_print_no_crash_on_utf8_console(capsys):
+    """On a UTF-8-capable console the emoji simply prints (no fallback)."""
+    _safe_print("[VisionStream] ✅ Session ready")
+    captured = capsys.readouterr()
+    assert "Session ready" in captured.out
+
+
+def test_no_bare_print_in_vision_stream_paths():
+    """Guard: no unguarded ``print()`` may sneak back into vision.py.
+
+    This bug class has recurred repeatedly (emoji prints crash on Windows
+    cp1252 consoles).  Every log call in ``agent/vision.py`` must go through
+    ``_safe_print`` — a bare ``print()`` would re-introduce the crash that
+    killed the vision stream thread.  Scans the source (excluding the helper's
+    own body and non-stream helpers) so the guard can't rot.
+    """
+    import inspect
+    from agent import vision as vision_mod
+    src = inspect.getsource(vision_mod)
+    # Strip the helper's own body (it intentionally calls builtins.print).
+    helper_start = src.find("def _safe_print")
+    helper_end = src.find("def auto_detect_camera", helper_start)
+    cleaned = src[:helper_start] + src[helper_end:]
+    # A bare print statement would appear as "    print(" — the emoji prints
+    # were the crash source; _safe_print is the only allowed logger.
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        assert not stripped.startswith("print("), (
+            f"Bare print() found in vision.py (would crash on cp1252): {line}"
+        )
 
 
 # ─── Schema & registry exposure ────────────────────────────────────────

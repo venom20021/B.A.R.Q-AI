@@ -23,6 +23,44 @@ IS_MACOS = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 
 
+def _safe_print(*args, **kwargs) -> None:
+    """Console-safe print for Windows cp1252 terminals.
+
+    Windows consoles default to the cp1252 codec, which cannot encode emoji or
+    other non-Latin-1 characters.  A bare ``print()`` of such text raises
+    ``UnicodeEncodeError`` ('charmap' codec error) and can kill the calling
+    thread — which is exactly what crashed the vision stream thread and made
+    ``vision_stream_start`` report an error.  This helper re-encodes with the
+    console's own codec using ``errors="replace"`` (preserving encodable
+    characters like ``°C`` or accents, replacing only emoji), so logging
+    never crashes the stream.
+    """
+    import builtins
+    import sys
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # First pass: re-encode with the console's actual codec (preserves
+        # encodable characters like °C or accents).  If the output still
+        # can't be encoded (e.g. the console is cp1252 but stdout reports
+        # utf-8), fall back to ASCII replacement — never raise.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            safe = [
+                a.encode(enc, errors="replace").decode(enc)
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+        except UnicodeEncodeError:
+            safe = [
+                a.encode("ascii", errors="replace").decode("ascii")
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+
+
 # ─── OS Operation Implementations (blocking — called via to_thread) ────
 
 def _minimize_window(window_name: str | None = None) -> dict[str, Any]:
@@ -1325,7 +1363,7 @@ def _vision_stream_analyze(
                         "image_size_bytes": len(image_bytes),
                     }
             except Exception as e:
-                print(f"[VisionStream] Stream analysis failed ({e}) — falling back to REST")
+                _safe_print(f"[VisionStream] Stream analysis failed ({e}) — falling back to REST")
 
         # Fallback: direct Gemini REST analysis (fresh connection).
         text = _run_async(

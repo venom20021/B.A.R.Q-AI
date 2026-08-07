@@ -26,6 +26,44 @@ from config import get_settings
 from .agent_base import VoiceAgentBase
 
 
+def _safe_print(*args, **kwargs) -> None:
+    """Console-safe print for Windows cp1252 terminals.
+
+    Windows consoles default to the cp1252 codec, which cannot encode emoji or
+    other non-Latin-1 characters.  A bare ``print()`` of such text raises
+    ``UnicodeEncodeError`` ('charmap' codec error) and can kill the calling
+    thread — which is exactly what crashed the vision stream thread and made
+    ``vision_stream_start`` report an error.  This helper re-encodes with the
+    console's own codec using ``errors="replace"`` (preserving encodable
+    characters like ``°C`` or accents, replacing only emoji), so logging
+    never crashes the stream.
+    """
+    import builtins
+    import sys
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # First pass: re-encode with the console's actual codec (preserves
+        # encodable characters like °C or accents).  If the output still
+        # can't be encoded (e.g. the console is cp1252 but stdout reports
+        # utf-8), fall back to ASCII replacement — never raise.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            safe = [
+                a.encode(enc, errors="replace").decode(enc)
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+        except UnicodeEncodeError:
+            safe = [
+                a.encode("ascii", errors="replace").decode("ascii")
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+
+
 # ── Windows asyncio AssertionError suppressor ─────────────────────────
 # Python 3.13's Proactor event loop on Windows may fire a spurious
 # AssertionError from _ProactorBaseWritePipeTransport._loop_writing()
@@ -1026,7 +1064,7 @@ class PipecatVoiceAgent(VoiceAgentBase):
                     peak_check = float(np.max(np.abs(pcm_float)))
                     print(f"[PipecatAgent] Decoded MP3 via av: {len(pcm_float)} samples, shape={last_shape} (peak={peak_check:.4f})")
                     if peak_check < 0.001:
-                        print(f"[PipecatAgent] ⚠️ av decoded audio is silent (shape={last_shape})")
+                        _safe_print(f"[PipecatAgent] ⚠️ av decoded audio is silent (shape={last_shape})")
                 else:
                     print("[PipecatAgent] av decoded 0 PCM chunks")
             except ImportError:
@@ -1055,7 +1093,7 @@ class PipecatVoiceAgent(VoiceAgentBase):
         print(f"[PipecatAgent] Feeding {len(pcm_float)} samples to buffer (peak={peak:.4f}, rms={rms_val:.4f})")
 
         if peak < 0.001:
-            print(f"[PipecatAgent] ⚠️ Audio appears silent (peak={peak:.4f}) — possible decode issue")
+            _safe_print(f"[PipecatAgent] ⚠️ Audio appears silent (peak={peak:.4f}) — possible decode issue")
             return  # Don't feed silent audio to the buffer
 
         # Feed to ring buffer

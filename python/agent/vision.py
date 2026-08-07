@@ -14,9 +14,11 @@ Requirements (optional, for camera):
 
 import asyncio
 import base64
+import builtins
 import io
 import json
 import os
+import sys
 import threading
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -40,6 +42,42 @@ try:
     _CV2_OK = True
 except ImportError:
     _CV2_OK = False
+
+
+def _safe_print(*args, **kwargs) -> None:
+    """Console-safe print for Windows cp1252 terminals.
+
+    Windows consoles default to the cp1252 codec, which cannot encode emoji or
+    other non-Latin-1 characters.  A bare ``print()`` of such text raises
+    ``UnicodeEncodeError`` ('charmap' codec error) and can kill the calling
+    thread — which is exactly what crashed the vision stream thread and made
+    ``vision_stream_start`` report an error.  This helper re-encodes with the
+    console's own codec using ``errors="replace"`` (preserving encodable
+    characters like ``°C`` or accents, replacing only emoji), so logging
+    never crashes the stream.
+    """
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # First pass: re-encode with the console's actual codec (preserves
+        # encodable characters like °C or accents).  If the output still
+        # can't be encoded (e.g. the console is cp1252 but stdout reports
+        # utf-8), fall back to ASCII replacement — never raise.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            safe = [
+                a.encode(enc, errors="replace").decode(enc)
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+        except UnicodeEncodeError:
+            safe = [
+                a.encode("ascii", errors="replace").decode("ascii")
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -100,14 +138,14 @@ def auto_detect_camera() -> int:
         return _camera_index_cache
 
     backend = _cv2_backend()
-    print("[Vision] 🔍 Auto-detecting camera...")
+    _safe_print("[Vision] 🔍 Auto-detecting camera...")
     for idx in range(6):
         if _probe_camera(idx, backend):
-            print(f"[Vision] ✅ Camera found at index {idx}")
+            _safe_print(f"[Vision] ✅ Camera found at index {idx}")
             _camera_index_cache = idx
             return idx
 
-    print("[Vision] ⚠️  No camera found — defaulting to index 0")
+    _safe_print("[Vision] ⚠️  No camera found — defaulting to index 0")
     _camera_index_cache = 0
     return 0
 
@@ -479,9 +517,9 @@ class VisionStreamSession:
 
         ok = self._ready_evt.wait(timeout=timeout)
         if ok:
-            print("[VisionStream] ✅ Session ready")
+            _safe_print("[VisionStream] ✅ Session ready")
         else:
-            print(f"[VisionStream] ⚠️  Session did not connect within {timeout}s")
+            _safe_print(f"[VisionStream] ⚠️  Session did not connect within {timeout}s")
         return ok
 
     def stop(self):
@@ -504,7 +542,7 @@ class VisionStreamSession:
         back via the ``audio_callback`` and ``transcript_callback``.
         """
         if not self._loop or not self._out_queue or not self._connected:
-            print("[VisionStream] ⚠️  Session not ready — dropping request")
+            _safe_print("[VisionStream] ⚠️  Session not ready — dropping request")
             return False
         try:
             asyncio.run_coroutine_threadsafe(
@@ -513,7 +551,7 @@ class VisionStreamSession:
             )
             return True
         except Exception as e:
-            print(f"[VisionStream] Queue error: {e}")
+            _safe_print(f"[VisionStream] Queue error: {e}")
             return False
 
     def analyze_and_wait(
@@ -578,7 +616,7 @@ class VisionStreamSession:
             try:
                 self._transcript_callback(full)
             except Exception as e:
-                print(f"[VisionStream] ⚠️  Transcript callback error: {e}")
+                _safe_print(f"[VisionStream] ⚠️  Transcript callback error: {e}")
         fut = self._sync_future
         if fut is not None and not fut.done():
             fut.set_result(full)
@@ -615,7 +653,7 @@ class VisionStreamSession:
         try:
             self._loop.run_until_complete(self._session_loop())
         except Exception as e:
-            print(f"[VisionStream] Thread error: {e}")
+            _safe_print(f"[VisionStream] Thread error: {e}")
         finally:
             self._loop.close()
 
@@ -635,7 +673,7 @@ class VisionStreamSession:
             from google import genai
             from google.genai import types
         except ImportError:
-            print("[VisionStream] google-genai not installed")
+            _safe_print("[VisionStream] google-genai not installed")
             return
 
         api_key = _load_gemini_api_key()
@@ -662,7 +700,7 @@ class VisionStreamSession:
 
         while not self._stop_evt.is_set():
             try:
-                print("[VisionStream] 🔌 Connecting to Gemini Live...")
+                _safe_print("[VisionStream] 🔌 Connecting to Gemini Live...")
                 async with client.aio.live.connect(
                     model=_GEMINI_LIVE_MODEL, config=config
                 ) as session:
@@ -670,7 +708,7 @@ class VisionStreamSession:
                     self._connected = True
                     self._ready_evt.set()
                     self._backoff = 2.0
-                    print("[VisionStream] ✅ Connected to Gemini Live")
+                    _safe_print("[VisionStream] ✅ Connected to Gemini Live")
 
                     async with asyncio.TaskGroup() as tg:
                         tg.create_task(self._send_loop())
@@ -680,7 +718,7 @@ class VisionStreamSession:
                             await asyncio.sleep(0.5)
 
             except Exception as eg:
-                print(f"[VisionStream] ⚠️  Session error: {eg}")
+                _safe_print(f"[VisionStream] ⚠️  Session error: {eg}")
             finally:
                 self._session = None
                 self._connected = False
@@ -689,7 +727,7 @@ class VisionStreamSession:
             if self._stop_evt.is_set():
                 break
 
-            print(f"[VisionStream] 🔄 Reconnecting in {self._backoff:.0f}s...")
+            _safe_print(f"[VisionStream] 🔄 Reconnecting in {self._backoff:.0f}s...")
             await asyncio.sleep(self._backoff)
             self._backoff = min(self._backoff * 1.5, 30.0)
 
@@ -704,7 +742,7 @@ class VisionStreamSession:
                 continue
 
             if not self._session:
-                print("[VisionStream] ⚠️  No session — dropping image")
+                _safe_print("[VisionStream] ⚠️  No session — dropping image")
                 continue
 
             try:
@@ -718,9 +756,9 @@ class VisionStreamSession:
                     },
                     turn_complete=True,
                 )
-                print(f"[VisionStream] 📤 Sent {len(image_bytes):,}B — '{user_text[:50]}'")
+                _safe_print(f"[VisionStream] 📤 Sent {len(image_bytes):,}B — '{user_text[:50]}'")
             except Exception as e:
-                print(f"[VisionStream] ⚠️  Send error: {e}")
+                _safe_print(f"[VisionStream] ⚠️  Send error: {e}")
                 raise  # triggers session reconnect
 
     async def _recv_loop(self):
@@ -745,12 +783,12 @@ class VisionStreamSession:
                 if sc.turn_complete:
                     if transcript:
                         full = " ".join(transcript).strip()
-                        print(f"[VisionStream] 💬 '{full[:80]}'")
+                        _safe_print(f"[VisionStream] 💬 '{full[:80]}'")
                         self._deliver_transcript(full)
                     transcript = []
 
         except Exception as e:
-            print(f"[VisionStream] ⚠️  Recv error: {e}")
+            _safe_print(f"[VisionStream] ⚠️  Recv error: {e}")
             raise  # triggers session reconnect
 
 

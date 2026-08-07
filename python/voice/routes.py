@@ -43,6 +43,44 @@ from memory.agent_memory_manager import pop_last_session
 
 router = APIRouter()
 
+
+def _safe_print(*args, **kwargs) -> None:
+    """Console-safe print for Windows cp1252 terminals.
+
+    Windows consoles default to the cp1252 codec, which cannot encode emoji or
+    other non-Latin-1 characters.  A bare ``print()`` of such text raises
+    ``UnicodeEncodeError`` ('charmap' codec error) and can kill the calling
+    thread — which is exactly what crashed the vision stream thread and made
+    ``vision_stream_start`` report an error.  This helper re-encodes with the
+    console's own codec using ``errors="replace"`` (preserving encodable
+    characters like ``°C`` or accents, replacing only emoji), so logging
+    never crashes the stream.
+    """
+    import builtins
+    import sys
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # First pass: re-encode with the console's actual codec (preserves
+        # encodable characters like °C or accents).  If the output still
+        # can't be encoded (e.g. the console is cp1252 but stdout reports
+        # utf-8), fall back to ASCII replacement — never raise.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            safe = [
+                a.encode(enc, errors="replace").decode(enc)
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+        except UnicodeEncodeError:
+            safe = [
+                a.encode("ascii", errors="replace").decode("ascii")
+                if isinstance(a, str) else a
+                for a in args
+            ]
+            builtins.print(*safe, **kwargs)
+
 # Keep a reference to the ConversationListener singleton
 # (used by voice agents for exit handling)
 conversation_listener_singleton = None
@@ -313,7 +351,7 @@ async def _inject_background_info():
                         f"If relevant, mention this naturally (e.g., 'Last time we talked about...')."
                     )
                     responder.conversation.add_system_message(recall_msg)
-                    print(f"[SessionMemory] 🧠 Injected session recall: {summary[:80]}…")
+                    _safe_print(f"[SessionMemory] Injected session recall: {summary[:80]}…")
         except Exception as e:
             print(f"[SessionMemory] Recall injection error (non-fatal): {e}")
 
