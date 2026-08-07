@@ -263,6 +263,19 @@ async def _gather_background_info() -> str:
     return "\n".join(info_parts) if info_parts else ""
 
 
+def _fire_inject_background_info():
+    """Fire background-info gathering on the MAIN loop, never the managed loop.
+
+    ``_inject_background_info`` reads the DB (jobs, weather, notes, ...), so
+    it must run on the main loop where ``db_connection`` lives.  Falls back
+    to the local task tracker when no main loop has been captured yet.
+    """
+    from .loop_utils import run_on_main_loop
+    coro = _inject_background_info()
+    if run_on_main_loop(coro) is None:
+        _voice_ws.fire(coro)
+
+
 async def _inject_background_info():
     """Background task: gather info and inject it as a system message
     into the active conversation.  Runs concurrently with the conversation
@@ -320,8 +333,9 @@ async def _speak_wake_greeting():
         # Log activity immediately
         await analytics_dao.log_activity("voice", "wake_greeting", "Wake word detected — lightweight greeting")
 
-        # Fire off background info gathering (fire-and-forget)
-        _voice_ws.fire(_inject_background_info())
+        # Fire off background info gathering (fire-and-forget) — runs on the
+        # main loop so its DB reads (jobs/weather/notes) work.
+        _fire_inject_background_info()
 
         print("[WakeGreeting] Lightweight greeting — entering conversation mode immediately")
 
@@ -556,8 +570,10 @@ async def _lightweight_wake_greeting(command_text: str = ""):
         print(f"[Voice] Analytics log error (non-fatal): {e}")
 
     # ── Step 2: Fire background info gathering (fire-and-forget — own try/except) ──
+    # Runs on the MAIN loop so its DB reads (jobs/weather/notes) never hit the
+    # managed voice loop's cross-loop "different loop" error.
     try:
-        _voice_ws.fire(_inject_background_info())
+        _fire_inject_background_info()
     except Exception as e:
         print(f"[Voice] Background info fire error (non-fatal): {e}")
 
@@ -587,8 +603,9 @@ async def _lightweight_wake_greeting(command_text: str = ""):
     try:
         if command_text:
             # Persist the wake-and-command utterance to agent_chat_history
-            from .agent_history_sync import persist_voice_utterance
-            await persist_voice_utterance(command_text)
+            # (loop-safe: marshals the DB write onto the main loop)
+            from .agent_history_sync import schedule_persist_voice_utterance
+            schedule_persist_voice_utterance(command_text)
             print(f"[Voice] Processing wake command: '{command_text}' via Voice Agent")
             try:
                 responder.is_speaking_event.set()
@@ -1401,8 +1418,9 @@ async def process_command(request: CommandRequest):
     })
 
     # Persist to agent_chat_history so spoken commands feed the ai_chats graph
-    from .agent_history_sync import persist_voice_utterance
-    await persist_voice_utterance(command)
+    # (loop-safe: marshals the DB write onto the main loop)
+    from .agent_history_sync import schedule_persist_voice_utterance
+    schedule_persist_voice_utterance(command)
 
     # Determine last intent from history
     last_intent = None
