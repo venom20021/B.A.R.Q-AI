@@ -35,6 +35,30 @@ except Exception:  # pragma: no cover - import fallback
 CANVAS_W = 1080
 CANVAS_H = 1920
 
+def _resolve_caption_font() -> str:
+    """Return a usable caption font (file path preferred) for this platform.
+
+    Pillow/moviepy can't always resolve bare font names (DejaVu-Sans fails on
+    some Linux boxes, Arial on Windows), so resolve a real .ttf path first and
+    fall back to the bare name only as a last resort.
+    """
+    if os.name == "nt":
+        win = os.environ.get("WINDIR", "C:/Windows")
+        arial = os.path.join(win, "Fonts", "arial.ttf")
+        if os.path.exists(arial):
+            return arial
+        return "Arial"
+    for cand in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ):
+        if os.path.exists(cand):
+            return cand
+    return "DejaVu-Sans"
+
+
+_CAPTION_FONT = _resolve_caption_font()
+
 
 class VideoAssembler:
     """Assembles videos from scripts, voiceovers, and stock footage."""
@@ -295,11 +319,11 @@ class VideoAssembler:
         for i, (section_name, text) in enumerate(section_texts):
             try:
                 caption = TextClip(
-                    txt=(text or section_name or " ")[:120],
+                    text=(text or section_name or " ")[:120],
                     font_size=34,
                     color="white",
                     bg_color=(0, 0, 0, 140),
-                    font="DejaVu-Sans",
+                    font=_CAPTION_FONT,
                     stroke_color="black",
                     stroke_width=1,
                     method="caption",

@@ -348,7 +348,8 @@ class BrowserSession:
         """
         try:
             page = await self._get_page()
-            url = await page.url
+            # Playwright's page.url is a SYNC property — never await it
+            url = page.url
             title = await page.title()
             text = await page.inner_text("body")
             # Collapse whitespace and trim to a readable excerpt
@@ -544,10 +545,12 @@ class SessionRegistry:
             "close_tab": lambda: sess.run(sess.close_tab()),
             "press_key": lambda: sess.run(sess.press_key(params.get("key", "Enter"))),
             "fill_form": lambda: sess.run(sess.fill_form(params.get("fields", {}))),
-            "switch": lambda: sess.switch(params.get("browser", browser_name or "chrome")),
-            "close": lambda: sess.close(params.get("browser")),
-            "close_all": lambda: sess.close_all(),
-            "list_sessions": lambda: sess.list_sessions(),
+            # switch/close/close_all/list_sessions are SessionRegistry-level
+            # operations — route them to the registry, not the session object.
+            "switch": lambda: _registry.switch(params.get("browser", browser_name or "chrome")),
+            "close": lambda: _registry.close(params.get("browser")),
+            "close_all": lambda: _registry.close_all(),
+            "list_sessions": lambda: _registry.list_sessions(),
         }
         handler = action_map.get(action)
         if not handler:

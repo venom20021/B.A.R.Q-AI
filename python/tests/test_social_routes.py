@@ -226,24 +226,82 @@ async def test_render_video_not_found(client):
 
 @pytest.mark.asyncio
 async def test_render_video_success(client):
-    """POST /render-video should render and store a video."""
+    """POST /render-video should kick off a background render and store a video."""
     script_id = await social_dao.insert_script({
         "title": "Render Test", "topic": "Testing", "format": "youtube_shorts",
         "script_content": "Test content for rendering.",
         "sections": '["Intro", "Body"]',
+        "visual_cues": '["Show code", "Show demo"]',
         "status": "draft",
     })
 
     with patch("social.routes.video_assembler.render", new_callable=AsyncMock) as mock_render:
-        mock_render.return_value = "/tmp/barq_video_1.mp4"
+        mock_render.return_value = f"/tmp/barq_video_{script_id}.mp4"
         response = await client.post(
             "/render-video", json={"script_id": str(script_id)}
         )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "rendered"
-    assert data["video_id"] > 0
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "started"
+
+        # The render runs as a background task - poll until it finishes. The
+        # patch must stay active while polling: the task only starts after the
+        # POST returns, so a closed `with patch` would let the REAL pipeline
+        # run (and the mocked render would never be awaited).
+        import asyncio
+        prog = {}
+        for _ in range(40):
+            await asyncio.sleep(0.1)
+            prog = (await client.get("/generation/progress")).json()
+            if prog["status"] in ("complete", "error"):
+                break
+        assert prog.get("status") == "complete", f"render did not complete: {prog}"
+
+        # The render runs in the background — the full script (topic + visual
+        # cues) must reach the Video v2 assembler so stock footage engages.
+        mock_render.assert_awaited_once()
+        sent = mock_render.call_args.kwargs["script"]
+        assert sent["topic"] == "Testing"
+        assert sent["visual_cues"] == ["Show code", "Show demo"]
+
+        stored = await social_dao.get_script(script_id)
+        assert stored["status"] == "rendered"
+        videos = (await client.get("/videos")).json()["videos"]
+        assert any(v["script_id"] == script_id for v in videos)
+
+
+@pytest.mark.asyncio
+async def test_render_video_error_returns_script_to_draft(client):
+    """A failed background render should surface an error and allow retry."""
+    script_id = await social_dao.insert_script({
+        "title": "Render Fail", "topic": "Boom", "format": "youtube_shorts",
+        "script_content": "Test content.", "status": "draft",
+    })
+
+    with patch("social.routes.video_assembler.render", new_callable=AsyncMock) as mock_render:
+        mock_render.side_effect = RuntimeError("ffmpeg exploded")
+        response = await client.post(
+            "/render-video", json={"script_id": str(script_id)}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "started"
+
+        # Keep the patch active while the background task runs (see above).
+        import asyncio
+        prog = {}
+        for _ in range(40):
+            await asyncio.sleep(0.1)
+            prog = (await client.get("/generation/progress")).json()
+            if prog["status"] == "error":
+                break
+        assert prog.get("status") == "error"
+        assert "ffmpeg exploded" in prog.get("message", "")
+
+        # Script returns to draft so the user can retry
+        stored = await social_dao.get_script(script_id)
+        assert stored["status"] == "draft"
 
 
 @pytest.mark.asyncio
@@ -336,6 +394,39 @@ async def test_get_videos_empty(client):
     response = await client.get("/videos")
     assert response.status_code == 200
     assert response.json()["videos"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_video_file_serves_mp4(client, tmp_path):
+    """GET /videos/{id}/file should stream the stored video file."""
+    script_id, video_id = await _seed_script_and_video("File Serve")
+    video_file = tmp_path / "test_video.mp4"
+    video_file.write_bytes(b"FAKE-MP4-DATA")
+    await social_dao.update_video_status(video_id, "completed", file_path=str(video_file))
+
+    response = await client.get(f"/videos/{video_id}/file")
+    assert response.status_code == 200
+    assert response.content == b"FAKE-MP4-DATA"
+    assert response.headers.get("content-type") == "video/mp4"
+
+
+@pytest.mark.asyncio
+async def test_get_video_file_missing_on_disk(client, tmp_path):
+    """A video row whose file is gone should 404, not crash."""
+    _, video_id = await _seed_script_and_video("Missing File")
+    await social_dao.update_video_status(
+        video_id, "completed", file_path=str(tmp_path / "nope.mp4")
+    )
+
+    response = await client.get(f"/videos/{video_id}/file")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_video_file_not_found(client):
+    """A non-existent video id should 404."""
+    response = await client.get("/videos/99999/file")
+    assert response.status_code == 404
 
 
 # ─── Post Content ─────────────────────────────────────────────────────────────

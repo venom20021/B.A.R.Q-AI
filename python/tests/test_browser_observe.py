@@ -24,9 +24,10 @@ class FakePage:
 
     def __init__(self, url="https://example.com/jobs/123", title="Example Jobs",
                  body="Software Engineer   Remote   Apply now"):
-        # Playwright's page.url is a sync property; observe() awaits it, which
-        # returns the value for real pages. The fake exposes an awaitable str.
-        self.url = _awaitable(url)
+        # Playwright's page.url is a SYNC property — observe() must NOT await
+        # it (awaiting a plain str raises TypeError). Expose a plain str so the
+        # test catches any regression here.
+        self.url = url
         self._title = title
         self._body = body
 
@@ -113,6 +114,36 @@ def test_observe_is_registered_action(monkeypatch):
     result = browser_control.browser_action("observe", {"browser": "chrome"})
     assert result == "URL: https://x.com\nTitle: X\nPage text: hi"
     assert len(stub.called_actions) == 1
+
+
+def test_registry_level_actions_route_to_registry(monkeypatch):
+    """switch/close/close_all/list_sessions are SessionRegistry methods — the
+    action map must call the registry, not the individual session object."""
+    from system_control import browser_control
+
+    stub = StubSession()
+    monkeypatch.setattr(browser_control._registry, "get", lambda name=None: stub)
+
+    calls = []
+
+    def _rec(name):
+        def f(*a, **k):
+            calls.append(name)
+            return name
+        return f
+
+    monkeypatch.setattr(browser_control._registry, "switch", _rec("switch"))
+    monkeypatch.setattr(browser_control._registry, "close", _rec("close"))
+    monkeypatch.setattr(browser_control._registry, "close_all", _rec("close_all"))
+    monkeypatch.setattr(browser_control._registry, "list_sessions", _rec("list_sessions"))
+
+    browser_control.browser_action("switch", {"browser": "edge"})
+    browser_control.browser_action("close", {})
+    browser_control.browser_action("close_all", {})
+    browser_control.browser_action("list_sessions", {})
+    assert calls == ["switch", "close", "close_all", "list_sessions"]
+    # The session object must never be asked to do registry-level work
+    assert stub.called_actions == []
 
 
 def test_unknown_action_reports_error(monkeypatch):

@@ -91,6 +91,42 @@ async def test_fetch_stock_footage_request_failure(assembler, monkeypatch):
     assert result == []
 
 
+# ─── Caption overlays (moviepy 2.x) ────────────────────────────────────────
+
+def test_caption_overlays_use_text_keyword(assembler, monkeypatch):
+    """Caption overlays must call moviepy 2.x TextClip with `text=` — the
+    legacy `txt=` kwarg was removed in 2.x and silently dropped the caption."""
+    calls = []
+
+    class FakeCaption:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def with_position(self, *a, **k):
+            return self
+
+        def with_start(self, *a, **k):
+            return self
+
+        def with_duration(self, *a, **k):
+            return self
+
+    class FakeBase:
+        duration = 24.0
+
+    monkeypatch.setattr("social.video.TextClip", FakeCaption)
+    monkeypatch.setattr(
+        "social.video.concatenate_videoclips", lambda clips, **k: FakeBase()
+    )
+    monkeypatch.setattr("social.video.CompositeVideoClip", lambda *a, **k: FakeBase())
+
+    assembler._composite_with_captions([FakeBase()], [("Hook", "hi there")])
+
+    assert calls, "caption TextClip was never invoked"
+    assert "text" in calls[0]
+    assert "txt" not in calls[0]
+
+
 # ─── Render degradation ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

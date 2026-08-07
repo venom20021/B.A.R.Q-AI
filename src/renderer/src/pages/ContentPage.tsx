@@ -245,6 +245,13 @@ export function ContentPage(): JSX.Element {
   const [generatedImage, setGeneratedImage] = usePersistentState<string | null>('ContentPage.generatedImage', null)
   const [imageError, setImageError] = useState('')
 
+  // Video v2 render (background task + live progress polling)
+  const [renderingId, setRenderingId] = useState<string | null>(null)
+  const [renderProgress, setRenderProgress] = useState<{ pct: number; phase: string; message: string } | null>(null)
+  const [renderError, setRenderError] = useState('')
+  // script_id -> rendered video (so 'ready' cards can play their file)
+  const [videosByScript, setVideosByScript] = useState<Record<string, { id: number; file_path: string }>>({})
+
   // Calendar state
   const [calendarYear, setCalendarYear] = usePersistentState('ContentPage.calendarYear', new Date().getFullYear())
   const [calendarMonth, setCalendarMonth] = usePersistentState('ContentPage.calendarMonth', new Date().getMonth() + 1)
@@ -262,10 +269,11 @@ export function ContentPage(): JSX.Element {
   const fetchPipeline = useCallback(async () => {
     setLoading(true)
     try {
-      const [, pipelineResp, scriptsResp] = await Promise.allSettled([
+      const [, pipelineResp, scriptsResp, videosResp] = await Promise.allSettled([
         window.barq?.social.trends() ?? Promise.resolve(undefined),
         api('/social/pipeline') ?? Promise.resolve(undefined),
         api('/social/scripts?limit=50') ?? Promise.resolve(undefined),
+        api('/social/videos?limit=50') ?? Promise.resolve(undefined),
       ])
 
       const pipelineValue = pipelineResp.status === 'fulfilled' ? pipelineResp.value : undefined
@@ -290,6 +298,19 @@ export function ContentPage(): JSX.Element {
         revised: Number(s['revised'] ?? 0) === 1,
         gate_iterations: Number(s['gate_iterations'] ?? 0),
       })))
+
+      // Map script_id -> rendered video so 'ready' cards can play their file
+      const videosValue = (videosResp.status === 'fulfilled' ? videosResp.value : undefined) as
+        { videos?: Record<string, unknown>[] } | { success?: boolean; data?: { videos?: Record<string, unknown>[] } } | undefined
+      const rawVideos = 'videos' in (videosValue ?? {})
+        ? (videosValue as { videos?: Record<string, unknown>[] }).videos ?? []
+        : (videosValue as { success?: boolean; data?: { videos?: Record<string, unknown>[] } } | undefined)?.data?.videos ?? []
+      const vmap: Record<string, { id: number; file_path: string }> = {}
+      for (const v of rawVideos) {
+        const sid = String(v['script_id'] ?? '')
+        if (sid) vmap[sid] = { id: Number(v['id']), file_path: String(v['file_path'] ?? '') }
+      }
+      setVideosByScript(vmap)
     } catch {
       setPipelineCounts({})
       setScripts([])
@@ -383,8 +404,45 @@ export function ContentPage(): JSX.Element {
   }
 
   const handleRender = async (scriptId: string): Promise<void> => {
-    await window.barq?.social.renderVideo(scriptId)
+    setRenderError('')
+    setRenderingId(scriptId)
+    setRenderProgress({ pct: 5, phase: 'Rendering video', message: 'Queuing render…' })
+    try {
+      const result = await window.barq?.social.renderVideo(scriptId)
+      if (!result?.success) {
+        setRenderError(String(result?.error ?? 'Render failed to start'))
+        setRenderingId(null)
+        setRenderProgress(null)
+        return
+      }
+      // Render runs in the background — poll the backend progress tracker.
+      const deadline = Date.now() + 10 * 60 * 1000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1200))
+        const prog = await api('/social/generation/progress') as
+          { status?: string; phase?: string; progress_pct?: number; message?: string } | undefined
+        if (!prog) continue
+        setRenderProgress({ pct: prog.progress_pct ?? 0, phase: prog.phase ?? '', message: prog.message ?? '' })
+        if (prog.status === 'complete') break
+        if (prog.status === 'error') {
+          setRenderError(prog.message || 'Render failed')
+          break
+        }
+      }
+    } catch (e) {
+      setRenderError(String(e))
+    }
+    setRenderingId(null)
+    setRenderProgress(null)
     await fetchPipeline()
+  }
+
+  const openVideo = async (scriptId: string): Promise<void> => {
+    const video = videosByScript[scriptId]
+    if (!video) return
+    const cfg = await window.barq?.python.getConfig()
+    const base = cfg?.success && cfg.data ? cfg.data.httpUrl : 'http://127.0.0.1:8956'
+    await window.barq?.openExternal(`${base}/social/videos/${video.id}/file`)
   }
 
   const handlePost = async (videoId: string): Promise<void> => {
@@ -665,6 +723,57 @@ export function ContentPage(): JSX.Element {
             </motion.div>
           )}
 
+          {/* Video Render Progress (live from /generation/progress) */}
+          {renderProgress && !renderError && (
+            <motion.div
+              key="render-progress"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card p-4 border-l-2 border-cyan-500/40"
+            >
+              <div className="flex items-center justify-between mb-2 gap-4">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Loader2 className="w-4 h-4 text-cyan-300 animate-spin shrink-0" />
+                  <h3 className="text-sm font-orbitron font-bold text-ghost tracking-wider">
+                    RENDERING VIDEO
+                  </h3>
+                  <span className="text-2xs font-share-tech uppercase text-dim-500 truncate">
+                    Video v2 · stock footage + captions
+                  </span>
+                </div>
+                <span className="text-hud font-share-tech text-cyan-300 shrink-0">
+                  {Math.round(renderProgress.pct)}%
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-void-700/60 overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, Math.max(0, renderProgress.pct))}%` }}
+                  transition={{ duration: 0.3, ease: 'easeOut' }}
+                  className="h-full rounded-full bg-cyan-400"
+                />
+              </div>
+              <p className="text-xs font-rajdhani text-dim-400 mt-2 truncate">
+                {renderProgress.message || renderProgress.phase}
+              </p>
+            </motion.div>
+          )}
+
+          {/* Video Render Error */}
+          {renderError && (
+            <motion.div
+              key="render-error"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card p-3 border-l-2 border-plasma/60"
+            >
+              <p className="flex items-center gap-2 text-xs font-exo text-plasma">
+                <X className="w-3.5 h-3.5 flex-shrink-0" />
+                {renderError}
+              </p>
+            </motion.div>
+          )}
+
           {/* AI Image Generator (Phase 1d) */}
           <motion.div
             key="image-gen"
@@ -890,15 +999,38 @@ export function ContentPage(): JSX.Element {
                                 {reCriticId === idea.id ? 'Critiquing…' : 'Re-run Critic'}
                               </button>
                               <button
-                                onClick={(e) => { e.stopPropagation(); handleRender(idea.id) }}
-                                className="btn-cyan text-sm"
+                                onClick={(e) => { e.stopPropagation(); void handleRender(idea.id) }}
+                                disabled={renderingId === idea.id}
+                                className="btn-cyan text-sm flex items-center gap-1"
                               >
-                                Render Video
+                                {renderingId === idea.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <Video className="w-3 h-3" />}
+                                {renderingId === idea.id ? 'Rendering…' : 'Render Video'}
                               </button>
+                              {renderingId === idea.id && renderProgress && (
+                                <div className="w-20 h-1 rounded-full bg-void-700/60 overflow-hidden">
+                                  <motion.div
+                                    className="h-full bg-cyan-400"
+                                    animate={{ width: `${Math.min(100, renderProgress.pct)}%` }}
+                                    transition={{ duration: 0.3 }}
+                                  />
+                                </div>
+                              )}
                             </div>
                           )}
                           {idea.status === 'ready' && (
                             <>
+                              {videosByScript[idea.id] && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); void openVideo(idea.id) }}
+                                  className="btn-glass text-sm flex items-center gap-1"
+                                  title="Play the rendered video in your browser"
+                                >
+                                  <Play className="w-3 h-3" />
+                                  Watch
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => { e.stopPropagation(); handlePost(idea.id) }}
                                 className="btn-cyan text-sm"

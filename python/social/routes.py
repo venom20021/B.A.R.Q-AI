@@ -3,11 +3,14 @@ FastAPI routes for social media automation.
 Uses database DAOs for storing trends, scripts, videos, and posts.
 """
 
+import asyncio
 import json
+import os
 import time
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from config import get_settings
@@ -104,6 +107,10 @@ script_generator = ScriptGenerator()
 video_assembler = VideoAssembler()
 content_poster = ContentPoster()
 content_calendar = ContentCalendar()
+
+# Strong references to in-flight background render tasks so the event loop
+# never GCs them mid-render (renders can take a couple of minutes).
+_render_tasks: set[asyncio.Task] = set()
 
 
 class ScriptRequest(BaseModel):
@@ -351,64 +358,112 @@ async def re_run_critic(script_id: int):
     }
 
 
-@router.post("/render-video")
-async def render_video(request: RenderRequest, background_tasks: BackgroundTasks):
-    """Render a video from a stored script."""
-    set_generation_progress("rendering", GENERATION_PHASES[2], 10, f"Preparing render for script #{request.script_id}...")
+async def _render_video_task(script_id: int, script: dict[str, Any]) -> None:
+    """Run a Video v2 render in the background and persist the result.
+
+    Feeds the module-level progress tracker (GET /generation/progress) so the
+    UI can show live progress. The full script (topic + visual cues) is handed
+    to the assembler so stock footage / captions actually engage — the render
+    never blocks the request that started it.
+    """
     try:
-        script_id = int(request.script_id)
-        script = await social_dao.get_script(script_id)
-        if not script:
-            raise HTTPException(status_code=404, detail="Script not found")
-
-        set_generation_progress("rendering", GENERATION_PHASES[2], 25, "Loading script sections...")
-
-        # Update script to rendering
+        set_generation_progress(
+            "rendering", GENERATION_PHASES[2], 10, f"Preparing render for script #{script_id}..."
+        )
         await social_dao.update_script_status(script_id, "rendering")
 
-        # Parse JSON fields from the database
-        sections = json.loads(script.get("sections", "[]")) if isinstance(script.get("sections"), str) else script.get("sections", [])
-        script_text = script.get("script_content", "")
+        set_generation_progress("rendering", GENERATION_PHASES[2], 25, "Loading script sections...")
+        sections = (
+            json.loads(script.get("sections", "[]"))
+            if isinstance(script.get("sections"), str)
+            else script.get("sections") or []
+        )
+        visual_cues = (
+            json.loads(script.get("visual_cues", "[]"))
+            if isinstance(script.get("visual_cues"), str)
+            else script.get("visual_cues") or []
+        )
+        script_text = script.get("script_content", "") or ""
+        topic = script.get("topic", "") or script.get("title", "")
 
-        set_generation_progress("rendering", GENERATION_PHASES[2], 40, "Assembling video assets...")
-
+        set_generation_progress(
+            "rendering", GENERATION_PHASES[2], 40, "Fetching stock footage & assembling assets..."
+        )
         output_path = f"/tmp/barq_video_{script_id}.mp4"
         video_path = await video_assembler.render(
             script={
                 "sections": sections,
                 "script": script_text,
+                "topic": topic,
+                "visual_cues": visual_cues,
             },
             output_path=output_path,
         )
 
         set_generation_progress("rendering", GENERATION_PHASES[2], 80, "Finalizing video...")
+        file_size = 0
+        try:
+            file_size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+        except Exception:
+            pass
 
         # Store video in DB
         video_id = await social_dao.insert_video({
             "script_id": script_id,
             "title": script.get("title", "Untitled"),
             "file_path": str(video_path),
+            "file_size_bytes": file_size,
             "status": "completed",
         })
-
         await social_dao.update_script_status(script_id, "rendered")
 
         set_generation_progress("complete", "Video rendered", 100, f"Video #{video_id} ready")
-        background_tasks.add_task(_auto_reset_progress, 5)
-
         await analytics_dao.log_activity(
             "content", "video_rendered", f"Video rendered for script #{script_id}"
         )
+    except Exception as e:
+        # Fail gracefully: report the error and return the script to draft so
+        # the user can retry from the UI.
+        set_generation_progress("error", "Video render failed", 0, str(e))
+        try:
+            await social_dao.update_script_status(script_id, "draft")
+        except Exception:
+            pass
+        await analytics_dao.log_activity(
+            "content", "video_render_error", str(e), severity="error"
+        )
+        print(f"[Social] Render failed for script #{script_id}: {e}")
 
-        return {"video_id": video_id, "status": "rendered", "video_path": str(video_path)}
+
+@router.post("/render-video")
+async def render_video(request: RenderRequest):
+    """Kick off a Video v2 render for a stored script in the background.
+
+    Returns immediately with ``{"status": "started"}`` — the render runs as an
+    asyncio task and reports live progress via ``GET /generation/progress``.
+    When it finishes, the script moves to ``rendered`` and a video row is
+    stored (streamable at ``GET /videos/{id}/file``).
+    """
+    try:
+        script_id = int(request.script_id)
+        script = await social_dao.get_script(script_id)
+        if not script:
+            raise HTTPException(status_code=404, detail="Script not found")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid script_id: must be an integer")
     except HTTPException:
         raise
     except Exception as e:
-        _generation_progress["status"] = "error"
-        _generation_progress["message"] = str(e)
         raise HTTPException(status_code=500, detail=str(e))
+
+    # One render at a time — refuse to double-schedule while one is in flight.
+    if _generation_progress.get("status") == "rendering":
+        return {"status": "already_rendering", "script_id": script_id}
+
+    task = asyncio.create_task(_render_video_task(script_id, script))
+    _render_tasks.add(task)
+    task.add_done_callback(_render_tasks.discard)
+    return {"status": "started", "script_id": script_id}
 
 
 @router.get("/videos")
@@ -420,6 +475,33 @@ async def get_videos(status: str = "", limit: int = 50):
         else:
             videos = await social_dao.get_videos_by_status("completed", limit)
         return {"videos": videos}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/videos/{video_id}/file")
+async def get_video_file(video_id: int):
+    """Stream a rendered video MP4 for playback or download.
+
+    The stored ``file_path`` is a server-side path (e.g. /tmp), so the UI can't
+    open it directly — this endpoint serves it over HTTP.
+    """
+    try:
+        video = await social_dao.get_video(video_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        path = video.get("file_path", "")
+        if not path or not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="Video file not found on disk")
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            filename=f"barq_video_{video_id}.mp4",
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video_id: must be an integer")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
