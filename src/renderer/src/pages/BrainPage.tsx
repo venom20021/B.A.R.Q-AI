@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo, startTransition } from 'react'
 import { motion } from 'framer-motion'
 import {
-  Info, RotateCw, AlertCircle, Search, X, Zap, GitBranch,
+  Info, RotateCw, AlertCircle, Search, X, GitBranch,
   StickyNote, FileText, MessageCircle, Briefcase, Brain, Sparkles,
   BarChart3, Network, Clock, Filter, FilePlus2, Database, BadgePlus,
   CirclePlus, Loader2,
 } from 'lucide-react'
 import { NodeInspector } from '../components/NodeInspector'
+import { GraphSidebar } from '../components/GraphSidebar'
 import { formatDistanceToNow } from '../utils/time'
 import {
   loadLastSelected, saveLastSelected,
@@ -167,41 +168,10 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   }
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const { r, g, b } = hexToRgb(hex)
-  return `rgba(${r},${g},${b},${alpha})`
-}
 
-// Blend two hex colours toward a midpoint (used for link colour gradients).
-// Returns a `#rrggbb` hex so the result stays compatible with hexToRgba().
-function blendHex(a: string, b: string, t: number): string {
-  const ca = hexToRgb(a)
-  const cb = hexToRgb(b)
-  const r = Math.round(ca.r + (cb.r - ca.r) * t)
-  const g = Math.round(ca.g + (cb.g - ca.g) * t)
-  const bl = Math.round(ca.b + (cb.b - ca.b) * t)
-  return `#${[r, g, bl].map(c => c.toString(16).padStart(2, '0')).join('')}`
-}
-
-// Rounded-rect path helper (avoids relying on ctx.roundRect availability).
-function roundRectPath(
-  ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number, r: number,
-): void {
-  ctx.beginPath()
-  ctx.moveTo(x + r, y)
-  ctx.arcTo(x + w, y, x + w, y + h, r)
-  ctx.arcTo(x + w, y + h, x, y + h, r)
-  ctx.arcTo(x, y + h, x, y, r)
-  ctx.arcTo(x, y, x + w, y, r)
-  ctx.closePath()
-}
 
 // ─── Pulse timing constants ────────────────────────────────────────────────
 
-const PULSE_DURATION_MS = 2200
-const PULSE_PEAK_MS = 300
-const PULSE_SUSTAIN_MS = 500
 const AUTO_POLL_INTERVAL_MS = 8000
 
 // ─── Level-of-Detail / visual hierarchy constants ───────────────────────────
@@ -211,9 +181,7 @@ const AUTO_POLL_INTERVAL_MS = 8000
 const HUB_DEGREE_THRESHOLD = 2
 // Max label length before ellipsis truncation (kills horizontal pile-up).
 const LABEL_MAX_CHARS = 26
-// Idle repaint clock — drives the hub pulse rings + link shimmer at a cheap
-// ~7fps without keeping the force simulation hot.
-const IDLE_REFRESH_MS = 140
+
 
 // ─── Fallback meta for initial render before brain list loads ────────────────
 
@@ -335,10 +303,12 @@ export function BrainPage(): JSX.Element {
     activeBrainRef.current = activeBrain
   }, [activeBrain])
 
-  // ── Synaptic pulse state ─────────────────────────────────────────────
-  const [pulseIntensity, setPulseIntensity] = useState(0)
-  const pulseAnimRef = useRef<number | null>(null)
-  const prevMetaRef = useRef<GraphMeta | null>(null)
+  // ── Obsidian sidebar settings ───────────────────────────────────────
+  const [showLabels, setShowLabels] = useState(false)
+  const [showThumbnails, setShowThumbnails] = useState(true)
+  const [chargeStrength, setChargeStrength] = useState(-200)
+  const [linkDistance, setLinkDistance] = useState(40)
+  const [centerStrength, setCenterStrength] = useState(0.1)
   const flashTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   // ── Compute dynamic theme from active brain ──────────────────────────
@@ -384,28 +354,34 @@ export function BrainPage(): JSX.Element {
     return Math.max(HUB_DEGREE_THRESHOLD, p75)
   }, [degreeMap])
 
-  // ── Idle animation clock + force-simulation status (bottom HUD) ─────
-  // (ref seeded with 0 — first paint uses a static ring; the interval
-  //  updates it on the first tick, satisfying the react purity rule)
-  const pulseClockRef = useRef(0)
+  // ── Force-simulation status (bottom HUD) ─────────────────────────────
   const [simRunning, setSimRunning] = useState(false)
   useEffect(() => {
-    if (!graphData || graphData.nodes.length === 0) return
-    // Skip the repaint loop entirely when no hub rings need animating.
-    if (!Array.from(degreeMap.values()).some(d => d >= hubThreshold)) return
     const id = setInterval(() => {
-      if (document.hidden) return
-      pulseClockRef.current = performance.now()
       try {
-        graphRef.current?.refresh()
         const running = typeof graphRef.current?.isSimulationRunning === 'function'
           ? graphRef.current.isSimulationRunning()
           : false
         setSimRunning(Boolean(running))
       } catch { /* ignore */ }
-    }, IDLE_REFRESH_MS)
+    }, 1000)
     return () => clearInterval(id)
-  }, [graphData, degreeMap, hubThreshold])
+  }, [graphData])
+
+  // ── Obsidian force physics: strong repulsion + tight links + center ──
+  useEffect(() => {
+    const g = graphRef.current
+    if (!g || !graphData) return
+    try {
+      const charge = g.d3Force('charge')
+      if (charge) charge.strength(chargeStrength)
+      const link = g.d3Force('link')
+      if (link) link.distance(linkDistance)
+      const center = g.d3Force('center')
+      if (center) center.strength(centerStrength)
+      if (typeof g.d3ReheatSimulation === 'function') g.d3ReheatSimulation()
+    } catch { /* ignore */ }
+  }, [graphData, chargeStrength, linkDistance, centerStrength])
 
   // ── Derived search helpers ───────────────────────────────────────────
   const matchingNodeIds = useMemo(() => {
@@ -829,56 +805,7 @@ export function BrainPage(): JSX.Element {
   }, [fetchGraph, fetchBrainStats, showTimeline, fetchTimeline, fetchEntityImages])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // ── Synaptic pulse animation loop ────────────────────────────────────
-  const triggerPulse = useCallback(() => {
-    const start = performance.now()
 
-    const animate = (now: number) => {
-      const elapsed = now - start
-
-      if (elapsed >= PULSE_DURATION_MS) {
-        setPulseIntensity(0)
-        pulseAnimRef.current = null
-        return
-      }
-
-      let intensity: number
-      if (elapsed < PULSE_PEAK_MS) {
-        intensity = elapsed / PULSE_PEAK_MS
-      } else if (elapsed < PULSE_SUSTAIN_MS) {
-        intensity = 1.0
-      } else {
-        const decay = (elapsed - PULSE_SUSTAIN_MS) / (PULSE_DURATION_MS - PULSE_SUSTAIN_MS)
-        intensity = Math.max(0, 1 - decay * decay)
-      }
-
-      setPulseIntensity(intensity)
-      pulseAnimRef.current = requestAnimationFrame(animate)
-    }
-
-    if (pulseAnimRef.current) {
-      cancelAnimationFrame(pulseAnimRef.current)
-    }
-    pulseAnimRef.current = requestAnimationFrame(animate)
-  }, [])
-
-  // ── Detect graph changes & trigger synaptic pulse ────────────────────
-  useEffect(() => {
-    if (!graphData?._meta) return
-    const meta = graphData._meta
-    const prev = prevMetaRef.current
-
-    const isNewData = !prev || prev.nodes !== meta.nodes || prev.edges !== meta.edges
-    prevMetaRef.current = meta
-
-    if (isNewData) {
-      startTransition(() => {
-        triggerPulse()
-      })
-    }
-    // We intentionally depend on nodes/edges changes only, not the full meta object
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphData?._meta?.nodes, graphData?._meta?.edges])
 
   // ── Auto-poll backend for new graph data ─────────────────────────────
   useEffect(() => {
@@ -901,9 +828,6 @@ export function BrainPage(): JSX.Element {
   // Cleanup animation frame + flash timers on unmount
   useEffect(() => {
     return () => {
-      if (pulseAnimRef.current) {
-        cancelAnimationFrame(pulseAnimRef.current)
-      }
       for (const t of flashTimersRef.current) clearTimeout(t)
       flashTimersRef.current = []
       if (confirmRemoveTimerRef.current) {
@@ -1084,192 +1008,108 @@ export function BrainPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphData, activeBrain, selectedNode, lastSelectedByBrain])
 
-  // ── Node painter: degree-scaled radii + hub pulse rings + LOD labels ──
+  // ── Node painter: crisp Obsidian dots + LOD labels ──────────────────
   const paintNode = useCallback(
     (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       // Guard against non-finite coordinates: during the first paint frames the
-      // force simulation may not have assigned x/y yet, and createRadialGradient
-      // throws on NaN/Infinity — which would crash the whole app (no boundary).
+      // force simulation may not have assigned x/y yet.
       if (
         node.x == null || !Number.isFinite(node.x) ||
         node.y == null || !Number.isFinite(node.y)
       ) return
       const label = node.id || ''
-      const fontSize = Math.max(6, 12 / globalScale)
       const degree = degreeMap.get(node.id) ?? 0
       const isHub = degree >= hubThreshold
 
-      // Screen-space radius scaled by connectivity → visual hierarchy.
-      const baseRadius = Math.max(3.5, Math.min(13, 3.5 + Math.sqrt(degree) * 2.1)) / globalScale
+      // Screen-space radius — tiny crisp dots, hubs slightly larger.
+      const baseRadius = (isHub ? 2.6 : 1.9) / globalScale
 
       const isSearching = matchingNodeIds !== null
       const isSearchMatch = matchingNodeIds?.has(node.id) ?? false
       const isHoverMatch = highlightNodes.has(node.id) && !isSearching
       const isSearchNeighbour = isSearching && !isSearchMatch && highlightNodes.has(node.id)
       const isSelected = selectedNode?.id === node.id
+      const isNeighbour = highlightNodes.has(node.id) && (!!hoveredNode || !!selectedNode)
 
-      let color: string
-      let glowIntensity: number
-      let outerGlow: string
-      let textColor: string
+      // Fill — subtle grey base, brighter white for hubs + active states.
+      let fill: string
+      if (isSearchMatch) fill = '#7ee2a8'
+      else if (isSelected) fill = '#ffffff'
+      else if (isHoverMatch) fill = '#e4e4e4'
+      else if (isNeighbour) fill = '#c9c9c9'
+      else if (isSearching) fill = 'rgba(138,138,138,0.25)'
+      else if (isHub) fill = '#e0e0e0'
+      else fill = '#8a8a8a'
 
-      if (isSearchMatch) {
-        color = theme.searchNode
-        glowIntensity = 24
-        outerGlow = theme.searchNodeGlow
-        textColor = '#34d399'
-      } else if (isSearchNeighbour) {
-        color = nodeColor(node.id)
-        glowIntensity = 5
-        outerGlow = `${color}33`
-        textColor = 'rgba(226,232,240,0.65)'
-      } else if (isHoverMatch) {
-        color = theme.highlightNode
-        glowIntensity = 20
-        outerGlow = theme.highlightLink
-        textColor = theme.nodeText
-      } else if (isSelected) {
-        color = theme.highlightNode
-        glowIntensity = 16
-        outerGlow = `${color}99`
-        textColor = theme.nodeText
-      } else if (isSearching) {
-        color = theme.mutedNode
-        glowIntensity = 0
-        outerGlow = 'transparent'
-        textColor = 'rgba(113,113,122,0.35)'
-      } else {
-        color = nodeColor(node.id)
-        glowIntensity = isHub ? 14 : 9
-        outerGlow = `${color}${isHub ? '99' : '55'}`
-        textColor = theme.nodeText
-      }
+      const radius = (isHoverMatch || isSelected || isSearchMatch) ? baseRadius * 1.35 : baseRadius
 
-      const activeRadius = isSearching && !isSearchMatch && !isSearchNeighbour
-        ? baseRadius * 0.45
-        : baseRadius
+      ctx.beginPath()
+      ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI)
+      ctx.fillStyle = fill
+      ctx.fill()
 
-      const glowRadius = (isSearchMatch || isHoverMatch || isSelected)
-        ? baseRadius * 3
-        : isSearchNeighbour
-          ? baseRadius * 1.5
-          : isSearching
-            ? baseRadius * 0.6
-            : baseRadius * (isHub ? 2.4 : 1.9)
-
-      if (outerGlow !== 'transparent') {
-        const glow = ctx.createRadialGradient(
-          node.x!, node.y!, 0,
-          node.x!, node.y!, glowRadius,
-        )
-        glow.addColorStop(0, hexToRgba(color, 0.45))
-        glow.addColorStop(1, `${color}00`)
-        ctx.fillStyle = glow
+      // Thin crisp ring for the hovered / selected node (no glow, no blur).
+      if (isHoverMatch || isSelected) {
         ctx.beginPath()
-        ctx.arc(node.x!, node.y!, glowRadius, 0, 2 * Math.PI)
-        ctx.fill()
-      }
-
-      // Hub pulse ring — a slowly breathing outer ring on high-degree nodes.
-      if (isHub && !isSearching) {
-        const t = pulseClockRef.current / 1000
-        const ringPhase = (Math.sin(t * 1.7) + 1) / 2 // 0..1
-        const ringRadius = activeRadius * (1.6 + ringPhase * 0.5)
-        ctx.beginPath()
-        ctx.arc(node.x!, node.y!, ringRadius, 0, 2 * Math.PI)
-        ctx.strokeStyle = hexToRgba(color, 0.22 + ringPhase * 0.28)
-        ctx.lineWidth = 1.1 / globalScale
+        ctx.arc(node.x!, node.y!, radius + 1.5 / globalScale, 0, 2 * Math.PI)
+        ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(220,220,220,0.7)'
+        ctx.lineWidth = 0.8 / globalScale
         ctx.stroke()
       }
 
-      // ── Entity thumbnail layer ───────────────────────────────────
-      // Saved renders become the node face — circular-cropped photo,
-      // rimmed in the node colour. Falls back to the flat disc while
-      // the image is still loading (or missing).
-      const thumbUrl = entityImages.get(node.id)
+      // ── Entity thumbnail layer (kept — crisp crop, neutral rim) ──
+      const thumbUrl = showThumbnails ? entityImages.get(node.id) : undefined
       const thumb = thumbUrl ? imgCacheRef.current.get(thumbUrl) : undefined
       const thumbReady = !!thumb && thumb.complete && thumb.naturalWidth > 0
 
       if (thumbReady && thumb) {
-        const cover = Math.max((activeRadius * 2) / thumb.naturalWidth, (activeRadius * 2) / thumb.naturalHeight)
+        const cover = Math.max((radius * 2) / thumb.naturalWidth, (radius * 2) / thumb.naturalHeight)
         const dw = thumb.naturalWidth * cover
         const dh = thumb.naturalHeight * cover
 
         ctx.save()
         ctx.beginPath()
-        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
-        if (glowIntensity > 0) {
-          ctx.shadowColor = color
-          ctx.shadowBlur = glowIntensity
-        }
+        ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI)
         ctx.clip()
         ctx.drawImage(thumb, node.x! - dw / 2, node.y! - dh / 2, dw, dh)
         ctx.restore()
 
-        // Colour rim so the node still reads as typed
+        // Neutral rim so the node still reads as a typed entity.
         ctx.beginPath()
-        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
-        ctx.strokeStyle = hexToRgba(color, 0.9)
-        ctx.lineWidth = 1.2 / globalScale
+        ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI)
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)'
+        ctx.lineWidth = 0.6 / globalScale
         ctx.stroke()
-      } else {
-        ctx.beginPath()
-        ctx.arc(node.x!, node.y!, activeRadius, 0, 2 * Math.PI)
-        ctx.fillStyle = color
-        if (glowIntensity > 0) {
-          ctx.shadowColor = color
-          ctx.shadowBlur = glowIntensity
-        }
-        ctx.fill()
-        ctx.shadowBlur = 0
       }
 
-      // Specular highlight (skipped in muted search state)
-      if (!isSearching || isSearchMatch || isSearchNeighbour || isSelected) {
-        ctx.beginPath()
-        ctx.arc(
-          node.x! - activeRadius * 0.2,
-          node.y! - activeRadius * 0.2,
-          activeRadius * 0.32,
-          0, 2 * Math.PI,
-        )
-        ctx.fillStyle = 'rgba(255,255,255,0.45)'
-        ctx.fill()
-      }
-
-      // ── Level-of-Detail labels ───────────────────────────────────────
-      // Always: hubs, hovered, matched, selected. Otherwise only when zoomed
-      // past 2× — this is what eliminates label pile-up at default zoom.
+      // ── Aggressive LOD labels — hover, click (+ neighbours), search ──
       const showLabel =
-        isHub || isHoverMatch || isSearchMatch || isSearchNeighbour || isSelected ||
-        globalScale > 2.0
+        isHoverMatch || isSelected || isSearchMatch || isSearchNeighbour ||
+        (showLabels && isHub)
 
       if (showLabel) {
         const clean = label.length > LABEL_MAX_CHARS
           ? `${label.slice(0, LABEL_MAX_CHARS - 1)}…`
           : label
-        ctx.font = `${fontSize}px "JetBrains Mono", "Fira Code", monospace`
+        const fontSize = Math.max(6, 11 / globalScale)
+        ctx.font = `${fontSize}px "Inter", "JetBrains Mono", sans-serif`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'top'
-        const labelY = node.y! + activeRadius + 3
+        const labelY = node.y! + radius + 2
         const textW = ctx.measureText(clean).width
 
-        // Dark backing pill so overlapping labels stay readable.
-        ctx.fillStyle = 'rgba(9,10,15,0.72)'
-        roundRectPath(ctx, node.x! - textW / 2 - 4, labelY - 2, textW + 8, fontSize + 4, 4)
-        ctx.fill()
+        // Subtle dark backing for readability only — no neon, no glow.
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'
+        ctx.fillRect(node.x! - textW / 2 - 3, labelY - 2, textW + 6, fontSize + 4)
 
-        ctx.shadowColor = 'rgba(0,0,0,0.9)'
-        ctx.shadowBlur = 4
-        ctx.fillStyle = textColor
+        ctx.fillStyle = isSelected ? '#ffffff' : theme.nodeText
         ctx.fillText(clean, node.x!, labelY)
-        ctx.shadowBlur = 0
       }
     },
-    [highlightNodes, matchingNodeIds, theme, degreeMap, hubThreshold, selectedNode, entityImages],
+    [highlightNodes, matchingNodeIds, degreeMap, hubThreshold, selectedNode, hoveredNode, entityImages, showLabels, showThumbnails, theme],
   )
 
-  // ── Link painter: glowing vector links, colour blended source→target ──
+  // ── Link painter: thin solid lines, no glow ─────────────────────────
   const paintLink = useCallback(
     (link: GraphLink, ctx: CanvasRenderingContext2D) => {
       const src = typeof link.source === 'object' ? (link.source as GraphNode) : null
@@ -1284,59 +1124,23 @@ export function BrainPage(): JSX.Element {
       const isSearching = matchingNodeIds !== null
       const isHighlighted = highlightLinks.has(key)
 
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.lineTo(tx, ty)
+
       if (isSearching && !isHighlighted) {
-        ctx.beginPath()
-        ctx.moveTo(sx, sy)
-        ctx.lineTo(tx, ty)
-        ctx.strokeStyle = theme.mutedLink
-        ctx.lineWidth = 0.35
-        ctx.stroke()
-        return
+        ctx.strokeStyle = 'rgba(150,150,150,0.1)'
+        ctx.lineWidth = 0.5
+      } else if (isHighlighted) {
+        ctx.strokeStyle = isSearching ? 'rgba(126,226,168,0.8)' : 'rgba(225,225,225,0.75)'
+        ctx.lineWidth = 0.9
+      } else {
+        ctx.strokeStyle = 'rgba(150,150,150,0.3)'
+        ctx.lineWidth = 0.5
       }
-
-      // Blend the two endpoint colours → each edge carries its own hue.
-      const mix = blendHex(nodeColor(src.id), nodeColor(tgt.id), 0.5)
-      const accent = activeMeta.color
-
-      if (isSearching && isHighlighted) {
-        ctx.beginPath()
-        ctx.moveTo(sx, sy)
-        ctx.lineTo(tx, ty)
-        ctx.shadowColor = theme.searchNode
-        ctx.shadowBlur = 6
-        ctx.strokeStyle = theme.searchLink
-        ctx.lineWidth = 1.3
-        ctx.stroke()
-        ctx.shadowBlur = 0
-        return
-      }
-
-      const alpha = isHighlighted ? 0.85 : 0.45
-      const width = isHighlighted ? 1.4 : 1.0
-      const glowColor = isHighlighted ? hexToRgba(accent, 0.9) : mix
-
-      // Soft under-glow pass — makes edges clearly visible on the grid.
-      ctx.beginPath()
-      ctx.moveTo(sx, sy)
-      ctx.lineTo(tx, ty)
-      ctx.strokeStyle = hexToRgba(mix, alpha * 0.35)
-      ctx.lineWidth = width * 2.6
       ctx.stroke()
-
-      // Bright core pass with shadow glow.
-      ctx.beginPath()
-      ctx.moveTo(sx, sy)
-      ctx.lineTo(tx, ty)
-      ctx.shadowColor = glowColor
-      ctx.shadowBlur = 4
-      ctx.strokeStyle = isHighlighted
-        ? hexToRgba(accent, 0.9)
-        : hexToRgba(mix, alpha)
-      ctx.lineWidth = width
-      ctx.stroke()
-      ctx.shadowBlur = 0
     },
-    [highlightLinks, matchingNodeIds, theme, activeMeta.color],
+    [highlightLinks, matchingNodeIds],
   )
 
   // ── Zoom to fit on load ──────────────────────────────────────────────
@@ -1554,25 +1358,6 @@ export function BrainPage(): JSX.Element {
               <Clock className="w-3.5 h-3.5" />
             </button>
 
-            {/* Pulse button */}
-            <button
-              onClick={triggerPulse}
-              className="relative p-1 rounded-lg transition-all duration-200"
-              style={{
-                color: pulseIntensity > 0 ? brainColor : '#71717a',
-                backgroundColor: pulseIntensity > 0 ? `${brainColor}15` : undefined,
-              }}
-              title="Fire synaptic pulse"
-            >
-              <Zap className="w-3.5 h-3.5" />
-              {pulseIntensity > 0 && (
-                <span
-                  className="absolute inset-0 rounded-lg animate-ping opacity-40"
-                  style={{ backgroundColor: `${brainColor}30` }}
-                />
-              )}
-            </button>
-
             {/* Refresh button */}
             <button
               onClick={fetchGraph}
@@ -1739,26 +1524,38 @@ export function BrainPage(): JSX.Element {
         </div>
       )}
 
-      {/* ── Graph Container ─────────────────────────────────────────────── */}
-      <div ref={containerRef} className="flex-1 relative overflow-hidden">
-        {/* ── Cybernetic backdrop: radial spotlight + grid ──────────────── */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background: `radial-gradient(1100px 640px at 50% 30%, ${hexToRgba(brainColor, 0.12)}, rgba(9,10,15,0) 62%), radial-gradient(1500px 900px at 50% 45%, rgba(24,19,43,0.9), rgba(9,10,15,1) 78%)`,
+      {/* ── Graph Container (flex row: sidebar + canvas) ───────────────── */}
+      <div className="flex flex-1 min-h-0">
+        {/* Left Obsidian-style control sidebar */}
+        <GraphSidebar
+          brainColor={brainColor}
+          brainsList={brainsList}
+          activeBrain={activeBrain}
+          onSelectBrain={handleBrainChange}
+          nodeCount={graphData?.nodes.length ?? 0}
+          edgeCount={graphData?.links.length ?? 0}
+          showLabels={showLabels}
+          onShowLabels={setShowLabels}
+          showThumbnails={showThumbnails}
+          onShowThumbnails={setShowThumbnails}
+          chargeStrength={chargeStrength}
+          onChargeStrength={setChargeStrength}
+          linkDistance={linkDistance}
+          onLinkDistance={setLinkDistance}
+          centerStrength={centerStrength}
+          onCenterStrength={setCenterStrength}
+          onResetForces={() => {
+            setChargeStrength(-200)
+            setLinkDistance(40)
+            setCenterStrength(0.1)
           }}
         />
-        <div
-          className="absolute inset-0 pointer-events-none opacity-70"
-          style={{
-            backgroundImage:
-              'linear-gradient(rgba(22,27,38,0.6) 1px, transparent 1px),' +
-              'linear-gradient(90deg, rgba(22,27,38,0.6) 1px, transparent 1px)',
-            backgroundSize: '34px 34px',
-            maskImage: 'radial-gradient(ellipse at 50% 38%, black 25%, transparent 80%)',
-            WebkitMaskImage: 'radial-gradient(ellipse at 50% 38%, black 25%, transparent 80%)',
-          }}
-        />
+        <div ref={containerRef} className="flex-1 relative overflow-hidden">
+          {/* ── Flat Obsidian-style backdrop ──────────────────────────────── */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{ backgroundColor: '#161616' }}
+          />
 
         {/* Loading overlay */}
         {loading && (
@@ -1815,66 +1612,50 @@ export function BrainPage(): JSX.Element {
               </p>
             </div>
           </div>
-        )}
+        )}          {/* ForceGraph2D */}
+          {graphData && !loading && (
+            <ForceGraph2D
+              ref={graphRef}
+              graphData={graphData}
+              width={dimension.width}
+              height={dimension.height}
+              // Transparent canvas so the flat backdrop shows through
+              backgroundColor="rgba(0,0,0,0)"
 
-        {/* ForceGraph2D */}
-        {graphData && !loading && (
-          <ForceGraph2D
-            ref={graphRef}
-            graphData={graphData}
-            width={dimension.width}
-            height={dimension.height}
-            // Transparent canvas so the cybernetic CSS backdrop shows through
-            backgroundColor="rgba(0,0,0,0)"
+              // Nodes — crisp dots
+              nodeRelSize={2.5}
+              nodeCanvasObject={paintNode}
+              nodeCanvasObjectMode={() => 'replace'}
+              nodePointerAreaPaint={(node, color, ctx) => {
+                if (
+                  node.x == null || !Number.isFinite(node.x) ||
+                  node.y == null || !Number.isFinite(node.y)
+                ) return
+                // Slightly bigger hit area for hubs = easier to grab
+                const deg = degreeMap.get(node.id as string) ?? 0
+                const r = Math.max(6, 8 + Math.sqrt(deg) * 1.5)
+                ctx.beginPath()
+                ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI)
+                ctx.fillStyle = color
+                ctx.fill()
+              }}
 
-            // Nodes
-            nodeRelSize={4}
-            nodeCanvasObject={paintNode}
-            nodeCanvasObjectMode={() => 'replace'}
-            nodePointerAreaPaint={(node, color, ctx) => {
-              if (
-                node.x == null || !Number.isFinite(node.x) ||
-                node.y == null || !Number.isFinite(node.y)
-              ) return
-              // Bigger hit area for hubs = easier to grab high-degree nodes
-              const deg = degreeMap.get(node.id as string) ?? 0
-              const r = Math.max(7, 9 + Math.sqrt(deg) * 2.5)
-              ctx.beginPath()
-              ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI)
-              ctx.fillStyle = color
-              ctx.fill()
-            }}
+              // Links — thin solid lines
+              linkCanvasObject={paintLink}
 
-            // Links
-            linkCanvasObject={paintLink}
-
-            // Particles — pulse modulates count, speed, width, colour
-            linkDirectionalParticles={() => 2 + Math.round(pulseIntensity * 8)}
-            linkDirectionalParticleWidth={1.5 + pulseIntensity * 2.5}
-            linkDirectionalParticleSpeed={0.005 + pulseIntensity * 0.03}
-            linkDirectionalParticleColor={() => {
-              if (pulseIntensity < 0.01) return theme.linkColor
-              const alpha = 0.6 + pulseIntensity * 0.4
-              const { r, g, b } = hexToRgb(activeMeta.color)
-              const pr = r + Math.round(pulseIntensity * (255 - r))
-              const pg = g + Math.round(pulseIntensity * (255 - g))
-              const pb = b + Math.round(pulseIntensity * (255 - b))
-              return `rgba(${pr},${pg},${pb},${alpha})`
-            }}
-
-            // Interaction
-            onNodeHover={handleNodeHover}
-            onNodeClick={handleNodeClick}
-            onBackgroundClick={closeNodeDetails}
-            enableNodeDrag={true}
-            enableZoomInteraction={true}
-            enablePanInteraction={true}
-            d3AlphaDecay={0.02}
-            d3VelocityDecay={0.3}
-            cooldownTicks={100}
-            warmupTicks={40}
-          />
-        )}
+              // Interaction
+              onNodeHover={handleNodeHover}
+              onNodeClick={handleNodeClick}
+              onBackgroundClick={closeNodeDetails}
+              enableNodeDrag={true}
+              enableZoomInteraction={true}
+              enablePanInteraction={true}
+              d3AlphaDecay={0.03}
+              d3VelocityDecay={0.3}
+              cooldownTicks={80}
+              warmupTicks={60}
+            />
+          )}
 
         {/* Timeline panel overlay */}
         {showTimeline && (
@@ -2085,6 +1866,7 @@ export function BrainPage(): JSX.Element {
             </div>
           </motion.div>
         )}
+      </div>
       </div>
 
       {/* ── Footer: floating HUD status bar ─────────────────────────────── */}

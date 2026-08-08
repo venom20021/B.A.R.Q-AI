@@ -35,6 +35,7 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Real-time timeline UI** — Right-side panel showing chronologically ordered triplet events with flash animation on new entries
 - **Auto-extraction** — Scheduled extraction of knowledge triplets from new content every 3 hours
 - **Tabbed visualizer** — React ForceGraph2D with distinct neon color themes per brain type
+- **Obsidian-style graph page** — Dense minimalist canvas + left control sidebar (Groups/Display/Forces) with live D3 tuning (see Neural Graph section)
 - **Semantic search** — Highlight and zoom to entities across the knowledge graph
 
 ### 📥 Gemini Chat Ingestion
@@ -51,6 +52,7 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Auto-apply** — Playwright-based form filling for major ATS platforms
 - **Resume parsing** — Extracts structured data from Markdown resumes
 - **Cover letter & cold email generation** — AI-crafted, tailored to each job
+- **Live pipeline dashboard** — Jobs page with quick actions (view details), live raw-status chips (queued/submitted/failed), and filters for pipeline stage, match score, and source board
 
 ### 📱 Social Media Pipeline
 - **Trend research** — Discovers trending topics across platforms
@@ -69,6 +71,22 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 - **Package manager** — npm, pip, brew commands by voice
 - **Localhost tunneling** — Expose local ports via cloudflared
 - **Terminal streaming** — Real-time command output via SSE
+
+### 🧠 Obsidian-Style Neural Graph
+- **Dense, minimalist canvas** — Crisp dots + thin lines rendered directly on canvas (no neon glow), tuned D3 physics (charge / link distance / center pull) for a uniform, Obsidian-like knowledge web
+- **Left control sidebar** — Collapsible accordion sections: **Filters**, **Groups** (switch brains), **Display** (labels / node thumbnails), and **Forces** (live D3 sliders + reset)
+- **Aggressive label hiding** — Node labels only appear on hover or when a node is clicked (highlighting it + its neighbors); hub labels can be pinned via the Display toggle
+
+### 📦 Desktop Installer & Auto-Updates
+- **One-click installer** — `npm run package` produces `BARQ-<version>-Setup-x64.exe` (NSIS, unsigned dev builds) with the BARQ logo
+- **Self-updating** — Installed apps check GitHub Releases on launch via `electron-updater`: auto-downloads new versions and shows an **UpdateToast** with live download progress + a **Restart & Install** button
+- **Release pipeline** — `npm run package:publish` uploads the installer + `latest.yml` feed to a GitHub Release (needs `GH_TOKEN`); any future version bump flows to installed apps automatically
+- **Update feed** — `dist/latest.yml` (sha512 + size) is verified before install, with differential `.blockmap` support
+
+### ☁️ Cloud Mode (Oracle VM Backend)
+- **Auto-remote** — On startup the desktop app probes the Oracle VM backend (`http://155.248.247.224`); when reachable, non-voice API calls route to the cloud while voice stays local (mic/speakers are on your machine)
+- **Hybrid routing** — Voice endpoints (talk, listen, wake word) always use the local Python sidecar; jobs/social/system/LLM calls go remote; SSE chat streams via the main process to avoid CORS
+- **Manual override** — `SIDECAR_REMOTE_URL` to point elsewhere, `SIDECAR_AUTO_REMOTE=false` to force local-only
 
 ### 🌐 Neural Dashboard UI
 - **3D particle sphere** — 30,000-particle volumetric cloud with Fibonacci distribution, power-weighted density (5.0) for a packed core that thins toward the surface
@@ -101,7 +119,7 @@ Built with **Python (FastAPI)** for the backend and **Electron + React** for the
 **macOS / Linux:**
 ```bash
 git clone https://github.com/venom20021/B.A.R.Q-AI.git
-cd barq
+cd B.A.R.Q-AI
 
 # Install Python dependencies
 pip install -r python/requirements.txt
@@ -122,7 +140,7 @@ cd ../..
 ```batch
 :: Run in Command Prompt or PowerShell
 git clone https://github.com/venom20021/B.A.R.Q-AI.git
-cd barq
+cd B.A.R.Q-AI
 
 :: Install Python dependencies
 pip install -r python\requirements.txt
@@ -332,6 +350,8 @@ Configuration is managed through environment variables or a `.env` file in the p
 | `DEEPGRAM_API_KEY` | — | Deepgram API key for Voice Agent (required, get at [console.deepgram.com](https://console.deepgram.com)) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///barq.db` | Database connection |
 | `CAREER_OPS_PATH` | `~/career-ops` | Path for resume/job files |
+| `SIDECAR_REMOTE_URL` | — | Force a remote backend URL (cloud mode) |
+| `SIDECAR_AUTO_REMOTE` | `true` | Auto-probe the Oracle VM backend on startup |
 
 ### Cloud LLM Fallback Configuration
 
@@ -520,7 +540,32 @@ BARQ is designed to run on both **macOS** and **Windows**.
 - App launching via `os.startfile`
 
 ### CI/CD
-GitHub Actions runs linting, type-checking, building, and Python tests on every push.
+GitHub Actions runs linting, type-checking, building, and Python tests on every push, then auto-deploys the backend to the Oracle VM.
+
+---
+
+## Deployment (Oracle VM)
+
+The Python backend runs as a systemd service (`barq.service`) on an Oracle Cloud Always-Free VM (4 OCPU / 24 GB RAM), fronted by Caddy (HTTPS). Pushing to `master` triggers the **Deploy to Oracle VM** workflow (`.github/workflows/deploy.yml`), which:
+
+1. SSHes in via `appleboy/ssh-action` (secrets: `OCI_HOST`, `OCI_USERNAME`, `OCI_SSH_KEY`)
+2. Backs up `.env`, resets local hotfixes, and pulls `master`
+3. Restores `.env`, installs `python/requirements.txt`, clears `__pycache__`
+4. Validates imports (`config` + `main`) before restarting `barq.service`
+5. Polls `http://localhost:8970/health` (up to 30s) and reports the run URL
+
+**Manual deploy** (from a machine with SSH access):
+```bash
+bash scripts/deploy.sh        # pull + install + validate + restart + health-check
+```
+
+**One-time VM bootstrap** (fresh Oracle instance):
+```bash
+scp python/scripts/setup-oracle-vm.sh ubuntu@<VM-IP>:/tmp/
+ssh ubuntu@<VM-IP> bash /tmp/setup-oracle-vm.sh
+```
+
+See `python/DEPLOY-ORACLE.md` for the full guide, or `python/DEPLOY-FLY.IO.md` for the Fly.io alternative.
 
 ---
 
@@ -534,7 +579,8 @@ barq/
 │   ├── main/               # Electron main process
 │   │   ├── index.ts        # App entry point, wake receiver
 │   │   ├── ipc.ts          # IPC handlers
-│   │   ├── python-bridge.ts # Python sidecar manager
+│   │   ├── python-bridge.ts # Python sidecar manager (local voice + cloud API routing)
+│   │   ├── updater.ts      # electron-updater auto-update wiring
 │   │   └── tray.ts         # System tray
 │   ├── preload/            # Electron preload scripts
 │   └── renderer/           # React UI

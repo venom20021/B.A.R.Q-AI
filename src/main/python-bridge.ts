@@ -685,7 +685,10 @@ class PythonSidecar {
 
   private getArgs(): string[] {
     if (is.dev) {
-      return ['-m', 'uvicorn', 'main:app', '--host', SIDECAR_HOST, '--port', String(SIDECAR_PORT), '--log-level', 'info']
+      // --reload watches python/** for changes and hot-restarts the sidecar,
+      // mirroring the frontend's HMR. Requires watchfiles (from uvicorn[standard]).
+      // Only in dev — the packaged sidecar binary runs without args.
+      return ['-m', 'uvicorn', 'main:app', '--host', SIDECAR_HOST, '--port', String(SIDECAR_PORT), '--log-level', 'info', '--reload']
     } else {
       return []
     }
