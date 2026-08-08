@@ -8,7 +8,6 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from database import jobs_dao
 from .config import CONFIG, PROFILE
 from .pipeline.orchestrator import AutoApplyPipeline
 

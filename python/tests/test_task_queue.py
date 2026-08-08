@@ -19,7 +19,7 @@ def setup_db():
     return
 
 
-from agent.task_queue import AgentTaskQueue, TaskPriority
+from agent.task_queue import AgentTaskQueue, TaskPriority  # noqa: E402
 
 # ─── Basic Operations ─────────────────────────────────────────────────────
 

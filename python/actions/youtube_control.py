@@ -5,7 +5,6 @@ All functions are async and return dicts with 'status' and result data.
 Uses no-auth YouTube HTML scraping and youtube-transcript-api for transcripts.
 """
 
-import json
 import logging
 import re
 from datetime import datetime

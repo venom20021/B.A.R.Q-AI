@@ -127,7 +127,6 @@ def _find_browser_binary(browser: str) -> Optional[str]:
     # Windows-specific: check common install paths
     if _OS == "Windows":
         local = os.environ.get("LOCALAPPDATA", "")
-        prog = os.environ.get("PROGRAMFILES", "")
         prog86 = os.environ.get("PROGRAMFILES(X86)", "")
         win_paths = {
             "chrome":  [f"{local}\\Google\\Chrome\\Application\\chrome.exe",

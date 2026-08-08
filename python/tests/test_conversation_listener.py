@@ -8,7 +8,7 @@ Integration tests for the conversation listener:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,7 +20,7 @@ def setup_db():
     return
 
 
-from voice.conversation_listener import (
+from voice.conversation_listener import (  # noqa: E402
     ConversationListener,
 )
 

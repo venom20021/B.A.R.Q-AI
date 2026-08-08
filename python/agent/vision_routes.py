@@ -14,7 +14,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -485,7 +484,7 @@ async def _handle_vision_analyze(
         return
 
     try:
-        image_bytes = base64.b64decode(image_base64)
+        base64.b64decode(image_base64)
     except Exception as e:
         await websocket.send_json({"type": "error", "message": f"Invalid base64: {e}"})
         return

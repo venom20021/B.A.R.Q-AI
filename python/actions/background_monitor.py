@@ -24,8 +24,6 @@ import hashlib
 import json
 import re
 from datetime import datetime
-from pathlib import Path
-from threading import Lock
 
 # ── Blocked categories (never monitor regardless of what user says) ────────────
 
@@ -40,7 +38,7 @@ _BLOCKED = {
 # Monitors are stored in long_term.json under the "monitors" key,
 # same as Mark-L's approach.
 
-from memory.agent_memory_manager import load_memory, MEMORY_PATH, _lock
+from memory.agent_memory_manager import load_memory, MEMORY_PATH, _lock  # noqa: E402
 
 
 def _load_monitors() -> dict:
@@ -188,7 +186,6 @@ async def check_all() -> list[str]:
 
             snippet = top.get("snippet", "")[:200]
             source = top.get("source", "")
-            url = top.get("url", "")
 
             parts = [
                 f"[Monitor Alert] {topic}",
@@ -303,7 +300,7 @@ async def scheduled_check() -> list[str]:
                     source="background_monitor",
                     raw_alert=alert,
                 )
-                print(f"[BackgroundMonitor] ✅ Alert dispatched")
+                print("[BackgroundMonitor] ✅ Alert dispatched")
             except Exception as e:
                 print(f"[BackgroundMonitor] ⚠️ Dispatch error: {e}")
     return alerts

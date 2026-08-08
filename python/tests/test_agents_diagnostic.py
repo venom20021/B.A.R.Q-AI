@@ -4,18 +4,13 @@ BARQ Agent System Diagnostic Test.
 Tests all agent-related endpoints and reports what's working vs broken.
 """
 
-import json
 import os
 import sys
-import threading
-import time
 import traceback
 
 # Ensure the python directory is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-import httpx
-import uvicorn
 from fastapi.testclient import TestClient
 
 from main import app
@@ -147,7 +142,7 @@ def test_agent_skills():
         data = r.json()
         check("Skills body has 'skills' key", "skills" in data, str(data.keys()))
         skills = data.get("skills", [])
-        check(f"Has at least 1 skill registered", len(skills) >= 1, f"Got {len(skills)} skills")
+        check("Has at least 1 skill registered", len(skills) >= 1, f"Got {len(skills)} skills")
         print(f"  Registered skills ({len(skills)}): {[s.get('name', '?') for s in skills]}")
     except Exception as e:
         print(f"  [INFO] GET /agent/skills may not exist as an endpoint: {e}")

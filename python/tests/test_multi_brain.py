@@ -7,7 +7,6 @@ persistence (save/load), statistics, clear operations, and edge cases.
 """
 
 import json
-import os
 import tempfile
 from pathlib import Path
 

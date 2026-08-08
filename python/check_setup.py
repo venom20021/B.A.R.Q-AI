@@ -308,7 +308,7 @@ def run_check(verify: bool = False, json_output: bool = False) -> dict:
     # ── Pretty print (fully ASCII-safe) ────────────────────────────────
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    print(f"")
+    print("")
     print(f"  {b('B.A.R.Q Setup Checker')}")
     print(f"  {c(ts, DIM)}")
     print(f"  {c(f'Project: {PROJECT_ROOT.name}', DIM)}")

@@ -9,7 +9,6 @@ Handles LinkedIn-specific flows:
   5. Handle review/submit page
 """
 
-import asyncio
 import logging
 from typing import Any
 
@@ -143,7 +142,6 @@ class LinkedInStrategy(JobBoardStrategy):
             logger.info("LinkedIn login successful")
 
             # Save session state
-            from ..browser.launcher import BrowserLauncher
             # The launcher's session save is handled by the engine
             return True
 

@@ -342,7 +342,6 @@ class DynamicChartAgent:
         llm_result = await self.classifier.classify_llm(query)
 
         if llm_result:
-            intent = llm_result.get("intent", "")
             chart_type = llm_result.get("chart_type", "BarChart")
             title = llm_result.get("title", "Chart")
             interpretation = llm_result.get("reasoning", "LLM interpreted query")

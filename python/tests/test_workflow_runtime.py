@@ -9,7 +9,6 @@ Covers:
 - Checkpointing persists run progress
 """
 
-import asyncio
 
 import pytest
 

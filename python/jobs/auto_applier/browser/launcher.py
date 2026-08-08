@@ -5,7 +5,6 @@ Launches a visible Chrome instance with stealth configurations,
 reuses stored sessions, and provides a clean shutdown protocol.
 """
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Optional

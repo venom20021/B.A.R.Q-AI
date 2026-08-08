@@ -17,7 +17,7 @@ def setup_db():
     return
 
 
-from agent.agent_executor import AgentExecutor
+from agent.agent_executor import AgentExecutor  # noqa: E402
 
 # ─── Fixtures ──────────────────────────────────────────────────────────────
 

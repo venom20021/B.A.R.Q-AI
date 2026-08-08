@@ -7,7 +7,7 @@ Falls back to LinkedIn's saved resume if file upload fails.
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from ..browser.stealth import StealthConfig
 from ..config import CONFIG

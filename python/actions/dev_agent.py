@@ -19,7 +19,6 @@ import json
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -133,7 +132,7 @@ async def plan_project(description: str, language: str) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {response[:300]}")
-    except Exception as e:
+    except Exception:
         raise
 
 
@@ -216,7 +215,7 @@ async def _write_project_file(
 
         print(f"[DevAgent] ✅ Written: {file_path} ({len(code)} chars)")
         return code
-    except Exception as e:
+    except Exception:
         raise
 
 
@@ -441,7 +440,7 @@ async def build_project(
 
     log("Planning project structure...")
     try:
-        plan = await _plan_project(description, language)
+        plan = await plan_project(description, language)
     except ValueError as e:
         return f"Planning failed: {e}"
     except Exception as e:

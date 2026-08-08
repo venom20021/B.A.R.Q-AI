@@ -13,8 +13,8 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from jobs.auto_applier.config import PROFILE, CONFIG
-from jobs.auto_applier.pipeline.orchestrator import AutoApplyPipeline
+from jobs.auto_applier.config import PROFILE, CONFIG  # noqa: E402
+from jobs.auto_applier.pipeline.orchestrator import AutoApplyPipeline  # noqa: E402
 
 
 async def main():

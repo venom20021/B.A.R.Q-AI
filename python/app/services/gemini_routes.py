@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field
 
 from app.services.gemini_watcher import (
     GeminiFileWatcher,
-    GeminiTripletExtractor,
     get_extractor,
     get_gemini_watcher,
 )

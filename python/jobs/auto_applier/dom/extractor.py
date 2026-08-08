@@ -10,8 +10,7 @@ Strategy C (Hybrid): use A primarily, fall back to B when tree is sparse.
 
 import json
 import logging
-import re
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("barq.auto_applier.dom")
 

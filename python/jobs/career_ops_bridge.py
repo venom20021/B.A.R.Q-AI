@@ -13,7 +13,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -660,7 +659,6 @@ class CareerOpsBridge:
         phone = resume_data.get("phone", "")
         linkedin_url = resume_data.get("linkedin_url", "")
         github_url = resume_data.get("github_url", "")
-        portfolio_url = resume_data.get("portfolio_url", "") or github_url
 
         # Location for contact line
         location = ""
@@ -853,10 +851,14 @@ class CareerOpsBridge:
         except Exception as e:
             return {"status": "error", "message": str(e), "pdf_path": ""}
         finally:
-            try: Path(html_path).unlink(missing_ok=True)
-            except: pass
-            try: Path(temp_pdf).unlink(missing_ok=True)
-            except: pass
+            try:
+                Path(html_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                Path(temp_pdf).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     # ═════════════════════════════════════════════════════════════════════
     # PDF generation — LaTeX backend
@@ -954,7 +956,8 @@ class CareerOpsBridge:
             # Clean up temp dir
             try:
                 shutil.rmtree(str(tmp_dir))
-            except: pass
+            except Exception:
+                pass
 
     # ═════════════════════════════════════════════════════════════════════
     # Public generation method

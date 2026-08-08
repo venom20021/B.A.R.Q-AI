@@ -6,7 +6,6 @@ that headful browser scripts are commonly detected by.
 """
 
 import logging
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("barq.auto_applier.stealth")

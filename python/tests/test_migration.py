@@ -7,7 +7,6 @@ a real Ollama instance.
 """
 
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -19,20 +18,18 @@ import pytest
 def setup_db():
     """Override conftest's autouse DB fixture — no DB needed for these tests."""
     return
-from unittest.mock import MagicMock, patch
 
-import pytest
-import networkx as nx
-from networkx.readwrite import json_graph
+import pytest  # noqa: E402
+import networkx as nx  # noqa: E402
+from networkx.readwrite import json_graph  # noqa: E402
 
-from memory_knowledge.migration import (
-    BRAIN_KEYWORDS,
+from memory_knowledge.migration import (  # noqa: E402
     MigrationRunner,
     _score_triplet,
     _default_brain,
     run_migration,
 )
-from memory_knowledge.multi_brain import BRAIN_REGISTRY, multi_brain_manager
+from memory_knowledge.multi_brain import BRAIN_REGISTRY, multi_brain_manager  # noqa: E402
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────

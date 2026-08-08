@@ -37,7 +37,7 @@ USER_AGENTS = [
 ]
 
 
-import random as _random
+import random as _random  # noqa: E402
 
 
 def _random_ua() -> str:
@@ -567,7 +567,6 @@ class JobScanner:
         if the board discovery fails.
         """
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             jobs = []
             seen_urls = set()
 
@@ -694,7 +693,6 @@ class JobScanner:
         companies and also discover new ones via Google.
         """
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             jobs = []
 
             # Known companies using Ashby for job postings
@@ -764,7 +762,6 @@ class JobScanner:
         Returns JSON array of active postings.
         """
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             jobs = []
 
             # Known companies using Lever for job postings
@@ -854,7 +851,6 @@ class JobScanner:
         Returns JSON with a 'jobs' array.
         """
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             jobs = []
 
             # Known companies using BambooHR
@@ -1384,7 +1380,6 @@ class JobScanner:
     async def _scan_weworkremotely(self, keywords: list[str]) -> list[dict[str, Any]]:
         """Scrape WeWorkRemotely — has a free JSON endpoint."""
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             # Try JSON API first
             try:
                 resp = await self.client.get(
@@ -1684,7 +1679,6 @@ class JobScanner:
     async def _scan_hnhiring(self, keywords: list[str]) -> list[dict[str, Any]]:
         """Scrape HN Hiring aggregator for monthly job threads."""
         try:
-            keyword_str = " ".join(k.lower() for k in keywords)
             resp = await self.client.get(
                 "https://hnhiring.com",
                 timeout=20,

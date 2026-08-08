@@ -9,7 +9,6 @@ All DAO modules and external code import `db_connection` and call the same
 async methods (fetch_one, fetch_all, insert, update, delete, execute).
 """
 
-import asyncio
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -33,7 +32,7 @@ class TursoConnection:
         url = database_url.rstrip("/")
         if url.startswith("libsql://"):
             url = "https://" + url[9:]
-            print(f"[Turso] Converted libsql:// to https:// for HTTP API")
+            print("[Turso] Converted libsql:// to https:// for HTTP API")
         self._base_url = url
         self._auth_token = auth_token
         self._session: Optional[Any] = None  # aiohttp.ClientSession

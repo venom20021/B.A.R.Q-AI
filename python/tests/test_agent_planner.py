@@ -17,7 +17,7 @@ def setup_db():
     return
 
 
-from agent.agent_planner import _fallback_plan, create_plan, replan
+from agent.agent_planner import _fallback_plan, create_plan, replan  # noqa: E402
 
 
 @pytest.fixture

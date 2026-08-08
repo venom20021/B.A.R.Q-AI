@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .hardware_monitor import (
-    TelemetrySnapshot,
     get_hardware_monitor,
     format_hardware_summary,
     format_uptime,

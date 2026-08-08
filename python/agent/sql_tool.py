@@ -18,10 +18,9 @@ Usage:
 """
 
 import asyncio
-import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # Statements that are allowed by default (read-only)
 _READ_ONLY_PREFIXES = ("select", "with", "explain", "pragma", "values")

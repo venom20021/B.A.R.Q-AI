@@ -185,10 +185,6 @@ async def get_telegram_status():
     }
 
 
-class TelegramCredentialsRequest(BaseModel):
-    bot_token: str = ""
-    chat_id: str = ""
-
 
 @router.post("/telegram/credentials", summary="Save Telegram bot token and chat ID")
 async def set_telegram_credentials(request: TelegramCredentialsRequest):

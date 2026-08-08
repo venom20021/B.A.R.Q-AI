@@ -6,17 +6,15 @@ Interactive Buttons → Headful Auto-Apply → EvoMap Logging
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..applier.engine import ApplicationEngine
 from ..boards.glassdoor import GlassdoorStrategy
 from ..boards.indeed import IndeedStrategy
 from ..boards.linkedin import LinkedInStrategy
-from ..config import CONFIG, PROFILE
+from ..config import CONFIG
 from ..failure.evo_logger import EvoLogger
 from ..resume.dynamic_builder import DynamicResumeBuilder
 from ..telegram.bot import AutoApplyBot

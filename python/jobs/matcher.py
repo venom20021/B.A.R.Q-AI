@@ -59,7 +59,7 @@ class JobMatcher:
             response_text = response_text.strip()
             if response_text.startswith("```"):
                 lines = response_text.split("\n")
-                lines = [l for l in lines if not l.startswith("```")]
+                lines = [line for line in lines if not line.startswith("```")]
                 response_text = "\n".join(lines)
 
             result = json.loads(response_text)

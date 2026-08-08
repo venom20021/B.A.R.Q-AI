@@ -113,7 +113,6 @@ class TestSendLoopConnectionRecovery:
     @pytest.mark.asyncio
     async def test_send_loop_survives_transient_errors(self, agent):
         """A transient (non-connection) error is logged but does not kill the loop."""
-        from voice.gemini_agent import _ConnectionClosed
 
         agent._running = True
         agent._session = MagicMock()
@@ -209,7 +208,6 @@ class TestReceiveLoopConnectionRecovery:
     @pytest.mark.asyncio
     async def test_receive_loop_ends_cleanly_when_stopped(self, agent):
         """When _running is False, a normal stream end is NOT a dead connection."""
-        from voice.gemini_agent import _ConnectionClosed
 
         agent._running = False
 

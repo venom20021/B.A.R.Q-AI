@@ -17,7 +17,6 @@ All handlers lazy-import their modules to avoid circular imports.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Optional
 
 from .skill_registry import Skill, SkillParameter, get_skill_registry

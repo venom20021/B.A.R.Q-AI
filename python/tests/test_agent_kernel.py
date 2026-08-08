@@ -10,7 +10,6 @@ These tests verify the three HIGH priority improvements:
 import asyncio
 import sqlite3
 import time
-from pathlib import Path
 
 import pytest
 
@@ -18,7 +17,6 @@ from agent.agent_kernel import AgentKernel, AgentLLMUsage
 from agent.skill_registry import (
     SkillExecutionStats,
     SkillRegistry,
-    get_skill_registry,
 )
 
 
@@ -101,7 +99,7 @@ class TestSkillRegistryAnalytics:
         """Return a fresh registry with one registered skill."""
         reg = SkillRegistry()
         reg.clear()
-        from agent.skill_registry import Skill, SkillParameter
+        from agent.skill_registry import Skill
 
         async def _success(**kwargs):
             return "OK"

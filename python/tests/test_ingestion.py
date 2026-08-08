@@ -19,11 +19,11 @@ import pytest
 def setup_db():
     """Override conftest's autouse DB fixture — no DB needed for these tests."""
     return
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from memory_knowledge.ingestion import (
+from memory_knowledge.ingestion import (  # noqa: E402
     BRAIN_FOLDER_MAP,
     IngestionParser,
     TripletExtractor,
@@ -31,7 +31,7 @@ from memory_knowledge.ingestion import (
     get_dropbox_base,
     run_ingestion_once,
 )
-from memory_knowledge.multi_brain import multi_brain_manager
+from memory_knowledge.multi_brain import multi_brain_manager  # noqa: E402
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -304,7 +304,7 @@ class TestTripletExtractor:
 
     def test_ollama_http_error(self, extractor, mock_httpx_client):
         """Ollama HTTP error is handled gracefully."""
-        from httpx import HTTPStatusError, RequestError
+        from httpx import HTTPStatusError
 
         mock_response = MagicMock()
         mock_response.status_code = 500
@@ -585,7 +585,6 @@ class TestRunIngestionOnce:
 
     def test_no_files_returns_zeros(self):
         """Empty drop-folders return zero triplets for all brains."""
-        from memory_knowledge.ingestion import get_dropbox_base
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create empty brain folders

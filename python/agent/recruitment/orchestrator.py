@@ -9,13 +9,10 @@ Runs the full pipeline: Extract → Match → Write with:
 """
 
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import get_settings
 from jobs.resume_parser import parse_resume
-from utils.ollama_client import OllamaClient
 
 from .extractor import ExtractorAgent, ExtractionResult
 from .matcher import MatcherAgent, MatchResult

@@ -5,12 +5,10 @@ Given a cleaned DOM context and a target action (e.g. "find the submit button"),
 the LLM reasons about which interactive element matches the intent.
 """
 
-import json
 import logging
 from typing import Any, Optional
 
 from .ollama_client import OllamaClient, OllamaError
-from ..config import PROFILE
 
 logger = logging.getLogger("barq.auto_applier.selector")
 

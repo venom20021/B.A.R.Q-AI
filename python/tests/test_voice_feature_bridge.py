@@ -10,24 +10,20 @@ These tests are pure unit tests — they mock the HTTP layer so no backend
 server is required.
 """
 
-import json
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-import pytest
 
 # Ensure python directory is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import voice.feature_bridge as fb
 from voice.feature_bridge import (
     FEATURE_FUNCTIONS,
     FEATURE_SCHEMAS,
     barq_analytics,
     barq_api,
     barq_apply_preview,
-    barq_brain_summary,
     barq_briefing,
     barq_job_details,
     barq_job_matches,

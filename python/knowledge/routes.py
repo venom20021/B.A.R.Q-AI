@@ -11,9 +11,9 @@ from pydantic import BaseModel
 
 from graph_brain import graph_brain
 
-from .auto_extractor import AutoExtractor, run_auto_extraction
-from .obsidian_dumper import ObsidianDumper, get_obsidian_dumper
-from .gemini_importer import GeminiChatImporter, ImportResult, get_gemini_importer
+from .auto_extractor import AutoExtractor
+from .obsidian_dumper import get_obsidian_dumper
+from .gemini_importer import GeminiChatImporter
 
 logger = logging.getLogger("barq.knowledge_routes")
 router = APIRouter()

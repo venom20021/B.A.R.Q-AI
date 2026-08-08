@@ -10,14 +10,13 @@ Requirements:
     but /api/generate-pdf only needs the PDF runtime, not the AI key.
 """
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 
-from ..config import CONFIG, PROFILE
+from ..config import PROFILE
 
 logger = logging.getLogger("barq.auto_applier.resume.bridge")
 

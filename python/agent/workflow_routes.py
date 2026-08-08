@@ -160,7 +160,6 @@ async def run_workflow(name: str, request: WorkflowRunRequest):
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
 
     if request.background:
-        from .workflow_runtime import WorkflowRuntime
         run_id = f"workflow:{__import__('uuid').uuid4().hex[:8]}"
         runtime._runs[run_id] = {
             "run_id": run_id, "workflow": name, "status": "queued",

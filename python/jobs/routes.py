@@ -8,7 +8,7 @@ import base64
 import json
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -20,7 +20,7 @@ from . import (
     FollowUpAutomation, JobApplier, JobEvaluator, JobScanner,
     ResponseTracker, get_pipeline_progress, get_pipeline_settings, run_pipeline,
 )
-from .scanner import get_scan_progress, notify_progress_changed, set_scan_error
+from .scanner import get_scan_progress, set_scan_error
 
 router = APIRouter()
 
@@ -434,7 +434,7 @@ async def apply_to_job(job_id: int, background_tasks: BackgroundTasks):
                         print(f"[ApplyWorker] Playwright error (non-fatal): {pw_err}")
                         app_status = "ready_for_review"
                 else:
-                    print(f"[ApplyWorker] No job URL available — documents only")
+                    print("[ApplyWorker] No job URL available — documents only")
                     app_status = "ready_for_review"
 
                 # Update application with results
@@ -607,7 +607,6 @@ async def upload_resume(data: dict):
     Upload resume content (markdown text) and save it to ~/career-ops/cv.md.
     The pipeline and resume parser will use this file for job matching.
     """
-    import os
     from pathlib import Path
 
     try:
@@ -640,8 +639,6 @@ async def upload_resume_pdf(file: UploadFile = File(...)):
     Supports .pdf files only. Extracted markdown preserves headings, paragraphs,
     and bullet points where possible.
     """
-    import os
-    import tempfile
     from pathlib import Path
 
     # Validate file type
@@ -751,7 +748,6 @@ async def upload_resume_pdf_base64(req: PdfUploadBase64Request):
     Decodes the base64 → extracts text via PyMuPDF → saves as ~/career-ops/cv.md.
     """
     import base64
-    import os
     from pathlib import Path
 
     # Validate filename
@@ -919,7 +915,6 @@ async def pipeline_settings():
 async def scan_history(hours: int = 24):
     """Get scan history from the activity log for the last N hours."""
     try:
-        from datetime import datetime, timezone
         rows = await db_connection.fetch_all(
             """SELECT id, action, description, metadata, severity, created_at
                FROM activity_log

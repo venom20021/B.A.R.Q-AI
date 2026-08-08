@@ -15,7 +15,7 @@ Outputs a structured ``ExtractionResult`` that the MatcherAgent consumes.
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 
 from utils.ollama_client import OllamaClient
 

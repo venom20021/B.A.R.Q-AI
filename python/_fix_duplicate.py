@@ -40,7 +40,7 @@ with open(tsx_path, 'w', encoding='utf-8') as f:
 # Verify
 with open(tsx_path, 'r', encoding='utf-8') as f:
     c = f.read()
-import re
+import re  # noqa: E402
 count = len(re.findall(r'function FollowUpPanel', c))
 print(f'FOLLOWUP_COUNT_AFTER: {count}')
 print('DUPLICATE_REMOVED' if count == 1 else 'STILL_HAS_DUPLICATE')

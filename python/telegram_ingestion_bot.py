@@ -491,8 +491,8 @@ async def _extract_pdf_text(document: Any) -> str:
 
         full_text = "\n\n".join(pages_text)
         full_text = re.sub(r"\n{3,}", "\n\n", full_text)
-        lines = [re.sub(r"[ \t]{2,}", " ", l).strip() for l in full_text.split("\n")]
-        full_text = "\n".join(l for l in lines if l).strip()
+        lines = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in full_text.split("\n")]
+        full_text = "\n".join(line for line in lines if line).strip()
 
         # If pypdf got enough text, return it
         if len(full_text) >= 100:
@@ -557,8 +557,8 @@ async def _ocr_pdf(pdf_path: str) -> str:
 
         full_text = "\n\n".join(all_text)
         full_text = re.sub(r"\n{3,}", "\n\n", full_text)
-        lines = [re.sub(r"[ \t]{2,}", " ", l).strip() for l in full_text.split("\n")]
-        full_text = "\n".join(l for l in lines if l).strip()
+        lines = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in full_text.split("\n")]
+        full_text = "\n".join(line for line in lines if line).strip()
         return full_text
 
     except Exception as e:
@@ -628,8 +628,8 @@ async def _scrape_job_url(url: str) -> str:
 
         # Clean up whitespace — condense multiple newlines, collapse horizontal whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
-        lines = [re.sub(r"[ \t]{2,}", " ", l).strip() for l in text.split("\n")]
-        text = "\n".join(l for l in lines if l).strip()  # remove empty lines too
+        lines = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in text.split("\n")]
+        text = "\n".join(line for line in lines if line).strip()  # remove empty lines too
         # Keep first 4000 characters
         text = text[:4000]
 
@@ -721,9 +721,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf_document))
     app.add_error_handler(error_handler)
 
-    print(f"  ✅ Bot started")
+    print("  ✅ Bot started")
     print(f"  🔒 Allowed chat: {ALLOWED_CHAT_ID}")
-    print(f"  📡 Waiting for job descriptions, URLs, or PDFs…")
+    print("  📡 Waiting for job descriptions, URLs, or PDFs…")
     print("=" * 50)
     print()
 

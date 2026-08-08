@@ -215,7 +215,6 @@ def _send_discord(receiver: str, message: str) -> dict[str, Any]:
     time.sleep(1.0)
 
     # Discord: Ctrl+K to open quick switcher, then search contact/DM
-    import pyautogui
     modifier = "command" if IS_MACOS else "ctrl"
     pyautogui.hotkey(modifier, "k")
     time.sleep(0.5)
@@ -279,7 +278,6 @@ def _send_instagram(receiver: str, message: str) -> dict[str, Any]:
     if not _open_browser_url("https://www.instagram.com/direct/new/"):
         return {"status": "error", "detail": "Could not open Instagram"}
 
-    import pyautogui
 
     # Type the receiver name
     _paste_text(receiver)
@@ -322,7 +320,6 @@ def _send_slack(receiver: str, message: str) -> dict[str, Any]:
     time.sleep(1.0)
 
     # Slack: Ctrl+K to open quick switcher
-    import pyautogui
     modifier = "command" if IS_MACOS else "ctrl"
     pyautogui.hotkey(modifier, "k")
     time.sleep(0.7)

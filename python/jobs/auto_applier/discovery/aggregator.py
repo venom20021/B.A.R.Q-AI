@@ -12,7 +12,7 @@ Deduplicates by URL and sorts by match score.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from ..config import CONFIG
 
@@ -91,7 +91,6 @@ class JobAggregator:
     async def _from_tinyfish_api(self) -> list[dict[str, Any]]:
         """Query TinyFish API directly for targeted searches."""
         try:
-            import httpx
             from tinyfish import TinyFish
             tf = TinyFish(api_key=CONFIG.tinyfish_api_key)
             # Search for Full-Stack / Software Engineer roles

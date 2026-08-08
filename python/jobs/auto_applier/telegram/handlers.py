@@ -10,7 +10,7 @@ Handles:
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart

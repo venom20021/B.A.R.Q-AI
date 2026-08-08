@@ -22,10 +22,10 @@ def setup_db():
     return
 
 
-from ai.conversation import ConversationManager
+from ai.conversation import ConversationManager  # noqa: E402
 
 # Module under test
-from ai.responder import BARQResponder, _split_sentences
+from ai.responder import BARQResponder, _split_sentences  # noqa: E402
 
 # Helper: create a fake return value for _text_to_speech_both
 _NP_ZERO = np.array([0.0], dtype=np.float32)

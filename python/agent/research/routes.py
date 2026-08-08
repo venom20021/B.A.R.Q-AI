@@ -7,14 +7,13 @@ Endpoints:
   GET  /research/deep/history - Get past research results
 """
 
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import analytics_dao
 
-from .deep_research_agent import DeepResearchAgent, ResearchDepth
+from .deep_research_agent import DeepResearchAgent
 
 router = APIRouter()
 

@@ -119,7 +119,7 @@ def _fallback_plan(goal: str) -> dict:
             {
                 "step": 1,
                 "tool": "respond",
-                "description": f"Respond conversationally to the user",
+                "description": "Respond conversationally to the user",
                 "parameters": {"message": goal},
                 "critical": False,
             }

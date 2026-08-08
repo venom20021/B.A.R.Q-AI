@@ -20,8 +20,8 @@ Requires optional dependencies:
   pydub, python-pptx, ffmpeg (system)
 """
 
+import asyncio
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -41,27 +41,43 @@ def _detect_type(path: Path) -> str:
                   "bash", "ps1", "lua", "r", "m", "sql", "yaml", "toml"}
     archive_exts = {"zip", "rar", "tar", "gz", "7z", "bz2", "xz"}
 
-    if ext in image_exts:   return "image"
-    if ext in video_exts:   return "video"
-    if ext in audio_exts:   return "audio"
-    if ext in code_exts:    return "code"
-    if ext in archive_exts: return "archive"
-    if ext == "pdf":        return "pdf"
-    if ext in ("docx", "doc"): return "docx"
-    if ext in ("txt", "md", "rst", "log"): return "text"
-    if ext in ("csv", "tsv"): return "csv"
-    if ext in ("xlsx", "xls", "ods"): return "excel"
-    if ext == "json":       return "json"
-    if ext == "xml":        return "xml"
-    if ext in ("pptx", "ppt"): return "pptx"
+    if ext in image_exts:
+        return "image"
+    if ext in video_exts:
+        return "video"
+    if ext in audio_exts:
+        return "audio"
+    if ext in code_exts:
+        return "code"
+    if ext in archive_exts:
+        return "archive"
+    if ext == "pdf":
+        return "pdf"
+    if ext in ("docx", "doc"):
+        return "docx"
+    if ext in ("txt", "md", "rst", "log"):
+        return "text"
+    if ext in ("csv", "tsv"):
+        return "csv"
+    if ext in ("xlsx", "xls", "ods"):
+        return "excel"
+    if ext == "json":
+        return "json"
+    if ext == "xml":
+        return "xml"
+    if ext in ("pptx", "ppt"):
+        return "pptx"
     return "unknown"
 
 
 def _file_size_str(path: Path) -> str:
     size = path.stat().st_size
-    if size < 1024:        return f"{size} B"
-    if size < 1024**2:     return f"{size/1024:.1f} KB"
-    if size < 1024**3:     return f"{size/1024**2:.1f} MB"
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024**2:
+        return f"{size/1024:.1f} KB"
+    if size < 1024**3:
+        return f"{size/1024**2:.1f} MB"
     return f"{size/1024**3:.1f} GB"
 
 
@@ -73,8 +89,6 @@ def _output_path(src: Path, suffix: str, new_ext: str = None) -> Path:
 
 def _gemini_text(prompt: str) -> str:
     """Run a text-only Gemini prompt and return the response."""
-    import asyncio
-    from agent.vision import analyze_image_with_gemini
     # Use analyze_image_with_gemini with a tiny placeholder image to get text-only response
     # Alternatively, use the genai client directly
     try:
@@ -419,11 +433,16 @@ def _process_data(path: Path, file_type: str, action: str, params: dict) -> dict
         if not col or col not in df.columns:
             return {"status": "error", "detail": f"Column '{col}' not found. Available: {', '.join(df.columns)}"}
         try:
-            if condition == "equals":     filtered = df[df[col] == value]
-            elif condition == "contains": filtered = df[df[col].astype(str).str.contains(str(value), case=False)]
-            elif condition == "gt":       filtered = df[df[col] > float(value)]
-            elif condition == "lt":       filtered = df[df[col] < float(value)]
-            else:                         filtered = df[df[col] == value]
+            if condition == "equals":
+                filtered = df[df[col] == value]
+            elif condition == "contains":
+                filtered = df[df[col].astype(str).str.contains(str(value), case=False)]
+            elif condition == "gt":
+                filtered = df[df[col] > float(value)]
+            elif condition == "lt":
+                filtered = df[df[col] < float(value)]
+            else:
+                filtered = df[df[col] == value]
             out = _output_path(path, "filtered", ".csv")
             filtered.to_csv(out, index=False)
             return {"status": "success", "detail": f"Filtered: {len(filtered)} rows match. Saved: {out.name}", "saved_to": str(out)}
@@ -562,7 +581,6 @@ def _process_audio(path: Path, action: str, params: dict) -> dict[str, Any]:
 
     if action == "transcribe":
         try:
-            import base64
             mime_map = {"mp3": "audio/mp3", "wav": "audio/wav", "ogg": "audio/ogg", "m4a": "audio/mp4", "aac": "audio/aac", "flac": "audio/flac"}
             mime = mime_map.get(path.suffix.lstrip(".").lower(), "audio/mpeg")
             file_bytes = path.read_bytes()
@@ -723,7 +741,8 @@ def _process_archive(path: Path, action: str, params: dict) -> dict[str, Any]:
 
     if action == "list":
         try:
-            import zipfile, tarfile
+            import zipfile
+            import tarfile
             ext = path.suffix.lower()
             if ext == ".zip":
                 with zipfile.ZipFile(path) as z:

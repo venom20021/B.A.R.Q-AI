@@ -926,7 +926,7 @@ class PipecatVoiceAgent(VoiceAgentBase):
             if ok:
                 print(f"[PipecatAgent] Kokoro TTS ready (voice={self.tts_voice})")
             else:
-                print(f"[PipecatAgent] Kokoro TTS failed to load")
+                print("[PipecatAgent] Kokoro TTS failed to load")
                 self._kokoro_engine = None
         return self._kokoro_engine
 

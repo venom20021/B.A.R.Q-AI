@@ -20,7 +20,7 @@ if os.path.exists(env_path):
     except UnicodeDecodeError:
         # The .env file is not valid UTF-8 (e.g. UTF-16 with BOM).
         # Attempt to decode as UTF-16, strip BOM, and re-save as UTF-8.
-        print(f"[Config] .env file encoding issue detected — attempting repair...")
+        print("[Config] .env file encoding issue detected — attempting repair...")
         try:
             with open(env_path, "rb") as f:
                 raw = f.read()
@@ -38,7 +38,7 @@ if os.path.exists(env_path):
             # Write back as clean UTF-8
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(decoded)
-            print(f"[Config] .env repaired and re-saved as UTF-8")
+            print("[Config] .env repaired and re-saved as UTF-8")
             # Now retry load
             load_dotenv(env_path, override=True)
         except Exception as repair_err:

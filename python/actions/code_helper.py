@@ -18,7 +18,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from utils.ollama_client import OllamaClient
 
@@ -462,7 +461,7 @@ async def screen_debug_action(description: str = "", file_path: str = "") -> str
         )
 
         analysis = await analyze_image_with_gemini(image_bytes, mime_type, prompt=vision_prompt)
-        print(f"[CodeHelper] ✅ Screen analysis complete")
+        print("[CodeHelper] ✅ Screen analysis complete")
 
         # Extract code from analysis and auto-apply fix
         if file_path and file_content:

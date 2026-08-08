@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 from utils.ollama_client import OllamaClient
 
@@ -531,7 +531,7 @@ Create a comprehensive, well-structured research report. Include a TL;DR, key fi
             progress.update_card_status(edit_card.id, "complete")
             edit_card.content = f"Report generated ({len(report.split())} words)"
 
-        except Exception as e:
+        except Exception:
             # Fallback: compile a simple report from gathered facts
             fallback_report = self._fallback_report(progress)
             progress.final_report = fallback_report

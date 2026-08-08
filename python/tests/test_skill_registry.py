@@ -15,7 +15,7 @@ def setup_db():
     return
 
 
-from agent.skill_registry import (
+from agent.skill_registry import (  # noqa: E402
     Skill,
     SkillParameter,
     SkillRegistry,

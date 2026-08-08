@@ -395,7 +395,6 @@ def _build_fpdf_pdf_from_md(pdf: Any, resume_data: dict[str, Any], raw_md: str) 
     """
     primary = (26, 54, 93)
     accent = (43, 108, 192)
-    muted = (113, 128, 150)
     body_color = (40, 40, 40)
 
     def _md_section(title: str):

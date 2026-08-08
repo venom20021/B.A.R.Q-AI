@@ -24,7 +24,6 @@ from fastapi import APIRouter, HTTPException
 from memory_knowledge.ingestion import (
     BRAIN_FOLDER_MAP,
     DropFolderMonitor,
-    TripletExtractor,
     get_extractor,
     run_ingestion_once,
 )

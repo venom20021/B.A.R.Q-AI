@@ -14,15 +14,13 @@ from typing import Any, Callable, Optional
 from ..browser.launcher import BrowserLauncher
 from ..browser.stealth import StealthConfig
 from ..boards.base import JobBoardStrategy
-from ..boards.linkedin import LinkedInStrategy
-from ..dom.extractor import DOMExtractor
 from ..failure.evo_logger import EvoLogger
 from ..llm.element_selector import ElementSelector
 from ..llm.ollama_client import OllamaClient
 from ..llm.qa_generator import QAGenerator
 from .form_filler import FormFiller
 from .resume_uploader import ResumeUploader
-from ..config import PROFILE, CONFIG
+from ..config import PROFILE
 
 logger = logging.getLogger("barq.auto_applier.engine")
 

@@ -603,7 +603,6 @@ class WakeWordDetector:
         """
         import time as _time
 
-        import numpy as np
         import sounddevice as sd
         import vosk
 

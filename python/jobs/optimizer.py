@@ -139,7 +139,7 @@ class ResumeOptimizer:
             content = content.strip()
             if content.startswith("```"):
                 lines = content.split("\n")
-                lines = [l for l in lines if not l.strip().startswith("```")]
+                lines = [line for line in lines if not line.strip().startswith("```")]
                 content = "\n".join(lines).strip()
             if content.lower().startswith("json"):
                 content = content[4:].strip()

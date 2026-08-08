@@ -1978,7 +1978,7 @@ FUNCTION_REGISTRY: dict[str, Any] = {
 # Voice access to every BARQ feature (jobs, social, memory, brain, workflows,
 # notifications, analytics, settings, agent skills, ...) via self-HTTP dispatch
 # and the SkillRegistry. See voice/feature_bridge.py for details.
-from .feature_bridge import (
+from .feature_bridge import (  # noqa: E402
     FEATURE_FUNCTIONS as BARQ_FEATURE_FUNCTIONS,
     FEATURE_SCHEMAS as BARQ_FEATURE_SCHEMAS,
 )

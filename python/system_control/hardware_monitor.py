@@ -9,16 +9,12 @@ Provides:
 """
 
 import asyncio
-import json
 import logging
 import os
 import platform
-import subprocess
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("barq.hardware_monitor")

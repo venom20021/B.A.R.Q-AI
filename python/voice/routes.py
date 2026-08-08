@@ -2625,7 +2625,7 @@ async def _execute_command_action(text: str, parsed: dict) -> str:
                                 ingredients.append(ing)
                         return f"{desc} is served in {glass}. Ingredients: {', '.join(ingredients)}."
                     return f"No cocktail found named {name}."
-                return f"Cocktail search failed."
+                return "Cocktail search failed."
             except Exception as e:
                 return f"Cocktail search failed: {e}"
 
@@ -2730,7 +2730,7 @@ async def _execute_command_action(text: str, parsed: dict) -> str:
                         status = c.get("status", "Unknown")
                         return f"{char_name} is a {species} who is currently {status}."
                     return f"No Rick and Morty character found named {name}."
-                return f"Character search failed."
+                return "Character search failed."
             except Exception as e:
                 return f"Rick and Morty search failed: {e}"
 
@@ -2766,7 +2766,7 @@ async def _execute_command_action(text: str, parsed: dict) -> str:
                         mass = c.get("mass", "unknown")
                         return f"{char_name} is {height} centimeters tall and weighs {mass} kilograms."
                     return f"No Star Wars character found named {name}."
-                return f"Character search failed."
+                return "Character search failed."
             except Exception as e:
                 return f"Star Wars search failed: {e}"
 

@@ -28,9 +28,9 @@ from dotenv import load_dotenv
 _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 load_dotenv(_env_path, override=True)
 
-from database.connection import TursoConnection
-from database.schema import ALL_TABLES
-from config import get_settings
+from database.connection import TursoConnection  # noqa: E402
+from database.schema import ALL_TABLES  # noqa: E402
+from config import get_settings  # noqa: E402
 
 
 # ─── Helper: get all rows from a local SQLite table ─────────────────────

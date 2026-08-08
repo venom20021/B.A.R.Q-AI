@@ -362,7 +362,7 @@ async def lifespan(app: FastAPI):
                 print(f"[BARQ Sidecar]   >> Run: ollama pull {settings.ollama_model}")
             except Exception:
                 print("[BARQ Sidecar] [WARN] Ollama is NOT running")
-                print(f"[BARQ Sidecar]   >> Install from: https://ollama.com/download/windows")
+                print("[BARQ Sidecar]   >> Install from: https://ollama.com/download/windows")
             finally:
                 try:
                     _s.close()
@@ -548,7 +548,7 @@ async def lifespan(app: FastAPI):
             await _telegram_app.start()
             await _telegram_app.updater.start_polling(allowed_updates=_TGUpdate.ALL_TYPES)
 
-            print(f"[BARQ Sidecar] Telegram ingestion bot started")
+            print("[BARQ Sidecar] Telegram ingestion bot started")
         except ImportError as _tg_ie:
             print(f"[BARQ Sidecar] [WARN] Telegram bot unavailable: {_tg_ie}")
             print("[BARQ Sidecar]   >> Run: pip install python-telegram-bot")
@@ -681,7 +681,7 @@ app.include_router(agent_skill_router)
 app.include_router(memory_bus_router)
 
 # Register auto-apply router (DynamicResumeBuilder, pipeline, etc.)
-from jobs.auto_applier.routes import router as auto_apply_router
+from jobs.auto_applier.routes import router as auto_apply_router  # noqa: E402
 app.include_router(auto_apply_router, prefix="/api/jobs", tags=["Auto Apply"])
 
 
@@ -814,7 +814,7 @@ async def _proactive_checkin():
                 from voice.routes import responder, conversation_listener
                 if responder and conversation_listener and conversation_listener.is_active:
                     # Speak the check-in to the user
-                    logger.info(f"[Proactive] Speaking check-in during active conversation")
+                    logger.info("[Proactive] Speaking check-in during active conversation")
             except Exception:
                 pass
         else:

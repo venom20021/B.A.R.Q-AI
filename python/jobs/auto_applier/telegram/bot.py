@@ -5,15 +5,12 @@ Supports both polling and webhook modes.
 Integrates with BARQ's existing Telegram channel.
 """
 
-import asyncio
 import logging
 from typing import Any, Callable, Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import FSInputFile, InputMediaPhoto
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from ..config import CONFIG
 from .handlers import Router as main_router

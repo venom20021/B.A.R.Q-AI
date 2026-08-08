@@ -21,27 +21,24 @@ import os
 
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("barq.pipeline")
 
-from database import analytics_dao, db_connection, jobs_dao, settings_dao
-from knowledge.auto_extractor import AutoExtractor
-from notifications.manager import notification_manager
-from utils import safe_filename
+from database import analytics_dao, jobs_dao  # noqa: E402
+from knowledge.auto_extractor import AutoExtractor  # noqa: E402
+from utils import safe_filename  # noqa: E402
 
-from .applier import JobApplier
-from .cover_letter import CoverLetterGenerator
-from .optimizer import ResumeOptimizer
-from .pdf_generator import (
+from .applier import JobApplier  # noqa: E402
+from .cover_letter import CoverLetterGenerator  # noqa: E402
+from .optimizer import ResumeOptimizer  # noqa: E402
+from .pdf_generator import (  # noqa: E402
     ResumePDFGenerator,
     GENERATED_DIR,
-    compile_latex_string,
     compile_resume_pdf_from_json,
     generate_cover_letter_pdf,
 )
-from .resume_parser import DEFAULT_RESUME_PATH, parse_resume
+from .resume_parser import DEFAULT_RESUME_PATH, parse_resume  # noqa: E402
 
 # ─── Pipeline Settings ──────────────────────────────────────────────────────
 
@@ -401,11 +398,11 @@ async def run_pipeline(settings: Optional[dict[str, Any]] = None) -> dict[str, A
                             print(f"[Pipeline] JSON→LaTeX resume PDF generated for {job_title} ({len(resume_pdf_bytes)} bytes)")
                         except Exception as e:
                             print("\033[91m" + "═" * 70)
-                            print(f"  ⚠️  !!! PDF_COMPILATION_FAILED !!!")
+                            print("  ⚠️  !!! PDF_COMPILATION_FAILED !!!")
                             print(f"  Job: {job_title} @ {company}")
-                            print(f"  Method: JSON→LaTeX (compile_resume_pdf_from_json)")
+                            print("  Method: JSON→LaTeX (compile_resume_pdf_from_json)")
                             print(f"  Error: {e}")
-                            print(f"  Fix: Ensure LaTeX (pdflatex/shell-escape) is installed and templates are valid.")
+                            print("  Fix: Ensure LaTeX (pdflatex/shell-escape) is installed and templates are valid.")
                             print("═" * 70 + "\033[0m")
                             llm_json_data = None  # Reset so markdown path is used below
 
@@ -799,7 +796,7 @@ async def _send_telegram_notification(
                 summary += f"\n  • {html_mod.escape(str(c)[:120])}"
 
         if pdfs_sent:
-            summary += f"\n\n📎 <i>Resume + Cover Letter PDFs attached above</i>"
+            summary += "\n\n📎 <i>Resume + Cover Letter PDFs attached above</i>"
 
         summary += f"\n\n✅ Application #{app_id}"
 

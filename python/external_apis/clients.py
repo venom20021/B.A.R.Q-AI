@@ -5,7 +5,6 @@ All functions return dicts ready to be JSON-serialized by FastAPI.
 Each API has a 'status' field: 'ok' on success, 'error' on failure.
 """
 
-from typing import Optional
 
 import httpx
 
@@ -774,7 +773,7 @@ async def fetch_rick_morty_character(character_id: int = 1) -> dict:
                 "status": "ok",
                 "id": data.get("id"),
                 "name": data.get("name", ""),
-                "status": data.get("status", ""),
+                "character_status": data.get("status", ""),
                 "species": data.get("species", ""),
                 "type": data.get("type", ""),
                 "gender": data.get("gender", ""),

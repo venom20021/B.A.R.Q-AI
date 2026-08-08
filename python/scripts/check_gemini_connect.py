@@ -65,12 +65,12 @@ async def diagnose():
         print(f"  Description: {model_info.description[:120] if model_info.description else 'N/A'}")
     except Exception as e:
         print(f"  [WARN] Could not get model info: {e}")
-        print(f"  The model might be a preview model that's been replaced.")
-        print(f"  Trying to connect anyway...")
+        print("  The model might be a preview model that's been replaced.")
+        print("  Trying to connect anyway...")
 
     # Step 5: Test WebSocket connection
-    print(f"\n  Attempting Gemini Live WebSocket connection...")
-    print(f"  (this takes 3-5 seconds)")
+    print("\n  Attempting Gemini Live WebSocket connection...")
+    print("  (this takes 3-5 seconds)")
     try:
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -91,7 +91,7 @@ async def diagnose():
         # Wait for a welcome or setup message
         print("  [OK] WebSocket connected!")
         print(f"  Session type: {type(session).__name__}")
-        print(f"  Session established successfully")
+        print("  Session established successfully")
 
         # Close gracefully via context manager
         await cm.__aexit__(None, None, None)
@@ -103,11 +103,11 @@ async def diagnose():
 
     except Exception as e:
         print(f"  [FAIL] WebSocket connection failed: {e}")
-        print(f"\n  Possible causes:")
+        print("\n  Possible causes:")
         print(f"    1. The model '{LIVE_MODEL}' may have expired or been renamed")
-        print(f"    2. The API key may not have access to this model")
-        print(f"    3. Network connectivity issue to Google's API")
-        print(f"    4. Your Google Cloud project may need Gemini Live API enabled")
+        print("    2. The API key may not have access to this model")
+        print("    3. Network connectivity issue to Google's API")
+        print("    4. Your Google Cloud project may need Gemini Live API enabled")
         return False
 
 

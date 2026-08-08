@@ -11,7 +11,6 @@ Upgrades over the old text-slideshow renderer:
 """
 
 import os
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -329,10 +328,9 @@ class VideoAssembler:
         try:
             start_scale = 1.0
             end_scale = 1.12
-            zoom = (
-                lambda t: start_scale
-                + (end_scale - start_scale) * min(t / max(duration, 1.0), 1.0)
-            )
+            def _zoom(t):
+                return start_scale + (end_scale - start_scale) * min(t / max(duration, 1.0), 1.0)
+            zoom = _zoom
             return clip.resized(zoom)
         except Exception as e:
             print(f"[Video] Ken Burns skipped (non-fatal): {e}")
@@ -394,7 +392,6 @@ class VideoAssembler:
         clips = []
         try:
             for i, path in enumerate(footage):
-                section = section_texts[i] if i < len(section_texts) else section_texts[-1] if section_texts else ("", "")
                 try:
                     is_image = path.lower().endswith((".png", ".jpg", ".jpeg"))
                     clip = ImageClip(path) if is_image else None

@@ -26,9 +26,9 @@ _ACTIVITY_TYPE_TO_CATEGORY: dict[str, Category] = {
     "system": Category.SYSTEM,
     "error": Category.ERROR,
 }
-from .desktop import DesktopChannel
-from .email_smtp import EmailChannel
-from .telegram import TelegramChannel
+from .desktop import DesktopChannel  # noqa: E402
+from .email_smtp import EmailChannel  # noqa: E402
+from .telegram import TelegramChannel  # noqa: E402
 
 
 class NotificationManager:
@@ -133,7 +133,7 @@ class NotificationManager:
         """
         body = f"{company} — {match_score:.0f}% match score. Ready for review."
         if job_url:
-            body += f"\n\n📎 Job link available below."
+            body += "\n\n📎 Job link available below."
         return await self.send_notification(
             title=f"🎯 Great Job Match: {job_title}",
             body=body,

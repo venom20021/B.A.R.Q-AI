@@ -18,9 +18,8 @@ Usage:
 
 import asyncio
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from utils.ollama_client import OllamaClient
 

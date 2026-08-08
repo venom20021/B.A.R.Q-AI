@@ -25,7 +25,6 @@ Example workflow (research → save):
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 import uuid
@@ -248,10 +247,6 @@ class WorkflowRuntime:
                 # ── Check routing / failures ──
                 failed = [r for r in group_results if r.get("status") != "completed"]
                 if failed:
-                    first_failed = next(
-                        (s for s in group if s.id in {f.get("id") for f in failed}),
-                        group[0],
-                    )
                     if step.next_on_failure:
                         # Route to the failure-continuation step
                         nxt = _guard_route(step.next_on_failure, steps)

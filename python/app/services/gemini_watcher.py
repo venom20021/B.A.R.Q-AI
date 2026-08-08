@@ -96,10 +96,10 @@ except ImportError:
 
 # ─── Project imports ────────────────────────────────────────────────────────
 
-from config import get_settings
-from graph_brain import EXTRACTION_SYSTEM_PROMPT
-from memory_knowledge.multi_brain import multi_brain_manager
-from voice.evolution_logger import get_evolution_logger
+from config import get_settings  # noqa: E402
+from graph_brain import EXTRACTION_SYSTEM_PROMPT  # noqa: E402
+from memory_knowledge.multi_brain import multi_brain_manager  # noqa: E402
+from voice.evolution_logger import get_evolution_logger  # noqa: E402
 
 logger = logging.getLogger("barq.gemini_watcher")
 

@@ -16,7 +16,6 @@ Defaults:
   check_cooldown   — 1200 s (20 min) minimum gap between proactive messages
 """
 
-import asyncio
 import time
 from datetime import datetime
 

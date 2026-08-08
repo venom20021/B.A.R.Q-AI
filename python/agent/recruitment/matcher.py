@@ -11,7 +11,7 @@ Produces a structured match analysis including:
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 
 from utils.ollama_client import OllamaClient
 from .extractor import ExtractionResult

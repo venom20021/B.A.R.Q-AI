@@ -127,7 +127,7 @@ def analyze_error(
 
     # ── Permission error → abort (safety) ────────────────────────
     if "permission" in error_lower or "access denied" in error_lower or "not permitted" in error_lower:
-        print(f"[ErrorHandler] ABORT Permission denied — cannot continue")
+        print("[ErrorHandler] ABORT Permission denied — cannot continue")
         return _make_decision(
             ErrorDecision.ABORT,
             f"Permission denied: {error[:100]}",

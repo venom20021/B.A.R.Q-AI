@@ -105,7 +105,6 @@ async def main() -> bool:
     #    (We can't easily mock Tier 1 failure, but we can verify the bridge
     #     is called correctly by checking the is_server_running path works)
     print("\n-- 5. DynamicResumeBuilder Tier 2 path --")
-    from jobs.auto_applier.resume.dynamic_builder import DynamicResumeBuilder
     from jobs.auto_applier.resume.ai_resume_bridge import AIResumeBridge as BridgeClass
 
     # Verify that the bridge detect_server integration works

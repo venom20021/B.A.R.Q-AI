@@ -1,5 +1,4 @@
 """Insert the JobDetailModal component and wire it into JobListings."""
-import re
 
 TSX_PATH = '../src/renderer/src/pages/JobsPage.tsx'
 

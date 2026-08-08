@@ -37,7 +37,7 @@ def start_server():
 
 
 # Override settings port
-import config as cfg
+import config as cfg  # noqa: E402
 cfg.get_settings.cache_clear()
 os.environ["SIDECAR_PORT"] = str(PORT)
 

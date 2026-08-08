@@ -291,7 +291,6 @@ async def test_send_document_from_bytes_empty():
 def test_summary_html_escaping():
     """Verify that HTML tags in job/company names are escaped."""
     import html as html_mod
-    from jobs.pipeline import _send_telegram_notification
 
     dangerous_title = "<script>alert('xss')</script>"
     dangerous_company = 'Company "&<b>Bold</b>'

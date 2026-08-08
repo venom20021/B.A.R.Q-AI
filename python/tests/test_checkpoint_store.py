@@ -78,7 +78,6 @@ async def test_list_with_parsed_data(store):
 @pytest.mark.asyncio
 async def test_list_with_parsed_data_bad_json_is_safe(store):
     """Corrupt data JSON decodes to {} instead of raising."""
-    import json
     from database import db_connection
     await db_connection.execute(
         "INSERT INTO agent_checkpoints (checkpoint_key, agent_type, data) VALUES (?, ?, ?)",

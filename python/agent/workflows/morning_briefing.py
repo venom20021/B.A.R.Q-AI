@@ -18,7 +18,7 @@ All data sources are guarded — a failure in any one never blocks the rest.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from utils.ollama_client import OllamaClient
 

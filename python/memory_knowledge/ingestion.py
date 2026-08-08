@@ -38,9 +38,9 @@ except ImportError:
     FileSystemEventHandler = object  # type: ignore[misc, assignment]
     Observer = None  # type: ignore[assignment, misc]
 
-from graph_brain import EXTRACTION_SYSTEM_PROMPT
-from memory_knowledge.multi_brain import BRAIN_REGISTRY, multi_brain_manager
-from config import get_settings
+from graph_brain import EXTRACTION_SYSTEM_PROMPT  # noqa: E402
+from memory_knowledge.multi_brain import BRAIN_REGISTRY, multi_brain_manager  # noqa: E402
+from config import get_settings  # noqa: E402
 
 logger = logging.getLogger("barq.ingestion")
 
@@ -703,7 +703,6 @@ def run_ingestion_once(
     """
     base = Path(dropbox_dir or get_dropbox_base())
     extractor = get_extractor()
-    parser = IngestionParser()
     results: dict[str, int] = {}
 
     folders_to_process = (

@@ -10,7 +10,6 @@ Vault path is configured via settings (key: "obsidian_vault_path").
 """
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
