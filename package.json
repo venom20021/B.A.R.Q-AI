@@ -1,16 +1,21 @@
 {
   "name": "barq",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "BARQ - Voice-Controlled Desktop Assistant for Job Search & Social Media Automation",
   "main": "./out/main/index.js",
   "author": "BARQ Team",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/venom20021/B.A.R.Q-AI.git"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "dev:python": "node scripts/dev-python.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
+    "package:publish": "electron-vite build && electron-builder --publish always",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
@@ -51,6 +56,7 @@
     "autoprefixer": "^10.4.20",
     "electron": "^32.3.3",
     "electron-builder": "^25.0.5",
+    "electron-updater": "^6.8.9",
     "electron-vite": "^2.3.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.1.1",

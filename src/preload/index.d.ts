@@ -1,5 +1,17 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
+// Update status pushed from the main process on the `update:status` channel.
+// Mirrors the UpdateState union in src/main/updater.ts.
+type UpdateStatus =
+  | { state: 'dev' }
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'not-available'; version?: string }
+  | { state: 'downloading'; percent: number }
+  | { state: 'downloaded'; version: string }
+  | { state: 'error'; message: string }
+
 interface BarqAPI {
   python: {
     request: (endpoint: string, data?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -141,6 +153,13 @@ interface BarqAPI {
 
   // Secure external URL opener
   openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
+
+  // Auto-updater (electron-updater via GitHub Releases)
+  updater: {
+    checkForUpdates: () => Promise<{ success: boolean; data?: UpdateStatus; error?: string }>
+    restartToInstall: () => Promise<{ success: boolean; error?: string }>
+    onStatus: (callback: (status: UpdateStatus) => void) => () => void
+  }
 }
 
 declare global {

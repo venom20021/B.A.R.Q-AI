@@ -9,6 +9,7 @@ import { QuickOverlay} from './components/QuickOverlay'
 import { StartupSequence } from './components/StartupSequence'
 import { ApprovalModal } from './components/ApprovalModal'
 import { TransientDiagnostics } from './components/TransientDiagnostics'
+import { UpdateToast } from './components/UpdateToast'
 import { Navbar } from './components/Navbar'
 import type { NavTab } from './components/Navbar'
 import { LiveCaptions } from './components/LiveCaptions'
@@ -359,6 +360,9 @@ function AppContent(): JSX.Element {
 
       {/* Transient Diagnostics — auto-dismissing system stats overlay */}
       <TransientDiagnostics />
+
+      {/* Update Toast — auto-update download progress / restart prompt */}
+      <UpdateToast />
 
       {/* Live Captions — real-time STT + AI response subtitles */}
       <LiveCaptionsWrapper />

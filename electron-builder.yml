@@ -6,15 +6,20 @@ directories:
 
 files:
   - out/**/*
+  - resources/icon.png
   - "!node_modules/**/*"
 
 extraResources:
-  - from: python/dist/
+  # PyInstaller onedir layout: python/dist/barq-sidecar/barq-sidecar.exe + _internal/.
+  # Copy that folder INTO resources/python/ so python-bridge.ts finds
+  # barq-sidecar.exe directly at resources/python/barq-sidecar.exe.
+  - from: python/dist/barq-sidecar
     to: python/
     filter:
       - "**/*"
 
 win:
+  icon: resources/icon.ico
   target:
     - target: nsis
       arch:
@@ -42,5 +47,7 @@ nsis:
   deleteAppDataOnUninstall: false
 
 publish:
-  provider: generic
-  url: https://releases.barq.app
+  provider: github
+  owner: venom20021
+  repo: B.A.R.Q-AI
+  releaseType: release

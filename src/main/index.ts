@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createTray, setAppIsQuitting } from './tray'
 import { registerIpcHandlers } from './ipc'
+import { initAutoUpdater } from './updater'
 import { pythonBridge } from './python-bridge'
 import { initOverlayManager, destroyOverlayManager } from './overlay-manager'
 import { initClipboardWidget, destroyClipboardWidget } from './clipboard-widget'
@@ -189,6 +190,9 @@ app.whenReady().then(async () => {
 
   // Create system tray
   createTray(mainWindow!)
+
+  // Auto-update from GitHub Releases (packaged builds only)
+  initAutoUpdater()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

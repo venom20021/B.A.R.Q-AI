@@ -224,5 +224,16 @@ contextBridge.exposeInMainWorld('barq', {
   },
 
   // Secure external URL opener (uses shell.openExternal in main process)
-  openExternal: (url: string) => ipcRenderer.invoke('open-external-url', url)
+  openExternal: (url: string) => ipcRenderer.invoke('open-external-url', url),
+
+  // Auto-updater (electron-updater via GitHub Releases)
+  updater: {
+    checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+    restartToInstall: () => ipcRenderer.invoke('app:restart-to-install'),
+    onStatus: (callback: (status: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('update:status', handler)
+      return () => ipcRenderer.removeListener('update:status', handler)
+    },
+  },
 })
